@@ -5,6 +5,7 @@ import type { PaperWidth, Sale, SalesReturnVoucher, StoreSettings } from '../typ
 import { useLanguage } from '../i18n/LanguageContext';
 import { generateZatcaTlvBase64 } from '../utils/zatcaQr';
 import {
+  applyThermalPageSize,
   measureThermalPageSize,
   printWithThermalPageSize,
   resolveInvoiceMarginsMm,
@@ -100,13 +101,18 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
       if (window.electronAPI?.isElectron) {
         const printerMode = templateSettings?.printerMode
           || (templateSettings?.defaultPrinter ? 'saved-printer' : 'system-default');
-        const result = await window.electronAPI.printReceipt({
-          silent: printerMode !== 'choose-at-print-time',
-          printerName: printerMode === 'saved-printer' ? templateSettings?.defaultPrinter || undefined : undefined,
-          pageSize,
-        });
-        if (!result.ok) {
-          throw new Error(result.error || 'Receipt could not be printed.');
+        const removePageStyle = pageSize ? applyThermalPageSize(pageSize) : undefined;
+        try {
+          const result = await window.electronAPI.printReceipt({
+            silent: printerMode !== 'choose-at-print-time',
+            printerName: printerMode === 'saved-printer' ? templateSettings?.defaultPrinter || undefined : undefined,
+            pageSize,
+          });
+          if (!result.ok) {
+            throw new Error(result.error || 'Receipt could not be printed.');
+          }
+        } finally {
+          removePageStyle?.();
         }
       } else {
         if (pageSize) printWithThermalPageSize(pageSize);

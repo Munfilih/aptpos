@@ -80,15 +80,20 @@ export function measureThermalPageSize(
   }
 }
 
-export function printWithThermalPageSize(pageSize: ThermalPageSize): void {
+export function applyThermalPageSize(pageSize: ThermalPageSize): () => void {
   const widthMm = pageSize.width / 1000;
   const heightMm = pageSize.height / 1000;
   const pageStyle = document.createElement('style');
   pageStyle.textContent = `@page { size: ${widthMm}mm ${heightMm}mm; margin: 0; }`;
   document.head.appendChild(pageStyle);
 
+  return () => pageStyle.remove();
+}
+
+export function printWithThermalPageSize(pageSize: ThermalPageSize): void {
+  const removePageStyle = applyThermalPageSize(pageSize);
   const cleanup = () => {
-    pageStyle.remove();
+    removePageStyle();
     window.removeEventListener('afterprint', cleanup);
   };
   window.addEventListener('afterprint', cleanup, { once: true });

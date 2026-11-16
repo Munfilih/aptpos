@@ -93,6 +93,30 @@ function initializeAutoUpdater(): void {
   });
 }
 
+async function checkForUpdates(): Promise<UpdateStatus> {
+  if (!app.isPackaged) {
+    publishUpdateStatus({
+      state: 'error',
+      message: 'Updates can only be checked from the installed desktop application.',
+    });
+    return updateStatus;
+  }
+
+  if (updateStatus.state === 'checking' || updateStatus.state === 'available' ||
+      updateStatus.state === 'downloading' || updateStatus.state === 'installing') {
+    return updateStatus;
+  }
+
+  publishUpdateStatus({ state: 'checking' });
+  try {
+    await autoUpdater.checkForUpdates();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'The update check failed.';
+    publishUpdateStatus({ state: 'error', message });
+  }
+  return updateStatus;
+}
+
 function assertTrustedSender(event: IpcMainInvokeEvent): void {
   let senderOrigin = '';
   try {
@@ -417,27 +441,7 @@ ipcMain.handle('pos:updates:get-status', (event) => {
 
 ipcMain.handle('pos:updates:check', async (event) => {
   assertTrustedSender(event);
-  if (!app.isPackaged) {
-    publishUpdateStatus({
-      state: 'error',
-      message: 'Updates can only be checked from the installed desktop application.',
-    });
-    return updateStatus;
-  }
-
-  if (updateStatus.state === 'checking' || updateStatus.state === 'available' ||
-      updateStatus.state === 'downloading' || updateStatus.state === 'installing') {
-    return updateStatus;
-  }
-
-  publishUpdateStatus({ state: 'checking' });
-  try {
-    await autoUpdater.checkForUpdates();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'The update check failed.';
-    publishUpdateStatus({ state: 'error', message });
-  }
-  return updateStatus;
+  return checkForUpdates();
 });
 
 ipcMain.handle('pos:updates:install', (event) => {
@@ -479,6 +483,11 @@ if (!app.requestSingleInstanceLock()) {
         : `http://127.0.0.1:${port}`;
       await waitForServer(`${new URL(targetUrl).origin}/api/health`);
       createWindow(targetUrl);
+      if (app.isPackaged) {
+        setTimeout(() => {
+          void checkForUpdates();
+        }, 5000);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown startup error.';
       console.error('Failed to start aptPOS:', error);
