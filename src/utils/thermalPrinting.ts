@@ -16,13 +16,13 @@ export function resolveInvoiceMarginsMm(
   configured?: Partial<InvoiceMarginsMm>
 ): InvoiceMarginsMm {
   const minimum = MINIMUM_INVOICE_MARGIN_MM[format];
-  const resolveMargin = (value: number | undefined) =>
+  const resolveMargin = (value: number | undefined, marginMinimum = minimum) =>
     typeof value === 'number' && Number.isFinite(value)
-      ? Math.min(20, Math.max(minimum, value))
-      : minimum;
+      ? Math.min(20, Math.max(marginMinimum, value))
+      : marginMinimum;
 
   return {
-    top: resolveMargin(configured?.top),
+    top: resolveMargin(configured?.top, format === '80mm' ? 0 : minimum),
     right: resolveMargin(configured?.right),
     bottom: resolveMargin(configured?.bottom),
     left: resolveMargin(configured?.left),

@@ -1278,8 +1278,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </label>
                   <p className="text-[11px] text-slate-500">
                     {isRtl
-                      ? 'يتم تطبيق حد أدنى للهوامش: ٣ مم للرول الحراري و٥ مم لورق A4.'
-                      : `Minimum safe margins are ${MINIMUM_INVOICE_MARGIN_MM[selectedTemplate]} mm for this format.`}
+                      ? 'الحد الأدنى للهوامش الجانبية والسفلية: ٣ مم للرول الحراري و٥ مم لورق A4. يمكن جعل الهامش العلوي لرول ٨٠ مم صفراً.'
+                      : `Minimum safe margins are ${MINIMUM_INVOICE_MARGIN_MM[selectedTemplate]} mm for this format. The top margin for 80mm paper can be 0 mm.`}
                   </p>
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                     {([
@@ -1287,37 +1287,40 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       { key: 'right', label: 'Right' },
                       { key: 'bottom', label: 'Bottom' },
                       { key: 'left', label: 'Left' },
-                    ] as const).map(({ key, label }) => (
-                      <div key={key}>
-                        <label htmlFor={`invoice-margin-${key}`} className="mb-1 block text-xs font-medium text-slate-700">
-                          {label}
-                        </label>
-                        <div className="flex items-center gap-1.5">
-                          <input
-                            id={`invoice-margin-${key}`}
-                            type="number"
-                            min={MINIMUM_INVOICE_MARGIN_MM[selectedTemplate]}
-                            max="20"
-                            step="0.5"
-                            value={activeInvoiceMarginsMm[key]}
-                            onChange={(event) => {
-                              const margin = Number(event.target.value);
-                              if (Number.isFinite(margin)) {
-                                updateTemplateSettings('invoiceMarginsMm', {
-                                  ...activeInvoiceMarginsMm,
-                                  [key]: Math.min(
-                                    20,
-                                    Math.max(MINIMUM_INVOICE_MARGIN_MM[selectedTemplate], margin)
-                                  ),
-                                });
-                              }
-                            }}
-                            className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-700 focus:outline-none"
-                          />
-                          <span className="text-xs text-slate-500">mm</span>
+                    ] as const).map(({ key, label }) => {
+                      const minimumMargin =
+                        key === 'top' && selectedTemplate === '80mm'
+                          ? 0
+                          : MINIMUM_INVOICE_MARGIN_MM[selectedTemplate];
+                      return (
+                        <div key={key}>
+                          <label htmlFor={`invoice-margin-${key}`} className="mb-1 block text-xs font-medium text-slate-700">
+                            {label}
+                          </label>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              id={`invoice-margin-${key}`}
+                              type="number"
+                              min={minimumMargin}
+                              max="20"
+                              step="0.5"
+                              value={activeInvoiceMarginsMm[key]}
+                              onChange={(event) => {
+                                const margin = Number(event.target.value);
+                                if (Number.isFinite(margin)) {
+                                  updateTemplateSettings('invoiceMarginsMm', {
+                                    ...activeInvoiceMarginsMm,
+                                    [key]: Math.min(20, Math.max(minimumMargin, margin)),
+                                  });
+                                }
+                              }}
+                              className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-700 focus:outline-none"
+                            />
+                            <span className="text-xs text-slate-500">mm</span>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
 
