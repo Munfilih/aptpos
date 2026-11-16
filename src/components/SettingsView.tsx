@@ -1765,35 +1765,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       )}
 
       {activeSettingsSection === 'updates' && (
-        <div className="space-y-5">
-          <header className="relative isolate overflow-hidden rounded-2xl bg-gradient-to-br from-slate-950 via-blue-950 to-indigo-900 p-6 text-white shadow-lg">
-            <div className="pointer-events-none absolute -right-12 -top-20 h-56 w-56 rounded-full bg-blue-400/20 blur-3xl" />
-            <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-start gap-4">
-                <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/15 bg-white/10">
-                  <RefreshCw className="h-6 w-6 text-cyan-200" />
-                </span>
-                <div>
-                  <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-200">
-                    {isRtl ? 'مركز التحديثات' : 'UPDATE CENTER'}
-                  </p>
-                  <h2 className="mt-1 text-xl font-bold tracking-tight">
-                    {isRtl ? 'تحديثات aptPOS' : 'aptPOS Software Updates'}
-                  </h2>
-                  <p className="mt-1 max-w-xl text-xs leading-relaxed text-blue-100/80">
-                    {isRtl
-                      ? 'تحقق من إصدارات GitHub الجديدة، واعرض التغييرات، ثم ثبّت التحديث عند جاهزيته.'
-                      : 'Check GitHub for new releases, review what changed, and install when the update is ready.'}
-                  </p>
-                </div>
-              </div>
-              <span className="inline-flex w-fit items-center gap-2 rounded-full border border-emerald-300/25 bg-emerald-300/10 px-3 py-1.5 text-[11px] font-semibold text-emerald-100">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-300" />
-                GitHub Releases
-              </span>
-            </div>
-          </header>
-
+        <div className="space-y-4">
+          <h2 className="text-lg font-semibold text-slate-900">
+            {isRtl ? 'تحديثات aptPOS' : 'Software Updates'}
+          </h2>
           {!window.electronAPI?.checkForUpdates ? (
             <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900" role="status">
               {isRtl
@@ -1801,11 +1776,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 : 'Update checks are available in the installed desktop app only.'}
             </p>
           ) : (
-            <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-              <div className="flex flex-col gap-4 border-b border-slate-100 p-5 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex min-w-0 items-start gap-3">
-                  <span className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${
-                    updateStatus.state === 'error'
+            <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
+                    updateStatus.state === 'error' || updateActionError
                       ? 'bg-red-50 text-red-600'
                       : updateStatus.state === 'up-to-date' || updateStatus.state === 'downloaded'
                         ? 'bg-emerald-50 text-emerald-600'
@@ -1815,8 +1790,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       ? <Check className="h-4 w-4" />
                       : <RefreshCw className={`h-4 w-4 ${updateStatus.state === 'checking' ? 'animate-spin' : ''}`} />}
                   </span>
-                  <div className="min-w-0">
-                    <p className={`text-sm font-bold ${
+                  {(updateStatus.state !== 'idle' || updateActionError) && (
+                    <p className={`min-w-0 text-sm font-medium ${
                       updateStatus.state === 'error' || updateActionError
                         ? 'text-red-700'
                         : updateStatus.state === 'up-to-date' || updateStatus.state === 'downloaded'
@@ -1850,18 +1825,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           case 'error':
                             return updateStatus.message;
                           default:
-                            return isRtl
-                              ? 'تحقق من GitHub للحصول على أحدث إصدار.'
-                              : 'Ready to check for the latest aptPOS release.';
+                            return '';
                         }
                       })()}
                     </p>
-                    <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
-                      {isRtl
-                        ? 'ستظهر هنا ملاحظات الإصدار عند توفر تحديث.'
-                        : 'Release notes appear here when an update is available.'}
-                    </p>
-                  </div>
+                  )}
                 </div>
 
                 <div className="flex shrink-0 gap-2">
@@ -1894,7 +1862,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
 
               {updateStatus.state === 'downloading' && (
-                <div className="border-b border-slate-100 px-5 py-4">
+                <div>
                   <div className="mb-2 flex justify-between text-[11px] font-semibold text-slate-600">
                     <span>{isRtl ? 'تنزيل التحديث' : 'Downloading update'}</span>
                     <span>{Math.round(updateStatus.percent)}%</span>
@@ -1918,21 +1886,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {(updateStatus.state === 'available' ||
                 updateStatus.state === 'downloading' ||
                 updateStatus.state === 'downloaded') && (
-                <div className="p-5">
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <h3 className="text-xs font-bold uppercase tracking-wide text-slate-700">
-                      {isRtl ? `ما الجديد في الإصدار ${updateStatus.version}` : `What's new in v${updateStatus.version}`}
-                    </h3>
-                    <span className="shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-bold text-blue-700">
-                      {isRtl ? 'تحديث جديد' : 'NEW RELEASE'}
-                    </span>
-                  </div>
-                  <div className="max-h-64 overflow-y-auto rounded-xl border border-slate-100 bg-slate-50 p-4">
-                    <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-700">
-                      {updateStatus.releaseNotes ||
-                        (isRtl ? 'لم يضف هذا الإصدار ملاحظات تغيير.' : 'No release notes were provided for this release.')}
-                    </p>
-                  </div>
+                <div>
+                  {updateStatus.releaseNotes && (
+                    <>
+                      <h3 className="mb-2 text-sm font-semibold text-slate-900">
+                        {isRtl ? `ما الجديد في الإصدار ${updateStatus.version}` : `What's new in v${updateStatus.version}`}
+                      </h3>
+                      <div className="max-h-64 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50 p-4">
+                        <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-700">
+                          {updateStatus.releaseNotes}
+                        </p>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </section>
