@@ -1,0 +1,20 @@
+aptPOS SOFTWARE TERMS AND CONDITIONS
+
+Please read these terms before installing aptPOS. Select the acceptance option in the installer to continue. If you do not accept these terms, select the decline option and cancel installation.
+
+1. License
+aptPOS is provided for use by the individual or organization installing it. You may install and use the software on devices that you own or are authorized to administer.
+
+2. Data and backups
+aptPOS stores business records in a local application data folder. You are responsible for protecting access to the device and making regular backups using the application's backup features. Uninstalling aptPOS does not remove this business data.
+
+3. Use and compliance
+You are responsible for verifying that records, invoices, taxes, and reports produced by aptPOS meet the requirements applicable to your business and location.
+
+4. Availability and warranty
+The software is provided "as is", to the extent permitted by law. No guarantee is made that the software will be uninterrupted or suitable for every business purpose. Keep independent backups of important information.
+
+5. Third-party services
+Some optional features may connect to third-party services. Their availability and terms are controlled by those providers.
+
+By selecting the acceptance option, you confirm that you have read and agree to these terms.

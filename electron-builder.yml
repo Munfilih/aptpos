@@ -1,0 +1,61 @@
+appId: com.counterline.pos
+productName: aptPOS
+copyright: Copyright © 2026 aptPOS
+
+directories:
+  output: release
+  buildResources: build-resources
+
+asar: true
+
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - package.json
+
+asarUnpack:
+  - "**/node_modules/sql.js/dist/sql-wasm.wasm"
+
+extraResources:
+  - from: build-resources/aptpos.ico
+    to: aptpos.ico
+
+win:
+  icon: build-resources/aptpos.ico
+  executableName: aptPOS
+  target:
+    - target: nsis
+      arch:
+        - x64
+  signAndEditExecutable: false
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: aptPOS
+  uninstallDisplayName: aptPOS
+  installerIcon: build-resources/aptpos.ico
+  uninstallerIcon: build-resources/aptpos.ico
+  installerHeader: build-resources/installerHeader.bmp
+  installerSidebar: build-resources/installerSidebar.bmp
+  license: build-resources/TERMS.txt
+  include: build-resources/custom-installer.nsh
+  installerLanguages:
+    - en_US
+  artifactName: aptPOS-Setup-${version}.${ext}
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+
+compression: maximum
+
+publish:
+  provider: github
+  owner: Munfilih
+  repo: aptpos
+  releaseType: release
+
+afterPack: scripts/patch-windows-icon.cjs
