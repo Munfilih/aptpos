@@ -5,7 +5,6 @@ import type { PaperWidth, Sale, SalesReturnVoucher, StoreSettings } from '../typ
 import { useLanguage } from '../i18n/LanguageContext';
 import { generateZatcaTlvBase64 } from '../utils/zatcaQr';
 import {
-  applyThermalPageWidth,
   applyThermalPageSize,
   measureThermalPageSize,
   printWithThermalPageSize,
@@ -94,30 +93,24 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
       const thermalWidthMm = activeFormat === '58mm' ? 58 : 80;
       const pageSize = activeFormat === 'A4'
         ? { width: 210_000, height: 297_000 }
-        : isElectron
-          ? undefined
-          : measureThermalPageSize(
-              document.querySelector<HTMLElement>('.thermal-receipt-print-area:not(.paper-a4)'),
-              {
-                elementWidthMm: thermalWidthMm,
-                pageWidthMm: thermalWidthMm,
-                padding: `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`,
-                container: document.querySelector('.receipt-print-source'),
-              }
-            );
+        : measureThermalPageSize(
+            document.querySelector<HTMLElement>('.thermal-receipt-print-area:not(.paper-a4)'),
+            {
+              elementWidthMm: thermalWidthMm,
+              pageWidthMm: thermalWidthMm,
+              padding: `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`,
+              container: document.querySelector('.receipt-print-source'),
+            }
+          );
       if (window.electronAPI?.isElectron) {
         const printerMode = templateSettings?.printerMode
           || (templateSettings?.defaultPrinter ? 'saved-printer' : 'system-default');
-        const removePageStyle = activeFormat === 'A4' && pageSize
-          ? applyThermalPageSize(pageSize)
-          : activeFormat === 'A4'
-            ? undefined
-            : applyThermalPageWidth(thermalWidthMm);
+        const removePageStyle = pageSize ? applyThermalPageSize(pageSize) : undefined;
         try {
           const result = await window.electronAPI.printReceipt({
             silent: printerMode !== 'choose-at-print-time',
             printerName: printerMode === 'saved-printer' ? templateSettings?.defaultPrinter || undefined : undefined,
-            ...(activeFormat === 'A4' && pageSize ? { pageSize } : {}),
+            ...(pageSize ? { pageSize } : {}),
           });
           if (!result.ok) {
             throw new Error(result.error || 'Receipt could not be printed.');

@@ -46,13 +46,23 @@ type BackupResult = { filePath: string; googleDriveUploaded: boolean };
 const DEFAULT_BACKUP_MODE: BackupMode = 'on-close';
 const DEFAULT_SCHEDULED_BACKUP_TIME = '02:00';
 
+function cleanReleaseNotes(notes: string): string | undefined {
+  const cleaned = notes
+    .replace(/<p>\s*<strong>\s*Full Changelog\s*<\/strong>\s*:[\s\S]*?<\/p>/gi, '')
+    .replace(/^\s*(?:\*\*)?Full Changelog(?:\*\*)?\s*:\s*.*$/gim, '')
+    .trim();
+  return cleaned || undefined;
+}
+
 function normalizeReleaseNotes(releaseNotes: unknown): string | undefined {
-  if (typeof releaseNotes === 'string') return releaseNotes.trim() || undefined;
+  if (typeof releaseNotes === 'string') return cleanReleaseNotes(releaseNotes);
   if (!Array.isArray(releaseNotes)) return undefined;
 
   const notes = releaseNotes.flatMap((entry) => {
     if (!entry || typeof entry !== 'object') return [];
-    const note = 'note' in entry && typeof entry.note === 'string' ? entry.note.trim() : '';
+    const note = 'note' in entry && typeof entry.note === 'string'
+      ? cleanReleaseNotes(entry.note)
+      : undefined;
     const version = 'version' in entry && typeof entry.version === 'string' ? entry.version.trim() : '';
     return note ? [`${version ? `v${version}\n` : ''}${note}`] : [];
   });
