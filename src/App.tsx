@@ -639,7 +639,7 @@ export function App() {
         {!currentUser ? (
           <LoginForm onLoginSuccess={handleLoginSuccess} />
         ) : (
-          <div className="h-[100dvh] max-h-[100dvh] w-screen flex flex-col bg-slate-50 text-slate-900 overflow-hidden">
+          <div className={`pos-app-shell${activeReceipt ? ' invoice-print-open' : ''} h-[100dvh] max-h-[100dvh] w-screen flex flex-col bg-slate-50 text-slate-900 overflow-hidden`}>
           <TopBar
             activeTab={effectiveTab}
             onSelectTab={setActiveTab}

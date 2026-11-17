@@ -197,6 +197,19 @@
     padding: 0 !important;
   }
 
+  .pos-app-shell.invoice-print-open {
+    display: block !important;
+    width: auto !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    background: transparent !important;
+  }
+
+  .pos-app-shell.invoice-print-open > :not(.invoice-print-modal) {
+    display: none !important;
+  }
+
   .invoice-print-modal {
     position: static !important;
     display: block !important;

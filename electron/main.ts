@@ -934,6 +934,7 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
         silent: options.silent === true,
         ...(printerName ? { deviceName: printerName } : {}),
         ...(pageSize ? { pageSize } : {}),
+        scaleFactor: 100,
         printBackground: true,
         margins: { marginType: 'none' },
       },
