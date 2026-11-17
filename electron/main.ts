@@ -850,22 +850,29 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
       throw new Error('Printer page size is invalid.');
     }
     const candidate = options.pageSize as { width?: unknown; height?: unknown };
+    const width = candidate.width;
+    const height = candidate.height;
+    const isA4PageSize = width === 210000 && height === 297000;
+    const isThermalPageSize =
+      typeof width === 'number' &&
+      typeof height === 'number' &&
+      width >= 30000 &&
+      width <= 100000 &&
+      height >= 10000;
     if (
-      typeof candidate.width !== 'number' ||
-      typeof candidate.height !== 'number' ||
-      !Number.isFinite(candidate.width) ||
-      !Number.isFinite(candidate.height) ||
-      candidate.width < 30000 ||
-      candidate.width > 100000 ||
-      candidate.height < 10000 ||
-      !Number.isSafeInteger(candidate.width) ||
-      !Number.isSafeInteger(candidate.height)
+      typeof width !== 'number' ||
+      typeof height !== 'number' ||
+      !Number.isFinite(width) ||
+      !Number.isFinite(height) ||
+      !Number.isSafeInteger(width) ||
+      !Number.isSafeInteger(height) ||
+      (!isA4PageSize && !isThermalPageSize)
     ) {
       throw new Error('Printer page size is invalid.');
     }
     pageSize = {
-      width: Math.round(candidate.width),
-      height: Math.round(candidate.height),
+      width,
+      height,
     };
   }
   const printerName = typeof options.printerName === 'string' ? options.printerName : undefined;

@@ -38,7 +38,7 @@ Runs in sequence:
 2. `electron:compile` — TypeScript → `dist-electron/` + esbuild server bundle
 3. `electron-builder --win nsis --x64` — packages and creates the NSIS installer
 
-Output: `release\aptPOS-Setup-<version>.exe` (version is read from `package.json`; current: `1.0.12`)
+Output: `release\aptPOS-Setup-<version>.exe` (version is read from `package.json`; current: `1.0.13`)
 
 ## Rebuild after source changes
 
@@ -56,7 +56,7 @@ npm run clean && npm run electron:build
 
 Packaged apps check the configured GitHub Releases feed on startup and can also check from Settings. Updates download automatically and can be installed from the app.
 
-To publish a release, update the version in `package.json` and `package-lock.json`, then push a matching tag such as `v1.0.12`. The `.github/workflows/publish-release.yml` workflow builds the Windows installer and publishes the installer and update metadata to GitHub Releases.
+To publish a release, update the version in `package.json` and `package-lock.json`, then push a matching tag such as `v1.0.13`. The `.github/workflows/publish-release.yml` workflow builds the Windows installer and publishes the installer and update metadata to GitHub Releases.
 
 ## Window behaviour
 
