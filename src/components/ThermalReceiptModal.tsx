@@ -5,11 +5,13 @@ import type { PaperWidth, Sale, SalesReturnVoucher, StoreSettings } from '../typ
 import { useLanguage } from '../i18n/LanguageContext';
 import { generateZatcaTlvBase64 } from '../utils/zatcaQr';
 import {
-  applyThermalPageWidth,
+  applyThermalPageSize,
   measureThermalPageSize,
   printWithThermalPageSize,
   resolveInvoiceMarginsMm,
 } from '../utils/thermalPrinting';
+
+const A4_ITEMS_PER_PAGE = 15;
 
 interface ThermalReceiptModalProps {
   sale: Sale;
@@ -87,10 +89,9 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const handlePrint = async () => {
     setPrintError(null);
     try {
-      const isElectron = window.electronAPI?.isElectron === true;
       const thermalWidthMm = activeFormat === '58mm' ? 58 : 80;
-      const pageSize = activeFormat === 'A4' || isElectron
-        ? undefined
+      const pageSize = activeFormat === 'A4'
+        ? { width: 210_000, height: 297_000 }
         : measureThermalPageSize(
             document.querySelector<HTMLElement>('.thermal-receipt-print-area:not(.paper-a4)'),
             {
@@ -103,13 +104,12 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
       if (window.electronAPI?.isElectron) {
         const printerMode = templateSettings?.printerMode
           || (templateSettings?.defaultPrinter ? 'saved-printer' : 'system-default');
-        const removePageStyle = activeFormat === 'A4'
-          ? undefined
-          : applyThermalPageWidth(thermalWidthMm);
+        const removePageStyle = pageSize ? applyThermalPageSize(pageSize) : undefined;
         try {
           const result = await window.electronAPI.printReceipt({
             silent: printerMode !== 'choose-at-print-time',
             printerName: printerMode === 'saved-printer' ? templateSettings?.defaultPrinter || undefined : undefined,
+            pageSize,
           });
           if (!result.ok) {
             throw new Error(result.error || 'Receipt could not be printed.');
@@ -118,7 +118,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
           removePageStyle?.();
         }
       } else {
-        if (pageSize) printWithThermalPageSize(pageSize);
+        if (activeFormat !== 'A4' && pageSize) printWithThermalPageSize(pageSize);
         else window.print();
       }
       return true;
@@ -176,6 +176,13 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const showFooter = (templateSettings?.invoiceShowFooter ?? settings.invoiceShowFooter) !== false;
   const showQr = (templateSettings?.invoiceShowQrCode ?? settings.invoiceShowQrCode) !== false;
   const invoiceMarginsMm = resolveInvoiceMarginsMm(activeFormat, templateSettings?.invoiceMarginsMm);
+  const a4ItemPages = Array.from(
+    { length: Math.max(1, Math.ceil(sale.items.length / A4_ITEMS_PER_PAGE)) },
+    (_, pageIndex) => sale.items.slice(
+      pageIndex * A4_ITEMS_PER_PAGE,
+      (pageIndex + 1) * A4_ITEMS_PER_PAGE
+    )
+  );
 
   const subtotalExcl = (isInclusive && Math.abs(sale.subtotal - sale.total) < 0.05 && sale.taxAmount > 0)
     ? (sale.total - sale.taxAmount)
@@ -208,12 +215,12 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5"
+      className="invoice-print-modal fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5"
       role="dialog"
       aria-modal="true"
       aria-labelledby="tender-modal-title"
     >
-      <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-lg max-h-[92vh] overflow-hidden shadow-2xl flex flex-col">
+      <div className="invoice-print-dialog bg-white border border-slate-200 rounded-2xl w-full max-w-lg max-h-[92vh] overflow-hidden shadow-2xl flex flex-col">
         <div className="no-print px-5 py-4 border-b border-slate-200 flex items-start justify-between gap-3 shrink-0 bg-white">
           <div className="flex items-center gap-2 min-w-0">
             <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
@@ -357,7 +364,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
             /* A4 FORMAT TAX INVOICE                                    */
             /* ======================================================== */
             <div
-              className="thermal-receipt-print-area paper-a4 bg-white text-slate-900 font-sans p-6 sm:p-8 border border-slate-200 shadow-sm w-full max-w-[210mm] text-xs leading-normal space-y-3"
+              className="thermal-receipt-print-area paper-a4"
               style={{
                 '--invoice-margin-top': `${invoiceMarginsMm.top}mm`,
                 '--invoice-margin-right': `${invoiceMarginsMm.right}mm`,
@@ -365,6 +372,8 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                 '--invoice-margin-left': `${invoiceMarginsMm.left}mm`,
               } as React.CSSProperties}
             >
+              {a4ItemPages.map((pageItems, pageIndex) => (
+                <section className="a4-invoice-page" key={`invoice-page-${pageIndex + 1}`}>
               {/* Header Box: Store Information & Invoice Title */}
               <div className="border-b-2 border-slate-900 pb-3 flex flex-col sm:flex-row justify-between items-start gap-3">
                 <div className="space-y-0.5">
@@ -447,9 +456,11 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
-                    {sale.items.map((item, idx) => (
+                    {pageItems.map((item, pageItemIndex) => (
                       <tr key={item.id} className="hover:bg-slate-50/70">
-                        <td className="py-1.5 px-2.5 text-center text-slate-400 text-[10px]">{idx + 1}</td>
+                        <td className="py-1.5 px-2.5 text-center text-slate-400 text-[10px]">
+                          {pageIndex * A4_ITEMS_PER_PAGE + pageItemIndex + 1}
+                        </td>
                         <td className="py-1.5 px-2.5 font-sans">
                           {showNameEn && (
                             <div className="font-semibold text-slate-900 text-xs leading-tight">
@@ -492,7 +503,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               </div>
 
               {/* Financial Totals & QR Code Grid */}
-              <div className="grid grid-cols-2 gap-4 items-start pt-1">
+              {pageIndex === a4ItemPages.length - 1 && <div className="grid grid-cols-2 gap-4 items-start pt-1">
                 {/* Left: Invoice QR Code */}
                 <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
                   <div className="flex items-center gap-2.5">
@@ -553,9 +564,9 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                     <span>{c} {sale.changeDue.toFixed(2)}</span>
                   </div>
                 </div>
-              </div>
+              </div>}
 
-              {returnDetails.length > 0 && (
+              {pageIndex === a4ItemPages.length - 1 && returnDetails.length > 0 && (
                 <section className="rounded-lg border border-violet-200 overflow-hidden">
                   <div className="bg-violet-50 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wide text-violet-950">
                     Return Vouchers / سندات المرتجع
@@ -612,14 +623,21 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               )}
 
               {/* Footer Note */}
-              {showFooter && (
-                <div className="border-t border-slate-200 pt-2 text-center space-y-0.5 text-slate-500 text-[10px]">
-                  <div>{settings.receiptFooter}</div>
-                  {settings.receiptFooterAr && (
-                    <div className="font-arabic" dir="rtl">{settings.receiptFooterAr}</div>
-                  )}
+              <footer className="a4-invoice-footer">
+                {showFooter && (
+                  <div className="border-t border-slate-200 pt-2 text-center space-y-0.5 text-slate-500 text-[10px]">
+                    <div>{settings.receiptFooter}</div>
+                    {settings.receiptFooterAr && (
+                      <div className="font-arabic" dir="rtl">{settings.receiptFooterAr}</div>
+                    )}
+                  </div>
+                )}
+                <div className="text-right text-[9px] text-slate-500">
+                  Page {pageIndex + 1} of {a4ItemPages.length}
                 </div>
-              )}
+              </footer>
+                </section>
+              ))}
             </div>
           ) : (
             /* ======================================================== */

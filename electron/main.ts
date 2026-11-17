@@ -858,7 +858,8 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
       candidate.width < 30000 ||
       candidate.width > 100000 ||
       candidate.height < 10000 ||
-      candidate.height > 2000000
+      !Number.isSafeInteger(candidate.width) ||
+      !Number.isSafeInteger(candidate.height)
     ) {
       throw new Error('Printer page size is invalid.');
     }

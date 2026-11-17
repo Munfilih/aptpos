@@ -68,6 +68,11 @@
     margin: 0;
   }
 
+  @page invoice-a4 {
+    size: A4 portrait;
+    margin: 0;
+  }
+
   @page report {
     size: A4 landscape;
     margin: 12mm;
@@ -186,14 +191,31 @@
 
   .receipt-print-source {
     display: block !important;
-    position: fixed !important;
-    inset: 0 auto auto 0 !important;
+    position: static !important;
     width: 100% !important;
-    height: auto !important;
-    min-height: 0 !important;
     margin: 0 !important;
     padding: 0 !important;
-    transform: none !important;
+  }
+
+  .invoice-print-modal {
+    position: static !important;
+    display: block !important;
+    width: auto !important;
+    height: auto !important;
+    padding: 0 !important;
+    background: transparent !important;
+    overflow: visible !important;
+  }
+
+  .invoice-print-dialog {
+    display: block !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: none !important;
+    overflow: visible !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
   }
 
   /* Thermal roll format defaults (80mm) */
@@ -226,26 +248,72 @@
     max-width: 58mm !important;
   }
 
-  /* A4 Format Tax Invoice - Left-aligned, full printable width, zero auto margin */
+  /* A4 pages flow separately so every item is paginated without clipping. */
   .thermal-receipt-print-area.paper-a4 {
-    position: absolute !important;
-    left: 0 !important;
-    top: 0 !important;
-    width: 100% !important;
+    position: static !important;
+    display: block !important;
+    width: 210mm !important;
     max-width: none !important;
     margin: 0 !important;
-    padding:
-      var(--invoice-margin-top, 0mm)
-      var(--invoice-margin-right, 0mm)
-      var(--invoice-margin-bottom, 0mm)
-      var(--invoice-margin-left, 0mm) !important;
-    font-size: 11px !important;
+    padding: 0 !important;
     background: #ffffff !important;
     color: #000000 !important;
     box-shadow: none !important;
     border: none !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
+  }
+
+  .a4-invoice-page {
+    page: invoice-a4;
+    box-sizing: border-box !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 3mm !important;
+    width: 210mm !important;
+    height: 297mm !important;
+    padding:
+      var(--invoice-margin-top, 5mm)
+      var(--invoice-margin-right, 5mm)
+      var(--invoice-margin-bottom, 5mm)
+      var(--invoice-margin-left, 5mm) !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    break-after: page;
+    page-break-after: always;
+  }
+
+  .a4-invoice-page:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  .a4-invoice-page > .border,
+  .a4-invoice-page > section {
+    flex-shrink: 0;
+  }
+
+  .a4-invoice-page .overflow-hidden {
+    overflow: visible !important;
+  }
+
+  .a4-invoice-page table {
+    width: 100% !important;
+    table-layout: fixed !important;
+  }
+
+  .a4-invoice-page thead {
+    display: table-header-group;
+  }
+
+  .a4-invoice-page tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .a4-invoice-footer {
+    margin-top: auto;
+    flex-shrink: 0;
   }
 
   .no-print {
