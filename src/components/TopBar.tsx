@@ -235,7 +235,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         >
           {/* Backdrop */}
           <div
-            className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs transition-opacity"
+            className="fixed inset-0 bg-slate-900/50 transition-opacity"
             onClick={() => setShowNavigationDrawer(false)}
           />
 

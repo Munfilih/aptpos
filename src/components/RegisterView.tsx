@@ -36,7 +36,11 @@ import { useLanguage } from '../i18n/LanguageContext';
 import { ProductImage } from './ProductImage';
 import { getPaymentMethods } from '../utils/paymentMethods';
 import { getKotNumberFromInvoice } from '../utils/documentNumbers';
-import { measureThermalPageSize, printWithThermalPageSize } from '../utils/thermalPrinting';
+import {
+  applyThermalPageSize,
+  measureThermalPageSize,
+  printWithThermalPageSize,
+} from '../utils/thermalPrinting';
 
 export interface InvoiceTab {
   id: string;
@@ -52,7 +56,13 @@ export interface InvoiceTab {
   cashTenderedManuallySet?: boolean;
   cardTendered?: string;
   editingSaleId?: number;
-  editingOriginalItems?: Array<{ productId: number; quantity: number; unitPrice: number }>;
+  editingOriginalItems?: Array<{
+    productId: number;
+    quantity: number;
+    unitPrice: number;
+    unitId?: string;
+    unitsPerBase?: number;
+  }>;
   isHeld: boolean;
   createdAt: string;
 }
@@ -89,6 +99,14 @@ function isInventoryOption(value: unknown): value is InventoryOption {
 const REGISTER_STATE_KEY = 'counterline_register_state';
 const RPOS_TICKET_WIDTH_KEY = 'counterline_rpos_ticket_width';
 const DEFAULT_RPOS_TICKET_WIDTH = 320;
+
+function getCartItemLineId(item: CartItem): string {
+  return item.lineId || `${item.product.id}:${item.unitId || 'base'}`;
+}
+
+function getCartItemUnitsPerBase(item: CartItem): number {
+  return item.unitsPerBase || 1;
+}
 
 function loadRposTicketWidth(): number {
   try {
@@ -239,12 +257,13 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   const [rposCategories, setRposCategories] = useState<Array<{ value: string; imageData: string }>>([]);
   const [rposCategoriesLoaded, setRposCategoriesLoaded] = useState(false);
   const [rposCategoryError, setRposCategoryError] = useState<string | null>(null);
-  const [editingTicketItemId, setEditingTicketItemId] = useState<number | null>(null);
-  const [selectedTicketItemId, setSelectedTicketItemId] = useState<number | null>(null);
+  const [editingTicketItemId, setEditingTicketItemId] = useState<string | null>(null);
+  const [selectedTicketItemId, setSelectedTicketItemId] = useState<string | null>(null);
   const [zeroPriceDialogItems, setZeroPriceDialogItems] = useState<CartItem[] | null>(null);
-  const [selectedZeroPriceItemId, setSelectedZeroPriceItemId] = useState<number | null>(null);
+  const [selectedZeroPriceItemId, setSelectedZeroPriceItemId] = useState<string | null>(null);
   const [ticketEditPrice, setTicketEditPrice] = useState('');
   const [ticketEditQuantity, setTicketEditQuantity] = useState('');
+  const [ticketEditUnitId, setTicketEditUnitId] = useState('');
   const [customerSearch, setCustomerSearch] = useState('');
   const [isCustomerPickerOpen, setIsCustomerPickerOpen] = useState(false);
 
@@ -485,18 +504,23 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         }
       );
       if (window.electronAPI?.isElectron) {
-        const result = await window.electronAPI.printReceipt({
-          silent: true,
-          printerName: settings.kotPrinter || undefined,
-          pageSize: kotPageSize,
-        });
-        if (!result.ok) {
-          throw new Error(result.error || 'Kitchen order ticket could not be printed.');
+        const removePageStyle = applyThermalPageSize(kotPageSize);
+        try {
+          const result = await window.electronAPI.printReceipt({
+            silent: true,
+            printerName: settings.kotPrinter || undefined,
+            pageSize: kotPageSize,
+          });
+          if (!result.ok) {
+            throw new Error(result.error || 'Kitchen order ticket could not be printed.');
+          }
+          setFeedback({
+            type: 'info',
+            text: `KOT ${kotNumber} sent.`,
+          });
+        } finally {
+          removePageStyle();
         }
-        setFeedback({
-          type: 'info',
-          text: `KOT ${kotNumber} sent.`,
-        });
       } else {
         printWithThermalPageSize(kotPageSize);
         setFeedback({
@@ -586,7 +610,8 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     for (const item of restoredSale.items) {
       originalQuantities.set(
         item.productId,
-        (originalQuantities.get(item.productId) || 0) + item.quantity
+        (originalQuantities.get(item.productId) || 0) +
+          item.quantity * (item.unitsPerBase || 1)
       );
     }
 
@@ -597,6 +622,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             ...existingProduct,
             retailPrice: item.unitPrice,
             stock: existingProduct.stock + (originalQuantities.get(item.productId) || 0),
+            unit: item.unitName || existingProduct.unit,
           }
         : {
             id: item.productId,
@@ -610,11 +636,24 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             stock: 100,
             reorderLevel: 5,
             unit: 'ea',
+            multiUnits: item.unitId
+              ? [{
+                  id: item.unitId,
+                  name: item.unitName || 'Unit',
+                  barcode: '',
+                  unitsPerBase: item.unitsPerBase || 1,
+                  price: item.unitPrice,
+                }]
+              : [],
             updatedAt: new Date().toISOString(),
           };
       return {
         product,
         quantity: item.quantity,
+        unitId: item.unitId,
+        unitName: item.unitName || product.unit,
+        unitsPerBase: item.unitsPerBase || 1,
+        lineId: `${item.productId}:${item.unitId || 'base'}`,
       };
     });
 
@@ -636,6 +675,8 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         productId: item.productId,
         quantity: item.quantity,
         unitPrice: item.unitPrice,
+        unitId: item.unitId,
+        unitsPerBase: item.unitsPerBase || 1,
       })),
       isHeld: false,
       createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -783,132 +824,208 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     }, 50);
   };
 
-  // Add Product to Cart with stock safeguards
-  const addToCart = (product: Product) => {
-    setFeedback(null);
-    const cartProduct = cart.find((item) => item.product.id === product.id)?.product;
-    const originalItem = activeTab.editingOriginalItems?.find(
-      (item) => item.productId === product.id
+  const getOriginalBaseUnits = (productId: number) =>
+    (activeTab.editingOriginalItems || [])
+      .filter((item) => item.productId === productId)
+      .reduce((sum, item) => sum + item.quantity * (item.unitsPerBase || 1), 0);
+
+  const getReservedBaseUnits = (productId: number, exceptLineId?: string) =>
+    cart
+      .filter((item) => item.product.id === productId && getCartItemLineId(item) !== exceptLineId)
+      .reduce((sum, item) => sum + item.quantity * getCartItemUnitsPerBase(item), 0);
+
+  const getAvailableBaseUnits = (productId: number, exceptLineId?: string) => {
+    const product = products.find((entry) => entry.id === productId);
+    if (!product) {
+      const cartProduct = cart.find((item) => item.product.id === productId)?.product;
+      return Math.max(0, (cartProduct?.stock || 0) + getOriginalBaseUnits(productId) -
+        getReservedBaseUnits(productId, exceptLineId));
+    }
+    return Math.max(
+      0,
+      product.stock + getOriginalBaseUnits(productId) -
+        getReservedBaseUnits(productId, exceptLineId)
     );
-    const availableStock = cartProduct?.stock ?? product.stock + (originalItem?.quantity || 0);
-    if (!settings.allowNegativeStock && availableStock <= 0) {
-      setFeedback({ type: 'error', text: `${product.name} is currently out of stock.` });
+  };
+
+  const getUnitDetails = (product: Product, unitId?: string) => {
+    const baseProduct = products.find((entry) => entry.id === product.id) || product;
+    const multiUnit = unitId
+      ? baseProduct.multiUnits?.find((unit) => unit.id === unitId)
+      : undefined;
+    return {
+      unitId: multiUnit?.id,
+      unitName: multiUnit?.name || baseProduct.unit,
+      unitsPerBase: multiUnit?.unitsPerBase || 1,
+      unitPrice: multiUnit
+        ? multiUnit.price ?? baseProduct.retailPrice * multiUnit.unitsPerBase
+        : baseProduct.retailPrice,
+    };
+  };
+
+  const getMaxQuantityForItem = (
+    item: CartItem,
+    unitsPerBase = getCartItemUnitsPerBase(item)
+  ) => {
+    if (settings.allowNegativeStock) return 99999;
+    return getAvailableBaseUnits(item.product.id, getCartItemLineId(item)) / unitsPerBase;
+  };
+
+  // Add a product in its scanned or selected unit while reserving base-unit stock.
+  const addToCart = (product: Product, unitId?: string) => {
+    setFeedback(null);
+    const unit = getUnitDetails(product, unitId);
+    if (unitId && !unit.unitId) {
+      setFeedback({ type: 'error', text: `The selected unit is not available for ${product.name}.` });
       return;
     }
-    const productForCart = cartProduct || (originalItem
-      ? {
-          ...product,
-          stock: availableStock,
-          retailPrice: originalItem.unitPrice,
-        }
-      : product);
-
-    if (settings.barcodeScanBeep) {
-      playScannerBeep();
+    const isZeroPriced = unit.unitPrice <= 0;
+    const unitLinePrefix = `${product.id}:${unit.unitId || 'base'}`;
+    const lineId = isZeroPriced ? `${unitLinePrefix}:${crypto.randomUUID()}` : unitLinePrefix;
+    const existing = isZeroPriced
+      ? undefined
+      : cart.find(
+          (item) => item.product.id === product.id && (item.unitId || '') === (unit.unitId || '')
+        );
+    const availableBaseUnits = getAvailableBaseUnits(product.id);
+    if (!settings.allowNegativeStock && availableBaseUnits < unit.unitsPerBase) {
+      setFeedback({
+        type: 'error',
+        text: `${product.name} does not have enough base units in stock for one ${unit.unitName}.`,
+      });
+      return;
     }
+
+    const originalItem = activeTab.editingOriginalItems?.find(
+      (item) => item.productId === product.id && (item.unitId || '') === (unit.unitId || '')
+    );
+    const itemUnitPrice = existing?.product.retailPrice ??
+      (isZeroPriced ? unit.unitPrice : originalItem?.unitPrice ?? unit.unitPrice);
+    const productForCart: Product = {
+      ...product,
+      stock: product.stock + getOriginalBaseUnits(product.id),
+      unit: unit.unitName,
+      retailPrice: itemUnitPrice,
+    };
+    const nextItem: CartItem = {
+      product: productForCart,
+      quantity: 1,
+      unitId: unit.unitId,
+      unitName: unit.unitName,
+      unitsPerBase: unit.unitsPerBase,
+      lineId,
+    };
+    if (settings.barcodeScanBeep) playScannerBeep();
+    if (isZeroPriced) openTicketItemEditor(nextItem);
 
     setCart((prev) => {
-      const existing = prev.find((item) => item.product.id === product.id);
-      if (existing) {
-        if (!settings.allowNegativeStock && existing.quantity >= existing.product.stock) {
-          setFeedback({
-            type: 'error',
-            text: `Maximum available stock (${existing.product.stock}) reached for ${product.name}.`,
-          });
-          return prev;
-        }
+      const sameUnit = isZeroPriced
+        ? undefined
+        : prev.find(
+            (item) => item.product.id === product.id && (item.unitId || '') === (unit.unitId || '')
+          );
+      if (sameUnit) {
         return [
-          { ...existing, quantity: existing.quantity + 1 },
-          ...prev.filter((item) => item.product.id !== product.id),
+          { ...sameUnit, quantity: sameUnit.quantity + 1 },
+          ...prev.filter((item) => getCartItemLineId(item) !== getCartItemLineId(sameUnit)),
         ];
       }
-      return [{ product: productForCart, quantity: 1 }, ...prev];
+      return [nextItem, ...prev];
     });
-  };
-
-  const updateQuantity = (productId: number, nextQty: number) => {
-    setFeedback(null);
-    if (nextQty <= 0) {
-      setCart((prev) => prev.filter((item) => item.product.id !== productId));
-      return;
-    }
-    setCart((prev) =>
-      prev.map((item) => {
-        if (item.product.id !== productId) return item;
-        const clamped = settings.allowNegativeStock
-          ? nextQty
-          : Math.min(nextQty, item.product.stock);
-
-        if (!settings.allowNegativeStock && nextQty > item.product.stock) {
-          setFeedback({
-            type: 'error',
-            text: `Only ${item.product.stock} units of ${item.product.name} in stock.`,
-          });
-        }
-        return { ...item, quantity: clamped };
-      })
-    );
-  };
-
-  const updateLinePrice = (productId: number, nextPrice: number) => {
-    const validPrice = Math.max(0, Number(nextPrice) || 0);
-    setCart((prev) =>
-      prev.map((item) =>
-        item.product.id === productId
-          ? {
-              ...item,
-              product: {
-                ...item.product,
-                retailPrice: validPrice,
-              },
-            }
-          : item
-      )
-    );
   };
 
   const openTicketItemEditor = (item: CartItem) => {
     setTicketEditPrice(String(item.product.retailPrice));
     setTicketEditQuantity(String(item.quantity));
-    setEditingTicketItemId(item.product.id);
+    setTicketEditUnitId(item.unitId || '');
+    setEditingTicketItemId(getCartItemLineId(item));
   };
 
   const saveTicketItemEdits = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const item = cart.find((cartItem) => cartItem.product.id === editingTicketItemId);
+    const item = cart.find((cartItem) => getCartItemLineId(cartItem) === editingTicketItemId);
     const price = Number(ticketEditPrice);
     const quantity = Number(ticketEditQuantity);
+    const unit = item ? getUnitDetails(item.product, ticketEditUnitId || undefined) : null;
 
-    if (!item || !Number.isFinite(price) || price < 0 || !Number.isFinite(quantity) || quantity < 1) {
+    if (
+      !item ||
+      !unit ||
+      (ticketEditUnitId && !unit.unitId) ||
+      !Number.isFinite(price) ||
+      price < 0 ||
+      !Number.isFinite(quantity) ||
+      quantity < 1 ||
+      (unit.unitId !== undefined && !Number.isInteger(quantity))
+    ) {
       setFeedback({ type: 'error', text: isRtl ? 'أدخل سعراً وكمية صالحين.' : 'Enter a valid price and quantity.' });
       return;
     }
 
-    if (!settings.allowNegativeStock && quantity > item.product.stock) {
+    const nextLineId = unit.unitPrice <= 0
+      ? (item.unitId || '') === (unit.unitId || '')
+        ? getCartItemLineId(item)
+        : `${item.product.id}:${unit.unitId || 'base'}:${crypto.randomUUID()}`
+      : `${item.product.id}:${unit.unitId || 'base'}`;
+    if (
+      unit.unitPrice > 0 &&
+      cart.some(
+        (entry) =>
+          entry !== item &&
+          entry.product.id === item.product.id &&
+          (entry.unitId || '') === (unit.unitId || '')
+      )
+    ) {
       setFeedback({
         type: 'error',
-        text: `Only ${item.product.stock} units of ${item.product.name} in stock.`,
+        text: isRtl
+          ? 'هذه الوحدة موجودة بالفعل في الفاتورة.'
+          : 'This unit already has a line on the ticket.',
       });
       return;
     }
 
-    updateLinePrice(item.product.id, price);
-    updateQuantity(item.product.id, quantity);
+    if (!settings.allowNegativeStock && quantity > getMaxQuantityForItem(item, unit.unitsPerBase)) {
+      setFeedback({
+        type: 'error',
+        text: `Only ${getMaxQuantityForItem(item, unit.unitsPerBase)} ${unit.unitName} available.`,
+      });
+      return;
+    }
+
+    setCart((prev) =>
+      prev.map((entry) =>
+        getCartItemLineId(entry) === editingTicketItemId
+          ? {
+              ...entry,
+              quantity,
+              unitId: unit.unitId,
+              unitName: unit.unitName,
+              unitsPerBase: unit.unitsPerBase,
+              lineId: nextLineId,
+              product: { ...entry.product, unit: unit.unitName, retailPrice: price },
+            }
+          : entry
+      )
+    );
+    setFeedback(null);
+    setSelectedTicketItemId(nextLineId);
     setEditingTicketItemId(null);
   };
 
   const adjustTicketEditQuantity = (delta: number) => {
-    const item = cart.find((cartItem) => cartItem.product.id === editingTicketItemId);
+    const item = cart.find((cartItem) => getCartItemLineId(cartItem) === editingTicketItemId);
     const currentQuantity = Number(ticketEditQuantity);
     const current = Number.isFinite(currentQuantity) && currentQuantity >= 1 ? currentQuantity : 1;
-    const maximum = settings.allowNegativeStock ? 99999 : item?.product.stock ?? 99999;
+    const units = item ? getUnitDetails(item.product, ticketEditUnitId || undefined).unitsPerBase : 1;
+    const maximum = item ? getMaxQuantityForItem(item, units) : 99999;
     setTicketEditQuantity(String(Math.max(1, Math.min(maximum, current + delta))));
   };
 
-  const removeFromCart = (productId: number) => {
-    setCart((prev) => prev.filter((item) => item.product.id !== productId));
-    if (editingTicketItemId === productId) setEditingTicketItemId(null);
-    if (selectedTicketItemId === productId) setSelectedTicketItemId(null);
+  const removeFromCart = (lineId: string) => {
+    setCart((prev) => prev.filter((item) => getCartItemLineId(item) !== lineId));
+    if (editingTicketItemId === lineId) setEditingTicketItemId(null);
+    if (selectedTicketItemId === lineId) setSelectedTicketItemId(null);
   };
 
   const clearCart = () => {
@@ -1037,10 +1154,24 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 
   // Fast indexed lookup for exact barcode scans
   const barcodeMap = useMemo(() => {
-    const bMap = new Map<string, Product>();
-    for (let i = 0; i < products.length; i++) {
-      const p = products[i];
-      if (p.barcode) bMap.set(p.barcode.toLowerCase(), p);
+    const bMap = new Map<string, { product: Product; unitId?: string }>();
+    for (const product of products) {
+      if (product.barcode) {
+        bMap.set(product.barcode.toLowerCase(), { product });
+      }
+      for (const unit of product.multiUnits || []) {
+        if (unit.barcode) {
+          bMap.set(unit.barcode.toLowerCase(), { product, unitId: unit.id });
+        }
+      }
+      for (const alias of product.additionalBarcodes || []) {
+        if (alias.barcode) {
+          bMap.set(alias.barcode.toLowerCase(), {
+            product,
+            unitId: alias.unitId || undefined,
+          });
+        }
+      }
     }
     return bMap;
   }, [products]);
@@ -1054,6 +1185,8 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         (p.nameAr && p.nameAr.toLowerCase().includes(q)) ||
         p.sku.toLowerCase().includes(q) ||
         p.barcode.toLowerCase().includes(q) ||
+        (p.multiUnits || []).some((unit) => unit.barcode.toLowerCase().includes(q)) ||
+        (p.additionalBarcodes || []).some((entry) => entry.barcode.toLowerCase().includes(q)) ||
         p.category.toLowerCase().includes(q)
       )
       .slice(0, 10);
@@ -1094,7 +1227,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     const exactMatch = barcodeMap.get(q);
 
     if (exactMatch) {
-      addToCart(exactMatch);
+      addToCart(exactMatch.product, exactMatch.unitId);
       setBarcodeInput('');
       focusBarcodeInput();
       return;
@@ -1160,8 +1293,12 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         set.add(p.category.trim());
       }
     });
-    return ['All', ...Array.from(set)];
+    return Array.from(set).filter((group) => group !== 'All');
   }, [products]);
+  const catalogCategoryFilters = useMemo(
+    () => ['All', ...availableGroups],
+    [availableGroups]
+  );
 
   const categoryImageByName = useMemo(
     () => new Map(rposCategories.map((category) => [category.value, category.imageData])),
@@ -1172,7 +1309,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     (group: string) => {
       switch (group) {
         case 'All':
-          return isRtl ? 'كل الفئات' : 'All Categories';
+          return isRtl ? 'الفئات' : 'Categories';
         case 'Beverages':
           return isRtl ? 'مشروبات' : 'Beverages';
         case 'Bakery & Pantry':
@@ -1192,7 +1329,6 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 
   const getCategoryCount = useCallback(
     (cat: string) => {
-      if (cat === 'All') return products.length;
       return products.filter((p) => p.category === cat).length;
     },
     [products]
@@ -1297,19 +1433,21 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 
     setFeedback(null);
     setZeroPriceDialogItems(zeroPriceItems);
-    setSelectedZeroPriceItemId(zeroPriceItems[0].product.id);
+    setSelectedZeroPriceItemId(getCartItemLineId(zeroPriceItems[0]));
     return true;
   };
 
   const returnToZeroPriceItem = () => {
-    const productId = selectedZeroPriceItemId ?? zeroPriceDialogItems?.[0]?.product.id;
+    const lineId = selectedZeroPriceItemId ?? (
+      zeroPriceDialogItems?.[0] ? getCartItemLineId(zeroPriceDialogItems[0]) : undefined
+    );
     setZeroPriceDialogItems(null);
-    if (productId === undefined || productId === null) return;
+    if (!lineId) return;
 
-    setSelectedTicketItemId(productId);
+    setSelectedTicketItemId(lineId);
     requestAnimationFrame(() => {
-      document
-        .querySelector(`[data-ticket-item-id="${productId}"]`)
+      Array.from(document.querySelectorAll<HTMLElement>('[data-ticket-item]'))
+        .find((element) => element.dataset.ticketItemId === lineId)
         ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     });
   };
@@ -1414,6 +1552,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             productId: item.product.id,
             quantity: item.quantity,
             unitPrice: item.product.retailPrice,
+            unitId: item.unitId || null,
           })),
         }),
       });
@@ -1535,6 +1674,10 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     const delta = e.key === 'ArrowLeft' ? 16 : -16;
     setRposTicketWidth((width) => Math.min(800, Math.max(150, width + delta)));
   };
+
+  const editingCartItem = cart.find(
+    (item) => getCartItemLineId(item) === editingTicketItemId
+  );
 
   return (
     <div
@@ -1749,7 +1892,13 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   type="button"
                   onClick={() => {
                     setCatalogSearch('');
-                    setIsBrowsingCategories(true);
+                    if (isBrowsingCategories) {
+                      setCatalogCategory('All');
+                      setCatalogPage(1);
+                      setIsBrowsingCategories(false);
+                    } else {
+                      setIsBrowsingCategories(true);
+                    }
                   }}
                   aria-pressed={isBrowsingCategories}
                   className={`inline-flex w-full shrink-0 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs font-bold shadow-xs sm:w-auto ${
@@ -1759,7 +1908,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   }`}
                 >
                   <LayoutGrid className={`h-4 w-4 ${isBrowsingCategories ? 'text-white' : 'text-blue-600'}`} />
-                  <span>{isRtl ? 'كل الفئات' : 'All Categories'}</span>
+                  <span>{getGroupDisplayName('All')}</span>
                 </button>
                 <div className="relative min-w-0 flex-1">
                   <Search className={`absolute top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 ${isRtl ? 'right-3' : 'left-3'}`} />
@@ -1771,9 +1920,11 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                       setIsBrowsingCategories(false);
                     }}
                     placeholder={
-                      isRtl
-                        ? `بحث في ${getGroupDisplayName(catalogCategory)}...`
-                        : `Search ${getGroupDisplayName(catalogCategory)}...`
+                      catalogCategory === 'All'
+                        ? (isRtl ? 'بحث في جميع المنتجات...' : 'Search all products...')
+                        : isRtl
+                          ? `بحث في ${getGroupDisplayName(catalogCategory)}...`
+                          : `Search ${getGroupDisplayName(catalogCategory)}...`
                     }
                     className={`w-full rounded-lg border border-slate-300 bg-slate-50 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 ${isRtl ? 'pr-9 pl-9' : 'pl-9 pr-9'}`}
                   />
@@ -1845,7 +1996,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                               <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-slate-300">
                                 <LayoutGrid className="h-10 w-10" />
                                 <span className="text-[10px] font-medium text-slate-400">
-                                  {group === 'All' ? (isRtl ? 'كل الفئات' : 'All Categories') : (isRtl ? 'لا توجد صورة' : 'No image')}
+                                  {isRtl ? 'لا توجد صورة' : 'No image'}
                                 </span>
                               </div>
                             )}
@@ -2185,16 +2336,17 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                     settings.taxType === 'inclusive'
                       ? lineSubtotal
                       : Number((lineSubtotal + lineTax).toFixed(2));
+                  const lineId = getCartItemLineId(item);
                   return (
                     <div
-                      key={item.product.id}
+                      key={lineId}
                       data-ticket-item
-                      data-ticket-item-id={item.product.id}
-                      onClick={() => setSelectedTicketItemId(item.product.id)}
+                      data-ticket-item-id={lineId}
+                      onClick={() => setSelectedTicketItemId(lineId)}
                       onDoubleClick={() => openTicketItemEditor(item)}
                       title={isRtl ? 'انقر مرتين لتعديل الصنف' : 'Double-click to edit item'}
                       className={`grid cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-xl border p-2.5 transition-colors ${
-                        selectedTicketItemId === item.product.id
+                        selectedTicketItemId === lineId
                           ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-200'
                           : 'border-slate-200 bg-slate-50 hover:bg-blue-50/40'
                       }`}
@@ -2208,12 +2360,12 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                             {item.product.nameAr || ''}
                           </span>
                         </div>
-                        {selectedTicketItemId === item.product.id && (
+                        {selectedTicketItemId === lineId && (
                           <button
                             type="button"
                             onClick={(event) => {
                               event.stopPropagation();
-                              removeFromCart(item.product.id);
+                              removeFromCart(lineId);
                             }}
                             aria-label={isRtl ? 'حذف الصنف' : 'Delete item'}
                             title={isRtl ? 'حذف الصنف' : 'Delete item'}
@@ -2228,13 +2380,13 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                           {item.quantity}
                         </span>
                         <span className="whitespace-nowrap text-xs font-semibold text-slate-600">
-                          · {item.product.unit || 'ea'} ·
+                          · {item.unitName || item.product.unit || 'ea'} ·
                         </span>
                         <button
                           type="button"
                           onClick={(event) => {
                             event.stopPropagation();
-                            setSelectedTicketItemId(item.product.id);
+                            setSelectedTicketItemId(lineId);
                             openTicketItemEditor(item);
                           }}
                           className="whitespace-nowrap font-mono text-xs font-bold text-blue-700 hover:text-blue-900"
@@ -2373,16 +2525,17 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                         settings.taxType === 'inclusive'
                           ? lineSubtotal
                           : Number((lineSubtotal + lineTax).toFixed(2));
+                      const lineId = getCartItemLineId(item);
                       return (
                         <div
-                          key={item.product.id}
+                            key={lineId}
                           data-ticket-item
-                          data-ticket-item-id={item.product.id}
-                          onClick={() => setSelectedTicketItemId(item.product.id)}
+                            data-ticket-item-id={lineId}
+                            onClick={() => setSelectedTicketItemId(lineId)}
                           onDoubleClick={() => openTicketItemEditor(item)}
                           title={isRtl ? 'انقر مرتين لتعديل الصنف' : 'Double-click to edit item'}
                           className={`grid cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-xl border p-2.5 transition-colors ${
-                            selectedTicketItemId === item.product.id
+                            selectedTicketItemId === lineId
                               ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-200'
                               : 'border-slate-200 bg-slate-50 hover:bg-blue-50/40'
                           }`}
@@ -2396,12 +2549,12 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                                 {item.product.nameAr || ''}
                               </span>
                             </div>
-                            {selectedTicketItemId === item.product.id && (
+                            {selectedTicketItemId === lineId && (
                               <button
                                 type="button"
                                 onClick={(event) => {
                                   event.stopPropagation();
-                                  removeFromCart(item.product.id);
+                                  removeFromCart(lineId);
                                 }}
                                 aria-label={isRtl ? 'حذف الصنف' : 'Delete item'}
                                 title={isRtl ? 'حذف الصنف' : 'Delete item'}
@@ -2416,13 +2569,13 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                               {item.quantity}
                             </span>
                             <span className="whitespace-nowrap text-xs font-semibold text-slate-600">
-                              · {item.product.unit || 'ea'} ·
+                              · {item.unitName || item.product.unit || 'ea'} ·
                             </span>
                             <button
                               type="button"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                setSelectedTicketItemId(item.product.id);
+                                setSelectedTicketItemId(lineId);
                                 openTicketItemEditor(item);
                               }}
                               className="whitespace-nowrap font-mono text-xs font-bold text-blue-700 hover:text-blue-900"
@@ -2807,12 +2960,13 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
               </p>
               <div className="max-h-60 space-y-1 overflow-y-auto">
                 {zeroPriceDialogItems.map((item) => {
-                  const isSelected = selectedZeroPriceItemId === item.product.id;
+                  const lineId = getCartItemLineId(item);
+                  const isSelected = selectedZeroPriceItemId === lineId;
                   return (
                     <button
-                      key={item.product.id}
+                      key={lineId}
                       type="button"
-                      onClick={() => setSelectedZeroPriceItemId(item.product.id)}
+                      onClick={() => setSelectedZeroPriceItemId(lineId)}
                       className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left text-xs ${
                         isSelected
                           ? 'border-blue-500 bg-blue-50 text-blue-900'
@@ -2868,6 +3022,33 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                 <X className="h-4 w-4" />
               </button>
             </div>
+            {(editingCartItem?.product.multiUnits?.length || 0) > 0 && (
+              <label className="mt-3 block text-xs font-semibold text-slate-600">
+                {isRtl ? 'الوحدة' : 'Unit'}
+                <select
+                  value={ticketEditUnitId}
+                  onChange={(event) => {
+                    const nextUnitId = event.target.value;
+                    setTicketEditUnitId(nextUnitId);
+                    if (editingCartItem) {
+                      const unit = getUnitDetails(editingCartItem.product, nextUnitId || undefined);
+                      setTicketEditPrice(String(unit.unitPrice));
+                      if (unit.unitId) setTicketEditQuantity('1');
+                    }
+                  }}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                >
+                  <option value="">
+                    {editingCartItem?.product.unit || (isRtl ? 'الوحدة الأساسية' : 'Base unit')}
+                  </option>
+                  {editingCartItem?.product.multiUnits?.map((unit) => (
+                    <option key={unit.id} value={unit.id}>
+                      {unit.name} ({unit.unitsPerBase})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <label className="text-xs font-semibold text-slate-600">
                 {isRtl ? 'السعر' : 'Price'} ({c})
@@ -2901,8 +3082,15 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                     type="number"
                     inputMode="decimal"
                     min="1"
-                    step="any"
-                    max={settings.allowNegativeStock ? undefined : cart.find((item) => item.product.id === editingTicketItemId)?.product.stock}
+                    step={ticketEditUnitId ? '1' : 'any'}
+                    max={
+                      settings.allowNegativeStock || !editingCartItem
+                        ? undefined
+                        : getMaxQuantityForItem(
+                            editingCartItem,
+                            getUnitDetails(editingCartItem.product, ticketEditUnitId || undefined).unitsPerBase
+                          )
+                    }
                     required
                     value={ticketEditQuantity}
                     onFocus={(event) => event.currentTarget.select()}
@@ -2913,7 +3101,16 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   <button
                     type="button"
                     onClick={() => adjustTicketEditQuantity(1)}
-                    disabled={!settings.allowNegativeStock && Number(ticketEditQuantity) >= (cart.find((item) => item.product.id === editingTicketItemId)?.product.stock ?? 0)}
+                    disabled={
+                      !settings.allowNegativeStock &&
+                      Number(ticketEditQuantity) >=
+                        (editingCartItem
+                          ? getMaxQuantityForItem(
+                              editingCartItem,
+                              getUnitDetails(editingCartItem.product, ticketEditUnitId || undefined).unitsPerBase
+                            )
+                          : 0)
+                    }
                     aria-label={isRtl ? 'زيادة الكمية' : 'Increase quantity'}
                     className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
                   >
@@ -3287,10 +3484,11 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             </div>
             <div className="divide-y divide-dashed divide-black">
               {cart.map((item) => (
-                <div key={item.product.id} className="flex items-start gap-3 py-3 text-base">
+                <div key={getCartItemLineId(item)} className="flex items-start gap-3 py-3 text-base">
                   <strong className="min-w-10 text-lg">×{item.quantity}</strong>
                   <span className="font-bold">
                     {isRtl && item.product.nameAr ? item.product.nameAr : item.product.name}
+                    {item.unitId && item.unitName ? ` (${item.unitName})` : ''}
                   </span>
                 </div>
               ))}
@@ -3444,7 +3642,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
               </div>
 
               <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-                {availableGroups.map((cat) => {
+                {catalogCategoryFilters.map((cat) => {
                   const active = catalogCategory === cat;
                   const catLabel =
                     cat === 'All'

@@ -1,6 +1,7 @@
-import { app, BrowserWindow, dialog, ipcMain, screen, shell, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, screen, shell, type IpcMainInvokeEvent } from 'electron';
 import electronUpdater from 'electron-updater';
-import { readFile, stat, writeFile } from 'fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, readFile, stat, writeFile } from 'fs/promises';
 import path from 'path';
 import http from 'http';
 import { fileURLToPath, pathToFileURL } from 'url';
@@ -22,6 +23,28 @@ let backendServer: Server | null = null;
 let trustedOrigin = '';
 let updateStatus: UpdateStatus = { state: 'idle' };
 let currentReleaseNotes: string | undefined;
+let closeApproved = false;
+let closeRequestPending = false;
+let closeHandlingPending = false;
+let scheduledBackupTimer: ReturnType<typeof setInterval> | null = null;
+let scheduledBackupCheckPending = false;
+let lastScheduledBackupAttemptDate = '';
+let backupInProgress: Promise<BackupResult> | null = null;
+
+interface BackupPreferences {
+  directory?: string;
+  mode?: 'on-close' | 'manual' | 'scheduled';
+  scheduledTime?: string;
+  lastScheduledBackupDate?: string;
+  googleDriveClientId?: string;
+  encryptedGoogleDriveRefreshToken?: string;
+}
+
+type BackupMode = NonNullable<BackupPreferences['mode']>;
+type BackupResult = { filePath: string; googleDriveUploaded: boolean };
+
+const DEFAULT_BACKUP_MODE: BackupMode = 'on-close';
+const DEFAULT_SCHEDULED_BACKUP_TIME = '02:00';
 
 function normalizeReleaseNotes(releaseNotes: unknown): string | undefined {
   if (typeof releaseNotes === 'string') return releaseNotes.trim() || undefined;
@@ -147,6 +170,490 @@ function openExternalUrl(url: string): void {
   }
 }
 
+function getDefaultBackupDirectory(): string {
+  return path.join(app.getPath('documents'), 'aptPOS Backups');
+}
+
+function getBackupPreferencesPath(): string {
+  return path.join(app.getPath('userData'), 'backup-preferences.json');
+}
+
+async function readBackupPreferences(): Promise<BackupPreferences> {
+  try {
+    const rawPreferences = await readFile(getBackupPreferencesPath(), 'utf8');
+    const parsed: unknown = JSON.parse(rawPreferences);
+    if (typeof parsed !== 'object' || parsed === null) {
+      throw new Error('Saved backup settings are invalid.');
+    }
+    if (
+      ('directory' in parsed && (
+        typeof parsed.directory !== 'string' || !path.isAbsolute(parsed.directory)
+      )) ||
+      ('mode' in parsed &&
+        parsed.mode !== 'on-close' && parsed.mode !== 'manual' && parsed.mode !== 'scheduled') ||
+      ('scheduledTime' in parsed &&
+        (typeof parsed.scheduledTime !== 'string' ||
+          !/^([01]\d|2[0-3]):[0-5]\d$/.test(parsed.scheduledTime))) ||
+      ('lastScheduledBackupDate' in parsed && typeof parsed.lastScheduledBackupDate !== 'string') ||
+      ('googleDriveClientId' in parsed && typeof parsed.googleDriveClientId !== 'string') ||
+      ('encryptedGoogleDriveRefreshToken' in parsed &&
+        typeof parsed.encryptedGoogleDriveRefreshToken !== 'string')
+    ) {
+      throw new Error('Saved backup settings are invalid.');
+    }
+
+    return {
+      ...('directory' in parsed && typeof parsed.directory === 'string'
+        ? { directory: parsed.directory }
+        : {}),
+      ...('mode' in parsed &&
+      (parsed.mode === 'on-close' || parsed.mode === 'manual' || parsed.mode === 'scheduled')
+        ? { mode: parsed.mode }
+        : {}),
+      ...('scheduledTime' in parsed && typeof parsed.scheduledTime === 'string'
+        ? { scheduledTime: parsed.scheduledTime }
+        : {}),
+      ...('lastScheduledBackupDate' in parsed && typeof parsed.lastScheduledBackupDate === 'string'
+        ? { lastScheduledBackupDate: parsed.lastScheduledBackupDate }
+        : {}),
+      ...('googleDriveClientId' in parsed && typeof parsed.googleDriveClientId === 'string'
+        ? { googleDriveClientId: parsed.googleDriveClientId }
+        : {}),
+      ...('encryptedGoogleDriveRefreshToken' in parsed &&
+      typeof parsed.encryptedGoogleDriveRefreshToken === 'string'
+        ? { encryptedGoogleDriveRefreshToken: parsed.encryptedGoogleDriveRefreshToken }
+        : {}),
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return {};
+    }
+    throw error;
+  }
+}
+
+async function writeBackupPreferences(preferences: BackupPreferences): Promise<void> {
+  const preferencesPath = getBackupPreferencesPath();
+  await mkdir(path.dirname(preferencesPath), { recursive: true });
+  await writeFile(preferencesPath, JSON.stringify(preferences, null, 2), 'utf8');
+}
+
+async function getBackupDirectory(): Promise<string> {
+  const preferences = await readBackupPreferences();
+  return preferences.directory || getDefaultBackupDirectory();
+}
+
+function isBackupMode(value: unknown): value is BackupMode {
+  return value === 'on-close' || value === 'manual' || value === 'scheduled';
+}
+
+async function getBackupConfiguration(): Promise<{
+  directory: string;
+  mode: BackupMode;
+  scheduledTime: string;
+}> {
+  const preferences = await readBackupPreferences();
+  return {
+    directory: preferences.directory || getDefaultBackupDirectory(),
+    mode: preferences.mode || DEFAULT_BACKUP_MODE,
+    scheduledTime: preferences.scheduledTime || DEFAULT_SCHEDULED_BACKUP_TIME,
+  };
+}
+
+async function saveBackupConfiguration(modeValue: unknown, timeValue: unknown): Promise<{
+  directory: string;
+  mode: BackupMode;
+  scheduledTime: string;
+}> {
+  if (!isBackupMode(modeValue)) throw new Error('Backup mode is invalid.');
+  if (typeof timeValue !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(timeValue)) {
+    throw new Error('Scheduled backup time is invalid.');
+  }
+
+  const preferences = await readBackupPreferences();
+  await writeBackupPreferences({
+    ...preferences,
+    mode: modeValue,
+    scheduledTime: timeValue,
+  });
+  return getBackupConfiguration();
+}
+
+async function saveBackupDirectory(directory: string): Promise<void> {
+  if (!path.isAbsolute(directory)) {
+    throw new Error('Backup folder path must be absolute.');
+  }
+  const preferences = await readBackupPreferences();
+  await writeBackupPreferences({
+    ...preferences,
+    directory,
+  });
+}
+
+async function readGoogleResponse(
+  response: Response,
+  operation: string
+): Promise<Record<string, unknown>> {
+  const responseText = await response.text();
+  let payload: unknown;
+  try {
+    payload = JSON.parse(responseText);
+  } catch {
+    throw new Error(`${operation} returned an invalid response (HTTP ${response.status}).`);
+  }
+
+  if (!response.ok) {
+    const detail =
+      typeof payload === 'object' && payload !== null && 'error_description' in payload &&
+      typeof payload.error_description === 'string'
+        ? payload.error_description
+        : typeof payload === 'object' && payload !== null && 'error' in payload &&
+          typeof payload.error === 'string'
+          ? payload.error
+          : `HTTP ${response.status}`;
+    throw new Error(`${operation} failed: ${detail}`);
+  }
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    throw new Error(`${operation} returned an invalid response.`);
+  }
+  return payload as Record<string, unknown>;
+}
+
+async function getGoogleDriveAuthorizationCode(
+  clientId: string,
+  state: string,
+  verifier: string
+): Promise<{ code: string; redirectUri: string }> {
+  const server = http.createServer();
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.removeListener('listening', onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.removeListener('error', onError);
+      resolve();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(0, '127.0.0.1');
+  });
+
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    server.close();
+    throw new Error('Could not start the Google Drive sign-in callback.');
+  }
+
+  const redirectUri = `http://127.0.0.1:${address.port}/oauth2callback`;
+  const challenge = createHash('sha256').update(verifier).digest('base64url');
+  const authorizationUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  authorizationUrl.search = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: 'https://www.googleapis.com/auth/drive.file',
+    access_type: 'offline',
+    prompt: 'consent',
+    state,
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+  }).toString();
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let settled = false;
+  let completeAuthorization: (result: { code: string } | { error: Error }) => void = () => {};
+  const authorizationCode = new Promise<string>((resolve, reject) => {
+    completeAuthorization = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      server.removeListener('request', onRequest);
+      server.close();
+      if ('error' in result) reject(result.error);
+      else resolve(result.code);
+    };
+
+    const onRequest = (request: http.IncomingMessage, response: http.ServerResponse) => {
+      const callbackUrl = new URL(request.url || '/', `http://127.0.0.1:${address.port}`);
+      if (callbackUrl.pathname !== '/oauth2callback') {
+        response.writeHead(404);
+        response.end('Not found.');
+        return;
+      }
+
+      response.setHeader('Content-Type', 'text/html; charset=utf-8');
+      response.setHeader('Cache-Control', 'no-store');
+      if (callbackUrl.searchParams.get('state') !== state) {
+        response.writeHead(400);
+        response.end('Google Drive authorization failed. Return to aptPOS.');
+        completeAuthorization({ error: new Error('Google Drive authorization response was invalid.') });
+        return;
+      }
+
+      const oauthError = callbackUrl.searchParams.get('error');
+      if (oauthError) {
+        response.writeHead(400);
+        response.end('Google Drive authorization was not completed. Return to aptPOS.');
+        completeAuthorization({
+          error: new Error(
+            oauthError === 'access_denied'
+              ? 'Google Drive connection was cancelled.'
+              : 'Google Drive authorization failed.'
+          ),
+        });
+        return;
+      }
+
+      const code = callbackUrl.searchParams.get('code');
+      if (!code) {
+        response.writeHead(400);
+        response.end('Google Drive authorization did not return a code. Return to aptPOS.');
+        completeAuthorization({ error: new Error('Google Drive authorization did not return a code.') });
+        return;
+      }
+
+      response.writeHead(200);
+      response.end('Google Drive is connected. You can return to aptPOS.');
+      completeAuthorization({ code });
+    };
+    server.on('request', onRequest);
+    timeout = setTimeout(() => {
+      completeAuthorization({ error: new Error('Google Drive connection timed out.') });
+    }, 5 * 60 * 1000);
+  });
+
+  try {
+    await shell.openExternal(authorizationUrl.toString());
+    return { code: await authorizationCode, redirectUri };
+  } catch (error) {
+    if (!settled) {
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      server.close();
+    }
+    throw error;
+  }
+}
+
+async function connectGoogleDrive(clientIdValue: unknown): Promise<{ clientId: string; connected: true }> {
+  const clientId = typeof clientIdValue === 'string' ? clientIdValue.trim() : '';
+  if (!/^[\w.-]+\.apps\.googleusercontent\.com$/.test(clientId)) {
+    throw new Error('Enter a valid Google OAuth Desktop app Client ID.');
+  }
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Secure credential storage is unavailable on this device.');
+  }
+
+  const verifier = randomBytes(32).toString('base64url');
+  const state = randomBytes(32).toString('hex');
+  const { code, redirectUri } = await getGoogleDriveAuthorizationCode(clientId, state, verifier);
+  const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: clientId,
+      code,
+      code_verifier: verifier,
+      grant_type: 'authorization_code',
+      redirect_uri: redirectUri,
+    }),
+  });
+  const tokenPayload = await readGoogleResponse(tokenResponse, 'Google Drive token exchange');
+  const refreshToken = tokenPayload.refresh_token;
+  if (typeof refreshToken !== 'string' || !refreshToken) {
+    throw new Error('Google did not provide a refresh token. Disconnect and reconnect Google Drive.');
+  }
+
+  const preferences = await readBackupPreferences();
+  await writeBackupPreferences({
+    ...preferences,
+    googleDriveClientId: clientId,
+    encryptedGoogleDriveRefreshToken: safeStorage.encryptString(refreshToken).toString('base64'),
+  });
+  return { clientId, connected: true };
+}
+
+async function uploadBackupToGoogleDrive(buffer: Buffer, fileName: string): Promise<void> {
+  const preferences = await readBackupPreferences();
+  if (!preferences.googleDriveClientId || !preferences.encryptedGoogleDriveRefreshToken) {
+    throw new Error('Google Drive is not connected.');
+  }
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Secure credential storage is unavailable on this device.');
+  }
+
+  const refreshToken = safeStorage.decryptString(
+    Buffer.from(preferences.encryptedGoogleDriveRefreshToken, 'base64')
+  );
+  const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: preferences.googleDriveClientId,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token',
+    }),
+  });
+  const tokenPayload = await readGoogleResponse(tokenResponse, 'Google Drive token refresh');
+  const accessToken = tokenPayload.access_token;
+  if (typeof accessToken !== 'string' || !accessToken) {
+    throw new Error('Google did not return an access token.');
+  }
+
+  const boundary = `aptpos-${randomBytes(16).toString('hex')}`;
+  const metadata = JSON.stringify({ name: fileName, mimeType: 'application/x-sqlite3' });
+  const body = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Type: application/x-sqlite3\r\n\r\n`),
+    buffer,
+    Buffer.from(`\r\n--${boundary}--`),
+  ]);
+  const uploadResponse = await fetch(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': `multipart/related; boundary=${boundary}`,
+      },
+      body,
+    }
+  );
+  if (!uploadResponse.ok) {
+    const detail = (await uploadResponse.text()).slice(0, 400).trim();
+    throw new Error(detail || `Google Drive upload failed (HTTP ${uploadResponse.status}).`);
+  }
+}
+
+async function performLocalDatabaseBackup(): Promise<BackupResult> {
+  if (!trustedOrigin) throw new Error('The local POS server is not ready.');
+  const response = await fetch(new URL('/api/database/backup', trustedOrigin));
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 400).trim();
+    throw new Error(detail || `Database backup failed (HTTP ${response.status}).`);
+  }
+
+  const backup = Buffer.from(await response.arrayBuffer());
+  if (backup.length === 0) throw new Error('The database backup was empty.');
+
+  const directory = await getBackupDirectory();
+  await mkdir(directory, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const filePath = path.join(directory, `aptpos-backup-${timestamp}.sqlite`);
+  await writeFile(filePath, backup, { flag: 'wx' });
+  const preferences = await readBackupPreferences();
+  if (preferences.googleDriveClientId && preferences.encryptedGoogleDriveRefreshToken) {
+    try {
+      await uploadBackupToGoogleDrive(backup, path.basename(filePath));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Unknown Google Drive error.';
+      throw new Error(`Local backup saved to ${filePath}, but Google Drive upload failed: ${detail}`);
+    }
+    return { filePath, googleDriveUploaded: true };
+  }
+  return { filePath, googleDriveUploaded: false };
+}
+
+function createLocalDatabaseBackup(): Promise<BackupResult> {
+  if (backupInProgress) return backupInProgress;
+  const operation = performLocalDatabaseBackup();
+  backupInProgress = operation;
+  void operation.then(
+    () => {
+      if (backupInProgress === operation) backupInProgress = null;
+    },
+    () => {
+      if (backupInProgress === operation) backupInProgress = null;
+    }
+  );
+  return operation;
+}
+
+function localDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+async function runScheduledBackupIfDue(): Promise<void> {
+  if (scheduledBackupCheckPending) return;
+  scheduledBackupCheckPending = true;
+  try {
+    const preferences = await readBackupPreferences();
+    if ((preferences.mode || DEFAULT_BACKUP_MODE) !== 'scheduled') return;
+
+    const scheduledTime = preferences.scheduledTime || DEFAULT_SCHEDULED_BACKUP_TIME;
+    const [scheduledHour, scheduledMinute] = scheduledTime.split(':').map(Number);
+    const now = new Date();
+    const today = localDateKey(now);
+    const currentMinute = now.getHours() * 60 + now.getMinutes();
+    if (
+      currentMinute < scheduledHour * 60 + scheduledMinute ||
+      preferences.lastScheduledBackupDate === today ||
+      lastScheduledBackupAttemptDate === today
+    ) {
+      return;
+    }
+
+    lastScheduledBackupAttemptDate = today;
+    try {
+      const result = await createLocalDatabaseBackup();
+      const latestPreferences = await readBackupPreferences();
+      await writeBackupPreferences({
+        ...latestPreferences,
+        lastScheduledBackupDate: today,
+      });
+      console.info(
+        `Scheduled database backup saved to ${result.filePath}` +
+        `${result.googleDriveUploaded ? ' and uploaded to Google Drive.' : '.'}`
+      );
+    } catch (error) {
+      console.error('Scheduled database backup failed:', error);
+    }
+  } catch (error) {
+    console.error('Could not check scheduled backup settings:', error);
+  } finally {
+    scheduledBackupCheckPending = false;
+  }
+}
+
+function requestCloseConfirmation(): void {
+  if (!mainWindow || mainWindow.isDestroyed() || closeRequestPending) return;
+  closeRequestPending = true;
+  mainWindow.webContents.send('pos:app:close-requested');
+}
+
+async function handleAppCloseAttempt(): Promise<void> {
+  if (
+    closeApproved ||
+    !mainWindow ||
+    mainWindow.isDestroyed() ||
+    closeHandlingPending ||
+    closeRequestPending
+  ) {
+    return;
+  }
+
+  closeHandlingPending = true;
+  try {
+    const preferences = await readBackupPreferences();
+    if ((preferences.mode || DEFAULT_BACKUP_MODE) === 'on-close') {
+      requestCloseConfirmation();
+      return;
+    }
+
+    closeApproved = true;
+    mainWindow?.close();
+  } catch (error) {
+    console.error('Could not read backup mode before closing:', error);
+    requestCloseConfirmation();
+  } finally {
+    closeHandlingPending = false;
+  }
+}
+
 async function startBackendServer(): Promise<number> {
   process.env.NODE_ENV = 'production';
   process.env.POS_DATA_DIR = path.join(app.getPath('userData'), 'data');
@@ -256,6 +763,11 @@ function createWindow(targetUrl: string): void {
   mainWindow.once('ready-to-show', () => {
     mainWindow?.maximize();
     mainWindow?.show();
+  });
+  mainWindow.on('close', (event) => {
+    if (closeApproved) return;
+    event.preventDefault();
+    void handleAppCloseAttempt();
   });
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -449,11 +961,116 @@ ipcMain.handle('pos:updates:install', (event) => {
   if (updateStatus.state !== 'downloaded') {
     throw new Error('No downloaded update is ready to install.');
   }
+  closeApproved = true;
   publishUpdateStatus({ state: 'installing' });
   autoUpdater.quitAndInstall(false, true);
 });
 
-app.on('before-quit', () => {
+ipcMain.handle('pos:backup:get-directory', (event) => {
+  assertTrustedSender(event);
+  return getBackupDirectory();
+});
+
+ipcMain.handle('pos:backup:get-configuration', (event) => {
+  assertTrustedSender(event);
+  return getBackupConfiguration();
+});
+
+ipcMain.handle('pos:backup:set-configuration', async (event, rawConfiguration: unknown) => {
+  assertTrustedSender(event);
+  if (!rawConfiguration || typeof rawConfiguration !== 'object') {
+    throw new Error('Backup settings are invalid.');
+  }
+  const configuration = rawConfiguration as { mode?: unknown; scheduledTime?: unknown };
+  const saved = await saveBackupConfiguration(configuration.mode, configuration.scheduledTime);
+  void runScheduledBackupIfDue();
+  return saved;
+});
+
+ipcMain.handle('pos:backup:choose-directory', async (event) => {
+  assertTrustedSender(event);
+  const currentDirectory = await getBackupDirectory();
+  let defaultPath = currentDirectory;
+  try {
+    if (!(await stat(currentDirectory)).isDirectory()) {
+      defaultPath = path.dirname(currentDirectory);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    defaultPath = path.dirname(currentDirectory);
+  }
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow!, {
+    title: 'Choose Backup Folder',
+    defaultPath,
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (canceled) return null;
+
+  const directory = filePaths[0];
+  if (!directory) return null;
+  await saveBackupDirectory(directory);
+  return directory;
+});
+
+ipcMain.handle('pos:backup:create', (event) => {
+  assertTrustedSender(event);
+  return createLocalDatabaseBackup();
+});
+
+ipcMain.handle('pos:drive:get-status', async (event) => {
+  assertTrustedSender(event);
+  const preferences = await readBackupPreferences();
+  return {
+    clientId: preferences.googleDriveClientId || '',
+    connected: Boolean(preferences.encryptedGoogleDriveRefreshToken),
+  };
+});
+
+ipcMain.handle('pos:drive:connect', async (event, clientId: unknown) => {
+  assertTrustedSender(event);
+  return connectGoogleDrive(clientId);
+});
+
+ipcMain.handle('pos:drive:disconnect', async (event) => {
+  assertTrustedSender(event);
+  const preferences = await readBackupPreferences();
+  await writeBackupPreferences({
+    ...(preferences.directory ? { directory: preferences.directory } : {}),
+    ...(preferences.googleDriveClientId
+      ? { googleDriveClientId: preferences.googleDriveClientId }
+      : {}),
+  });
+  return {
+    clientId: preferences.googleDriveClientId || '',
+    connected: false,
+  };
+});
+
+ipcMain.handle('pos:app:resolve-close', (event, shouldClose: unknown) => {
+  assertTrustedSender(event);
+  if (typeof shouldClose !== 'boolean') {
+    throw new Error('Close confirmation choice is invalid.');
+  }
+  if (!closeRequestPending) return false;
+
+  closeRequestPending = false;
+  if (shouldClose) {
+    closeApproved = true;
+    mainWindow?.close();
+  }
+  return true;
+});
+
+app.on('before-quit', (event) => {
+  if (!closeApproved && mainWindow && !mainWindow.isDestroyed()) {
+    event.preventDefault();
+    void handleAppCloseAttempt();
+    return;
+  }
+  if (scheduledBackupTimer) {
+    clearInterval(scheduledBackupTimer);
+    scheduledBackupTimer = null;
+  }
   if (!backendServer) return;
   backendServer.close((error) => {
     if (error) console.error('Failed to stop the local application server:', error);
@@ -488,6 +1105,10 @@ if (!app.requestSingleInstanceLock()) {
           void checkForUpdates();
         }, 5000);
       }
+      void runScheduledBackupIfDue();
+      scheduledBackupTimer = setInterval(() => {
+        void runScheduledBackupIfDue();
+      }, 60_000);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown startup error.';
       console.error('Failed to start aptPOS:', error);

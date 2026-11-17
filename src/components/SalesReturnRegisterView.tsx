@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowLeft, Plus, Receipt, RotateCcw, Search, Trash2 } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Plus, Receipt, RotateCcw, Search, Trash2 } from 'lucide-react';
 import type {
   CreateSalesReturnVoucherInput,
   PaymentMethod,
@@ -93,6 +93,7 @@ export const SalesReturnRegisterView: React.FC<SalesReturnRegisterViewProps> = (
   );
   const [invoiceSearch, setInvoiceSearch] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const currency = isRtl ? 'ر.س ' : settings.currencySymbol || 'SAR ';
@@ -415,7 +416,10 @@ export const SalesReturnRegisterView: React.FC<SalesReturnRegisterViewProps> = (
             <button
               type="button"
               disabled={isProcessing || voucherLines.length === 0}
-              onClick={handleProcess}
+              onClick={() => {
+                setError(null);
+                setIsConfirmOpen(true);
+              }}
               className="inline-flex items-center justify-center gap-2 rounded-xl bg-violet-700 px-5 py-3 text-sm font-bold text-white shadow-sm hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <RotateCcw className="h-4 w-4" />
@@ -435,6 +439,84 @@ export const SalesReturnRegisterView: React.FC<SalesReturnRegisterViewProps> = (
           )}
         </section>
       </div>
+      {isConfirmOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirm-sales-return-title"
+        >
+          <div className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-violet-100 text-violet-700">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div>
+                <h2 id="confirm-sales-return-title" className="text-base font-bold text-slate-900">
+                  {editingVoucher
+                    ? (isRtl ? 'تأكيد حفظ التعديلات' : 'Confirm return changes')
+                    : (isRtl ? 'تأكيد مرتجع المبيعات' : 'Confirm sales return')}
+                </h2>
+                <p className="text-xs text-slate-500">
+                  {isRtl ? 'يرجى مراجعة تفاصيل الإرجاع قبل المتابعة.' : 'Review the return details before continuing.'}
+                </p>
+              </div>
+            </div>
+            <div className="space-y-2 rounded-xl border border-violet-100 bg-violet-50/60 p-4 text-xs text-slate-700">
+              <div className="flex justify-between gap-3">
+                <span>{isRtl ? 'الفواتير' : 'Invoices'}</span>
+                <strong>{selectedSales.length}</strong>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>{isRtl ? 'الكمية المرتجعة' : 'Returned quantity'}</span>
+                <strong>{voucherLines.reduce((sum, line) => sum + line.quantity, 0)}</strong>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>{isRtl ? 'طريقة رد المبلغ' : 'Refund method'}</span>
+                <strong>{refundPaymentMethod}</strong>
+              </div>
+              <div className="flex justify-between gap-3 border-t border-violet-200 pt-2 text-sm">
+                <span className="font-semibold">{isRtl ? 'إجمالي المبلغ' : 'Total refund'}</span>
+                <strong className="font-mono">{currency}{voucherTotal.toFixed(2)}</strong>
+              </div>
+            </div>
+            <p className="text-xs leading-relaxed text-slate-600">
+              {isRtl
+                ? 'سيتم حفظ سند المرتجع وتحديث الكميات والأرصدة المرتبطة به.'
+                : 'Confirming will save the return voucher and update the related quantities and balances.'}
+            </p>
+            {error && (
+              <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
+                {error}
+              </p>
+            )}
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={() => setIsConfirmOpen(false)}
+                className="rounded-lg px-4 py-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+              >
+                {isRtl ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={() => {
+                  setIsConfirmOpen(false);
+                  void handleProcess();
+                }}
+                className="inline-flex items-center gap-2 rounded-lg bg-violet-700 px-4 py-2.5 text-xs font-semibold text-white hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                {isProcessing
+                  ? (isRtl ? 'جارٍ الحفظ...' : 'Saving...')
+                  : (isRtl ? 'تأكيد وحفظ' : 'Confirm and save')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

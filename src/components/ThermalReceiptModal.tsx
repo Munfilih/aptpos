@@ -305,7 +305,9 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                   </div>
                   {items.map((item) => (
                     <div key={`${voucher.id}-${item.saleItemId}`} className="mt-1 flex justify-between gap-3 text-slate-600">
-                      <span className="min-w-0 truncate">{item.productName} × {item.quantity}</span>
+                      <span className="min-w-0 truncate">
+                        {item.productName} × {item.quantity}{item.unitName ? ` ${item.unitName}` : ''}
+                      </span>
                       <span className="shrink-0 font-mono">{c} {item.refundAmount.toFixed(settings.decimalPoints ?? 2)}</span>
                     </div>
                   ))}
@@ -456,13 +458,19 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                               {item.nameAr}
                             </div>
                           )}
+                          {item.unitName && (
+                            <div className="text-[9px] text-slate-500">{item.unitName}</div>
+                          )}
                           {showBarcode && item.sku && (
                             <div className="text-[9px] text-slate-400 font-mono mt-0.5">
                               SKU: {item.sku}
                             </div>
                           )}
                         </td>
-                        <td className="py-1.5 px-2 text-center font-bold text-slate-900">{item.quantity}</td>
+                        <td className="py-1.5 px-2 text-center font-bold text-slate-900">
+                          {item.quantity}
+                          {item.unitName && <div className="text-[9px] font-normal text-slate-500">{item.unitName}</div>}
+                        </td>
                         <td className="py-1.5 px-2.5 text-right text-slate-700">
                           {c} {item.unitPrice.toFixed(2)}
                         </td>
@@ -558,7 +566,9 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                         </div>
                         {items.map((item) => (
                           <div key={`${voucher.id}-${item.saleItemId}`} className="mt-1 flex justify-between gap-2 text-slate-600">
-                            <span className="min-w-0">{item.productName} × {item.quantity}</span>
+                            <span className="min-w-0">
+                              {item.productName} × {item.quantity}{item.unitName ? ` ${item.unitName}` : ''}
+                            </span>
                             <span className="shrink-0 font-mono">{c} {item.refundAmount.toFixed(settings.decimalPoints ?? 2)}</span>
                           </div>
                         ))}
@@ -704,6 +714,9 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                         {item.nameAr}
                       </div>
                     )}
+                    {item.unitName && (
+                      <div className="text-[9px] text-slate-500">{item.unitName}</div>
+                    )}
                     {showBarcode && item.sku && (
                       <div className="text-[9px] text-slate-400 font-mono">
                         SKU: {item.sku}
@@ -711,7 +724,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                     )}
                     <div className="flex justify-between text-[11px] text-slate-700">
                       <span>
-                        {item.quantity} x {c} {item.unitPrice.toFixed(2)}
+                        {item.quantity}{item.unitName ? ` ${item.unitName}` : ''} x {c} {item.unitPrice.toFixed(2)}
                       </span>
                       <span className="font-semibold text-slate-900">
                         {c} {item.lineTotal.toFixed(2)}
@@ -774,7 +787,9 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                       </div>
                       {items.map((item) => (
                         <div key={`${voucher.id}-${item.saleItemId}`} className="flex justify-between gap-2 text-slate-600">
-                          <span className="min-w-0">{item.productName} × {item.quantity}</span>
+                          <span className="min-w-0">
+                            {item.productName} × {item.quantity}{item.unitName ? ` ${item.unitName}` : ''}
+                          </span>
                           <span className="shrink-0">{c} {item.refundAmount.toFixed(settings.decimalPoints ?? 2)}</span>
                         </div>
                       ))}

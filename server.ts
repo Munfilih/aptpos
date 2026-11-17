@@ -364,7 +364,11 @@ async function startServer(): Promise<Server> {
 
   app.delete('/api/products/:id', async (req, res) => {
     try {
-      await deleteProduct(Number(req.params.id));
+      const deleted = await deleteProduct(Number(req.params.id));
+      if (!deleted) {
+        res.status(404).json({ error: 'Product not found' });
+        return;
+      }
       res.json({ deleted: true });
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });

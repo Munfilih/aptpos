@@ -8,11 +8,13 @@ import type {
   CreateCashbookEntryInput,
   InventoryOption,
   InventoryOptionType,
+  ProductAdditionalBarcode,
   CreateSaleReturnInput,
   PaymentMethod,
   PrintJob,
   Product,
   ProductCategory,
+  ProductMultiUnit,
   PurchaseEntry,
   PurchaseItem,
   Sale,
@@ -99,7 +101,16 @@ function initSchema(database: Database): void {
       stock INTEGER NOT NULL DEFAULT 0,
       reorder_level INTEGER NOT NULL DEFAULT 5,
       unit TEXT NOT NULL DEFAULT 'ea',
+      multi_units TEXT NOT NULL DEFAULT '[]',
       updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS product_barcodes (
+      barcode TEXT PRIMARY KEY COLLATE NOCASE,
+      product_id INTEGER NOT NULL,
+      unit_id TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL CHECK (kind IN ('unit', 'alias')),
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS sales (
@@ -137,6 +148,9 @@ function initSchema(database: Database): void {
       quantity INTEGER NOT NULL,
       unit_price REAL NOT NULL,
       line_total REAL NOT NULL,
+      unit_id TEXT NOT NULL DEFAULT '',
+      unit_name TEXT NOT NULL DEFAULT '',
+      units_per_base INTEGER NOT NULL DEFAULT 1,
       FOREIGN KEY (sale_id) REFERENCES sales(id)
     );
 
@@ -294,6 +308,7 @@ function initSchema(database: Database): void {
     'ALTER TABLE products ADD COLUMN brand TEXT DEFAULT ""',
     'ALTER TABLE products ADD COLUMN image_data TEXT NOT NULL DEFAULT ""',
     'ALTER TABLE products ADD COLUMN image_path TEXT NOT NULL DEFAULT ""',
+    'ALTER TABLE products ADD COLUMN multi_units TEXT NOT NULL DEFAULT "[]"',
     'ALTER TABLE customers ADD COLUMN name_ar TEXT DEFAULT ""',
     'ALTER TABLE customers ADD COLUMN building_no TEXT DEFAULT ""',
     'ALTER TABLE customers ADD COLUMN street_name TEXT DEFAULT ""',
@@ -312,13 +327,20 @@ function initSchema(database: Database): void {
     'ALTER TABLE vendors ADD COLUMN country TEXT DEFAULT "Saudi Arabia"',
     'ALTER TABLE vendors ADD COLUMN cr_number TEXT DEFAULT ""',
     'ALTER TABLE sale_items ADD COLUMN name_ar TEXT DEFAULT ""',
+    'ALTER TABLE sale_items ADD COLUMN unit_id TEXT NOT NULL DEFAULT ""',
+    'ALTER TABLE sale_items ADD COLUMN unit_name TEXT NOT NULL DEFAULT ""',
+    'ALTER TABLE sale_items ADD COLUMN units_per_base INTEGER NOT NULL DEFAULT 1',
     'ALTER TABLE sale_returns ADD COLUMN voucher_id INTEGER',
     'ALTER TABLE sale_returns ADD COLUMN tax_refund_amount REAL NOT NULL DEFAULT 0',
     'ALTER TABLE products ADD COLUMN tax_rate REAL DEFAULT 15',
     'ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT ""',
     'CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)',
     'CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku)',
+    'CREATE INDEX IF NOT EXISTS idx_products_normalized_sku ON products(LOWER(TRIM(sku)))',
+    'CREATE INDEX IF NOT EXISTS idx_products_normalized_barcode ON products(LOWER(TRIM(barcode)))',
+    'CREATE INDEX IF NOT EXISTS idx_product_barcodes_normalized_barcode ON product_barcodes(LOWER(TRIM(barcode)))',
     'CREATE INDEX IF NOT EXISTS idx_products_name ON products(name)',
+    'CREATE INDEX IF NOT EXISTS idx_product_barcodes_product_id ON product_barcodes(product_id)',
     'CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id)',
     'CREATE INDEX IF NOT EXISTS idx_sale_returns_sale_id ON sale_returns(sale_id)',
     'CREATE INDEX IF NOT EXISTS idx_sale_returns_voucher_id ON sale_returns(voucher_id)',
@@ -518,7 +540,217 @@ function seedInitialData(database: Database): void {
 }
 
 
+function normalizeProductMultiUnits(value: unknown): ProductMultiUnit[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error('Multi-unit details must be a list.');
+
+  const ids = new Set<string>();
+  const names = new Set<string>();
+  return value.map((entry, index) => {
+    if (typeof entry !== 'object' || entry === null) {
+      throw new Error(`Multi-unit row ${index + 1} is invalid.`);
+    }
+    const record = entry as Record<string, unknown>;
+    const id = typeof record.id === 'string' ? record.id.trim() : '';
+    const name = typeof record.name === 'string' ? record.name.trim() : '';
+    const barcode = typeof record.barcode === 'string' ? record.barcode.trim() : '';
+    const unitsPerBase = Number(record.unitsPerBase);
+    const price = record.price === null || record.price === undefined || record.price === ''
+      ? null
+      : Number(record.price);
+    if (!id || id.length > 100 || ids.has(id)) {
+      throw new Error(`Multi-unit row ${index + 1} needs a unique ID.`);
+    }
+    if (!name || name.length > 100 || names.has(name.toLocaleLowerCase())) {
+      throw new Error(`Multi-unit row ${index + 1} needs a unique name.`);
+    }
+    if (!Number.isInteger(unitsPerBase) || unitsPerBase < 1) {
+      throw new Error(`Multi-unit row ${index + 1} must contain at least one base unit.`);
+    }
+    if (barcode.length > 255) {
+      throw new Error(`Multi-unit barcode in row ${index + 1} is too long.`);
+    }
+    if (price !== null && (!Number.isFinite(price) || price < 0)) {
+      throw new Error(`Multi-unit price in row ${index + 1} must be zero or greater.`);
+    }
+    ids.add(id);
+    names.add(name.toLocaleLowerCase());
+    return { id, name, barcode, unitsPerBase, price };
+  });
+}
+
+function normalizeProductAdditionalBarcodes(
+  value: unknown,
+  multiUnits: ProductMultiUnit[]
+): ProductAdditionalBarcode[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error('Additional barcodes must be a list.');
+  const unitIds = new Set(multiUnits.map((unit) => unit.id));
+  return value.flatMap((entry, index) => {
+    if (typeof entry !== 'object' || entry === null) {
+      throw new Error(`Additional barcode row ${index + 1} is invalid.`);
+    }
+    const record = entry as Record<string, unknown>;
+    const barcode = typeof record.barcode === 'string' ? record.barcode.trim() : '';
+    const unitId = typeof record.unitId === 'string' && record.unitId.trim()
+      ? record.unitId.trim()
+      : null;
+    if (!barcode) return [];
+    if (barcode.length > 255) {
+      throw new Error(`Additional barcode in row ${index + 1} is too long.`);
+    }
+    if (unitId && !unitIds.has(unitId)) {
+      throw new Error(`Additional barcode row ${index + 1} refers to an unknown multi-unit.`);
+    }
+    return [{ barcode, unitId }];
+  });
+}
+
+function validateProductSku(
+  database: Database,
+  productId: number | null,
+  sku: string
+): void {
+  const normalizedSku = sku.trim();
+  if (!normalizedSku) throw new Error('SKU is required.');
+
+  const conflict = database.exec(
+    `SELECT id FROM products
+     WHERE LOWER(TRIM(sku)) = LOWER(?) AND (? IS NULL OR id <> ?)
+     LIMIT 1`,
+    [normalizedSku, productId, productId]
+  );
+  if (conflict[0]?.values.length) {
+    throw new Error(`SKU ${normalizedSku} is already assigned to another product.`);
+  }
+
+  const barcodeConflict = database.exec(
+    `SELECT id FROM products
+     WHERE LOWER(TRIM(barcode)) = LOWER(?) AND (? IS NULL OR id <> ?)
+     UNION ALL
+     SELECT product_id AS id FROM product_barcodes
+     WHERE LOWER(TRIM(barcode)) = LOWER(?) AND (? IS NULL OR product_id <> ?)
+     LIMIT 1`,
+    [normalizedSku, productId, productId, normalizedSku, productId, productId]
+  );
+  if (barcodeConflict[0]?.values.length) {
+    throw new Error(`SKU ${normalizedSku} is already used as a barcode by another product.`);
+  }
+}
+
+function validateProductBarcodes(
+  database: Database,
+  productId: number | null,
+  baseBarcode: string,
+  multiUnits: ProductMultiUnit[],
+  additionalBarcodes: ProductAdditionalBarcode[]
+): void {
+  const entries = [
+    { barcode: baseBarcode.trim(), label: 'Base-unit barcode' },
+    ...multiUnits
+      .filter((unit) => unit.barcode)
+      .map((unit) => ({ barcode: unit.barcode, label: `Barcode for ${unit.name}` })),
+    ...additionalBarcodes.map((entry) => ({ barcode: entry.barcode, label: 'Additional barcode' })),
+  ];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (!entry.barcode) continue;
+    const normalized = entry.barcode.toLocaleLowerCase();
+    if (seen.has(normalized)) {
+      throw new Error(`${entry.label} duplicates another barcode on this product.`);
+    }
+    seen.add(normalized);
+
+    const primaryConflict = database.exec(
+      `SELECT id FROM products
+       WHERE LOWER(TRIM(barcode)) = LOWER(?) AND (? IS NULL OR id <> ?)
+       LIMIT 1`,
+      [entry.barcode, productId, productId]
+    );
+    const additionalConflict = database.exec(
+      `SELECT product_id FROM product_barcodes
+       WHERE barcode = ? AND (? IS NULL OR product_id <> ?)
+       LIMIT 1`,
+      [entry.barcode, productId, productId]
+    );
+    if (primaryConflict[0]?.values.length || additionalConflict[0]?.values.length) {
+      throw new Error(`Barcode ${entry.barcode} is already assigned to another product.`);
+    }
+
+    const skuConflict = database.exec(
+      `SELECT id FROM products
+       WHERE LOWER(TRIM(sku)) = LOWER(?) AND (? IS NULL OR id <> ?)
+       LIMIT 1`,
+      [entry.barcode, productId, productId]
+    );
+    if (skuConflict[0]?.values.length) {
+      throw new Error(`Barcode ${entry.barcode} is already assigned as a SKU to another product.`);
+    }
+  }
+}
+
+function syncProductBarcodes(
+  database: Database,
+  productId: number,
+  multiUnits: ProductMultiUnit[],
+  additionalBarcodes: ProductAdditionalBarcode[]
+): void {
+  database.run('DELETE FROM product_barcodes WHERE product_id = ?', [productId]);
+  const entries = [
+    ...multiUnits
+      .filter((unit) => unit.barcode)
+      .map((unit) => ({ barcode: unit.barcode, unitId: unit.id, kind: 'unit' as const })),
+    ...additionalBarcodes.map((entry) => ({
+      barcode: entry.barcode,
+      unitId: entry.unitId || '',
+      kind: 'alias' as const,
+    })),
+  ];
+  for (const entry of entries) {
+    database.run(
+      'INSERT INTO product_barcodes (barcode, product_id, unit_id, kind) VALUES (?, ?, ?, ?)',
+      [entry.barcode, productId, entry.unitId, entry.kind]
+    );
+  }
+}
+
+function loadProductAdditionalBarcodes(
+  database: Database,
+  productId: number
+): ProductAdditionalBarcode[] {
+  const result = database.exec(
+    `SELECT barcode, unit_id FROM product_barcodes
+     WHERE product_id = ? AND kind = 'alias' ORDER BY rowid`,
+    [productId]
+  );
+  return (result[0]?.values || []).map((row) => ({
+    barcode: String(row[0]),
+    unitId: String(row[1] || '') || null,
+  }));
+}
+
+function attachProductAdditionalBarcodes(database: Database, products: Product[]): Product[] {
+  const result = database.exec(
+    `SELECT product_id, barcode, unit_id FROM product_barcodes
+     WHERE kind = 'alias' ORDER BY rowid`
+  );
+  const aliasesByProduct = new Map<number, ProductAdditionalBarcode[]>();
+  for (const row of result[0]?.values || []) {
+    const productId = Number(row[0]);
+    const aliases = aliasesByProduct.get(productId) || [];
+    aliases.push({ barcode: String(row[1]), unitId: String(row[2] || '') || null });
+    aliasesByProduct.set(productId, aliases);
+  }
+  return products.map((product) => ({
+    ...product,
+    additionalBarcodes: aliasesByProduct.get(product.id) || [],
+  }));
+}
+
 function mapProductRow(row: unknown[]): Product {
+  const multiUnits = normalizeProductMultiUnits(
+    JSON.parse(String(row[16] || '[]')) as unknown
+  );
   return {
     id: Number(row[0]),
     sku: String(row[1]),
@@ -536,6 +768,8 @@ function mapProductRow(row: unknown[]): Product {
     brand: row[13] ? String(row[13]) : '',
     imageData: row[14] ? String(row[14]) : '',
     imagePath: row[15] ? String(row[15]) : '',
+    multiUnits,
+    additionalBarcodes: [],
   };
 }
 
@@ -566,12 +800,15 @@ export async function listProducts(filters?: {
 }): Promise<Product[]> {
   const database = await getDb();
   const res = database.exec(
-    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path
+    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units
      FROM products ORDER BY name ASC`
   );
   if (!res[0]) return [];
 
-  let products = res[0].values.map(mapProductRow);
+  let products = attachProductAdditionalBarcodes(
+    database,
+    res[0].values.map(mapProductRow)
+  );
 
   if (filters?.category && filters.category !== 'All') {
     products = products.filter((p) => p.category === filters.category);
@@ -802,39 +1039,58 @@ export async function createProduct(
 ): Promise<Product> {
   const database = await getDb();
   const now = new Date().toISOString();
-
-  database.run(
-    `INSERT INTO products (sku, barcode, name, name_ar, category, cost_price, retail_price, tax_rate, stock, reorder_level, unit, updated_at, brand, image_data, image_path)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      input.sku.trim(),
-      input.barcode.trim(),
-      input.name.trim(),
-      (input.nameAr || '').trim(),
-      input.category,
-      Number(input.costPrice),
-      Number(input.retailPrice),
-      input.taxRate !== undefined ? Number(input.taxRate) : 15,
-      Number(input.stock),
-      Number(input.reorderLevel),
-      input.unit.trim() || 'ea',
-      now,
-      input.brand || '',
-      normalizeProductImageData(input.imageData),
-      normalizeProductImagePath(input.imagePath),
-    ]
+  const multiUnits = normalizeProductMultiUnits(input.multiUnits);
+  const additionalBarcodes = normalizeProductAdditionalBarcodes(
+    input.additionalBarcodes,
+    multiUnits
   );
+  const barcode = input.barcode.trim();
+  validateProductSku(database, null, input.sku);
+  validateProductBarcodes(database, null, barcode, multiUnits, additionalBarcodes);
 
-  const idRes = database.exec('SELECT last_insert_rowid()');
-  const newId = Number(idRes[0].values[0][0]);
+  database.run('BEGIN TRANSACTION');
+  let newId: number;
+  try {
+    database.run(
+      `INSERT INTO products (sku, barcode, name, name_ar, category, cost_price, retail_price, tax_rate, stock, reorder_level, unit, updated_at, brand, image_data, image_path, multi_units)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.sku.trim(),
+        barcode,
+        input.name.trim(),
+        (input.nameAr || '').trim(),
+        input.category,
+        Number(input.costPrice),
+        Number(input.retailPrice),
+        input.taxRate !== undefined ? Number(input.taxRate) : 15,
+        Number(input.stock),
+        Number(input.reorderLevel),
+        input.unit.trim() || 'ea',
+        now,
+        input.brand || '',
+        normalizeProductImageData(input.imageData),
+        normalizeProductImagePath(input.imagePath),
+        JSON.stringify(multiUnits),
+      ]
+    );
+    newId = Number(database.exec('SELECT last_insert_rowid()')[0].values[0][0]);
+    syncProductBarcodes(database, newId, multiUnits, additionalBarcodes);
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
   saveDatabase();
 
   const created = database.exec(
-    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path
+    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units
      FROM products WHERE id = ?`,
     [newId]
   );
-  return mapProductRow(created[0].values[0]);
+  return {
+    ...mapProductRow(created[0].values[0]),
+    additionalBarcodes: loadProductAdditionalBarcodes(database, newId),
+  };
 }
 
 export async function updateProduct(
@@ -843,47 +1099,75 @@ export async function updateProduct(
 ): Promise<Product | null> {
   const database = await getDb();
   const existingRes = database.exec(
-    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path
+    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units
      FROM products WHERE id = ?`,
     [id]
   );
   if (!existingRes[0]?.values[0]) return null;
 
-  const current = mapProductRow(existingRes[0].values[0]);
+  const current = {
+    ...mapProductRow(existingRes[0].values[0]),
+    additionalBarcodes: loadProductAdditionalBarcodes(database, id),
+  };
+  const multiUnits = input.multiUnits !== undefined
+    ? normalizeProductMultiUnits(input.multiUnits)
+    : current.multiUnits || [];
+  const additionalBarcodes = input.additionalBarcodes !== undefined
+    ? normalizeProductAdditionalBarcodes(input.additionalBarcodes, multiUnits)
+    : normalizeProductAdditionalBarcodes(current.additionalBarcodes, multiUnits);
+  const barcode = input.barcode !== undefined ? input.barcode.trim() : current.barcode;
+  validateProductSku(
+    database,
+    id,
+    input.sku !== undefined ? input.sku : current.sku
+  );
+  validateProductBarcodes(database, id, barcode, multiUnits, additionalBarcodes);
   const now = new Date().toISOString();
 
-  database.run(
-    `UPDATE products
-     SET sku = ?, barcode = ?, name = ?, name_ar = ?, category = ?, cost_price = ?, retail_price = ?, tax_rate = ?, stock = ?, reorder_level = ?, unit = ?, updated_at = ?, brand = ?, image_data = ?, image_path = ?
-     WHERE id = ?`,
-    [
-      input.sku !== undefined ? input.sku.trim() : current.sku,
-      input.barcode !== undefined ? input.barcode.trim() : current.barcode,
-      input.name !== undefined ? input.name.trim() : current.name,
-      input.nameAr !== undefined ? input.nameAr.trim() : (current.nameAr || ''),
-      input.category !== undefined ? input.category : current.category,
-      input.costPrice !== undefined ? Number(input.costPrice) : current.costPrice,
-      input.retailPrice !== undefined ? Number(input.retailPrice) : current.retailPrice,
-      input.taxRate !== undefined ? Number(input.taxRate) : (current.taxRate ?? 15),
-      input.stock !== undefined ? Number(input.stock) : current.stock,
-      input.reorderLevel !== undefined ? Number(input.reorderLevel) : current.reorderLevel,
-      input.unit !== undefined ? input.unit.trim() : current.unit,
-      now,
-      input.brand !== undefined ? input.brand.trim() : (current.brand || ''),
-      input.imageData !== undefined ? normalizeProductImageData(input.imageData) : current.imageData || '',
-      input.imagePath !== undefined ? normalizeProductImagePath(input.imagePath) : current.imagePath || '',
-      id,
-    ]
-  );
+  database.run('BEGIN TRANSACTION');
+  try {
+    database.run(
+      `UPDATE products
+       SET sku = ?, barcode = ?, name = ?, name_ar = ?, category = ?, cost_price = ?, retail_price = ?, tax_rate = ?, stock = ?, reorder_level = ?, unit = ?, updated_at = ?, brand = ?, image_data = ?, image_path = ?, multi_units = ?
+       WHERE id = ?`,
+      [
+        input.sku !== undefined ? input.sku.trim() : current.sku,
+        barcode,
+        input.name !== undefined ? input.name.trim() : current.name,
+        input.nameAr !== undefined ? input.nameAr.trim() : (current.nameAr || ''),
+        input.category !== undefined ? input.category : current.category,
+        input.costPrice !== undefined ? Number(input.costPrice) : current.costPrice,
+        input.retailPrice !== undefined ? Number(input.retailPrice) : current.retailPrice,
+        input.taxRate !== undefined ? Number(input.taxRate) : (current.taxRate ?? 15),
+        input.stock !== undefined ? Number(input.stock) : current.stock,
+        input.reorderLevel !== undefined ? Number(input.reorderLevel) : current.reorderLevel,
+        input.unit !== undefined ? input.unit.trim() : current.unit,
+        now,
+        input.brand !== undefined ? input.brand.trim() : (current.brand || ''),
+        input.imageData !== undefined ? normalizeProductImageData(input.imageData) : current.imageData || '',
+        input.imagePath !== undefined ? normalizeProductImagePath(input.imagePath) : current.imagePath || '',
+        JSON.stringify(multiUnits),
+        id,
+      ]
+    );
+    syncProductBarcodes(database, id, multiUnits, additionalBarcodes);
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
 
   saveDatabase();
 
   const updatedRes = database.exec(
-    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path
+    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units
      FROM products WHERE id = ?`,
     [id]
   );
-  return mapProductRow(updatedRes[0].values[0]);
+  return {
+    ...mapProductRow(updatedRes[0].values[0]),
+    additionalBarcodes: loadProductAdditionalBarcodes(database, id),
+  };
 }
 
 export async function adjustProductStock(
@@ -905,7 +1189,31 @@ export async function adjustProductStock(
 
 export async function deleteProduct(id: number): Promise<boolean> {
   const database = await getDb();
-  database.run('DELETE FROM products WHERE id = ?', [id]);
+  if (!Number.isInteger(id) || id <= 0) return false;
+
+  const productRes = database.exec('SELECT 1 FROM products WHERE id = ?', [id]);
+  if (!productRes[0]?.values.length) return false;
+
+  const transactionRes = database.exec(
+    `SELECT 1 FROM sale_items WHERE product_id = ?
+     UNION ALL
+     SELECT 1 FROM purchase_items WHERE product_id = ?
+     LIMIT 1`,
+    [id, id]
+  );
+  if (transactionRes[0]?.values.length) {
+    throw new Error('Cannot delete a product with transaction history.');
+  }
+
+  database.run('BEGIN TRANSACTION');
+  try {
+    database.run('DELETE FROM product_barcodes WHERE product_id = ?', [id]);
+    database.run('DELETE FROM products WHERE id = ?', [id]);
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
   saveDatabase();
   return true;
 }
@@ -1050,7 +1358,7 @@ export async function listSales(): Promise<Sale[]> {
   if (!salesRes[0]) return [];
 
   const itemsRes = database.exec(
-    `SELECT id, sale_id, product_id, sku, product_name, quantity, unit_price, line_total, name_ar
+    `SELECT id, sale_id, product_id, sku, product_name, quantity, unit_price, line_total, name_ar, unit_id, unit_name, units_per_base
      FROM sale_items ORDER BY id ASC`
   );
 
@@ -1067,6 +1375,9 @@ export async function listSales(): Promise<Sale[]> {
         unitPrice: Number(row[6]),
         lineTotal: Number(row[7]),
         nameAr: row[8] ? String(row[8]) : undefined,
+        unitId: row[9] ? String(row[9]) : undefined,
+        unitName: row[10] ? String(row[10]) : undefined,
+        unitsPerBase: Number(row[11] || 1),
       };
       const list = itemsBySale.get(item.saleId) || [];
       list.push(item);
@@ -1159,6 +1470,7 @@ export interface CreateSaleInput {
   items: Array<{
     productId: number;
     quantity: number;
+    unitId?: string;
     unitPrice?: number;
   }>;
 }
@@ -1179,11 +1491,14 @@ export async function createSale(input: CreateSaleInput): Promise<{
     quantity: number;
     unitPrice: number;
     lineTotal: number;
+    unitId: string;
+    unitName: string;
+    unitsPerBase: number;
   }> = [];
 
   for (const reqItem of input.items) {
     const prodRes = database.exec(
-      `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand
+      `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units
        FROM products WHERE id = ?`,
       [reqItem.productId]
     );
@@ -1191,15 +1506,36 @@ export async function createSale(input: CreateSaleInput): Promise<{
       throw new Error(`Product #${reqItem.productId} not found.`);
     }
     const product = mapProductRow(prodRes[0].values[0]);
-    if (reqItem.quantity <= 0) {
+    if (!Number.isFinite(reqItem.quantity) || reqItem.quantity <= 0) {
       throw new Error(`Invalid quantity for ${product.name}.`);
     }
+    const multiUnit = reqItem.unitId
+      ? product.multiUnits?.find((unit) => unit.id === reqItem.unitId)
+      : undefined;
+    if (reqItem.unitId && !multiUnit) {
+      throw new Error(`The selected unit is not configured for ${product.name}.`);
+    }
+    if (multiUnit && !Number.isInteger(reqItem.quantity)) {
+      throw new Error(`Quantity for ${multiUnit.name} must be a whole number.`);
+    }
+    const unitsPerBase = multiUnit?.unitsPerBase ?? 1;
+    const defaultUnitPrice = multiUnit
+      ? multiUnit.price ?? product.retailPrice * unitsPerBase
+      : product.retailPrice;
     const unitPrice =
       reqItem.unitPrice !== undefined && reqItem.unitPrice >= 0
         ? Number(reqItem.unitPrice)
-        : product.retailPrice;
+        : defaultUnitPrice;
     const lineTotal = Number((unitPrice * reqItem.quantity).toFixed(2));
-    resolvedItems.push({ product, quantity: reqItem.quantity, unitPrice, lineTotal });
+    resolvedItems.push({
+      product,
+      quantity: reqItem.quantity,
+      unitPrice,
+      lineTotal,
+      unitId: multiUnit?.id || '',
+      unitName: multiUnit?.name || product.unit,
+      unitsPerBase,
+    });
   }
 
   const grossTotal = Number(
@@ -1272,7 +1608,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
       const row = existingSale[0].values[0];
       const saleId = Number(row[0]);
       const existingItems = database.exec(
-        'SELECT product_id, quantity, unit_price FROM sale_items WHERE sale_id = ? ORDER BY id ASC',
+        'SELECT product_id, quantity, unit_price, unit_id, units_per_base FROM sale_items WHERE sale_id = ? ORDER BY id ASC',
         [saleId]
       )[0]?.values || [];
       const sameItems =
@@ -1282,7 +1618,9 @@ export async function createSale(input: CreateSaleInput): Promise<{
           return (
             Number(existingItem[0]) === item.product.id &&
             Number(existingItem[1]) === item.quantity &&
-            Math.abs(Number(existingItem[2]) - item.unitPrice) < 0.005
+            Math.abs(Number(existingItem[2]) - item.unitPrice) < 0.005 &&
+            String(existingItem[3] || '') === item.unitId &&
+            Number(existingItem[4] || 1) === item.unitsPerBase
           );
         });
       const sameRequest =
@@ -1311,10 +1649,18 @@ export async function createSale(input: CreateSaleInput): Promise<{
   }
 
   if (!settings.allowNegativeStock) {
+    const requestedBaseUnits = new Map<number, number>();
     for (const item of resolvedItems) {
-      if (item.product.stock < item.quantity) {
+      requestedBaseUnits.set(
+        item.product.id,
+        (requestedBaseUnits.get(item.product.id) || 0) + item.quantity * item.unitsPerBase
+      );
+    }
+    for (const [productId, requestedUnits] of requestedBaseUnits) {
+      const product = resolvedItems.find((item) => item.product.id === productId)?.product;
+      if (product && product.stock < requestedUnits) {
         throw new Error(
-          `Insufficient stock for ${item.product.name} (${item.product.stock} available).`
+          `Insufficient stock for ${product.name} (${product.stock} base units available).`
         );
       }
     }
@@ -1354,8 +1700,8 @@ export async function createSale(input: CreateSaleInput): Promise<{
   const saleItems: SaleItem[] = [];
   for (const item of resolvedItems) {
     database.run(
-      `INSERT INTO sale_items (sale_id, product_id, sku, product_name, quantity, unit_price, line_total, name_ar)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO sale_items (sale_id, product_id, sku, product_name, quantity, unit_price, line_total, name_ar, unit_id, unit_name, units_per_base)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         saleId,
         item.product.id,
@@ -1365,6 +1711,9 @@ export async function createSale(input: CreateSaleInput): Promise<{
         item.unitPrice,
         item.lineTotal,
         item.product.nameAr ?? '',
+        item.unitId,
+        item.unitName,
+        item.unitsPerBase,
       ]
     );
     const itemIdRes = database.exec('SELECT last_insert_rowid()');
@@ -1378,10 +1727,13 @@ export async function createSale(input: CreateSaleInput): Promise<{
       quantity: item.quantity,
       unitPrice: item.unitPrice,
       lineTotal: item.lineTotal,
+      unitId: item.unitId || undefined,
+      unitName: item.unitName,
+      unitsPerBase: item.unitsPerBase,
     });
 
     database.run('UPDATE products SET stock = stock - ?, updated_at = ? WHERE id = ?', [
-      item.quantity,
+      item.quantity * item.unitsPerBase,
       now,
       item.product.id,
     ]);
@@ -1436,7 +1788,7 @@ export async function voidSale(saleId: number): Promise<Sale | null> {
 
   for (const item of target.items) {
     database.run('UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?', [
-      item.quantity,
+      item.quantity * (item.unitsPerBase || 1),
       now,
       item.productId,
     ]);
@@ -1458,7 +1810,7 @@ export async function listSalesReturnVouchers(): Promise<SalesReturnVoucher[]> {
 
   const itemsRes = database.exec(
     `SELECT r.voucher_id, s.id, s.receipt_number, si.id, si.product_name, si.name_ar,
-            si.sku, ri.returned_quantity, ri.refund_amount
+            si.sku, ri.returned_quantity, ri.refund_amount, si.unit_name
      FROM sale_returns r
      JOIN sales s ON s.id = r.sale_id
      JOIN sale_return_items ri ON ri.return_id = r.id
@@ -1480,6 +1832,7 @@ export async function listSalesReturnVouchers(): Promise<SalesReturnVoucher[]> {
       sku: String(row[6]),
       quantity: Number(row[7]),
       refundAmount: Number(row[8]),
+      unitName: row[9] ? String(row[9]) : undefined,
     });
     itemsByVoucher.set(voucherId, items);
     const invoices = invoicesByVoucher.get(voucherId) || [];
@@ -1654,7 +2007,7 @@ export async function createSalesReturnVoucher(
           [returnId, item.id, item.productId, requested.quantity, allocation.refundAmount]
         );
         database.run('UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?', [
-          requested.quantity,
+          requested.quantity * (item.unitsPerBase || 1),
           now,
           item.productId,
         ]);
@@ -1736,10 +2089,11 @@ export async function updateSalesReturnVoucher(
   );
   const stockChanges = new Map<number, number>();
   const previousStockRows = database.exec(
-    `SELECT product_id, SUM(returned_quantity)
-     FROM sale_return_items
-     WHERE return_id IN (SELECT id FROM sale_returns WHERE voucher_id = ?)
-     GROUP BY product_id`,
+    `SELECT ri.product_id, SUM(ri.returned_quantity * si.units_per_base)
+     FROM sale_return_items ri
+     JOIN sale_items si ON si.id = ri.sale_item_id
+     WHERE ri.return_id IN (SELECT id FROM sale_returns WHERE voucher_id = ?)
+     GROUP BY ri.product_id`,
     [voucherId]
   )[0]?.values || [];
   for (const row of previousStockRows) {
@@ -1755,7 +2109,8 @@ export async function updateSalesReturnVoucher(
       if (!saleItem) throw new Error(`Could not find returned item ${requested.saleItemId}.`);
       stockChanges.set(
         saleItem.productId,
-        (stockChanges.get(saleItem.productId) || 0) + requested.quantity
+        (stockChanges.get(saleItem.productId) || 0) +
+          requested.quantity * (saleItem.unitsPerBase || 1)
       );
     }
   }
@@ -1861,10 +2216,11 @@ export async function deleteSalesReturnVoucher(voucherId: number): Promise<boole
   if (!voucherRes[0]?.values[0]) return false;
 
   const returnedItems = database.exec(
-    `SELECT product_id, SUM(returned_quantity)
-     FROM sale_return_items
-     WHERE return_id IN (SELECT id FROM sale_returns WHERE voucher_id = ?)
-     GROUP BY product_id`,
+    `SELECT ri.product_id, SUM(ri.returned_quantity * si.units_per_base)
+     FROM sale_return_items ri
+     JOIN sale_items si ON si.id = ri.sale_item_id
+     WHERE ri.return_id IN (SELECT id FROM sale_returns WHERE voucher_id = ?)
+     GROUP BY ri.product_id`,
     [voucherId]
   )[0]?.values || [];
   const now = new Date().toISOString();
@@ -2861,7 +3217,7 @@ export async function deleteSale(saleId: number): Promise<boolean> {
         if (remainingQuantity <= 0) continue;
         database.run(
           'UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?',
-          [remainingQuantity, now, item.productId]
+          [remainingQuantity * (item.unitsPerBase || 1), now, item.productId]
         );
       }
     }
@@ -2930,7 +3286,7 @@ export async function updateSale(
     for (const item of target.items) {
       database.run(
         'UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?',
-        [item.quantity, now, item.productId]
+        [item.quantity * (item.unitsPerBase || 1), now, item.productId]
       );
     }
   } else if (target.status === 'VOIDED' && newStatus === 'COMPLETED') {
@@ -2938,7 +3294,7 @@ export async function updateSale(
     for (const item of target.items) {
       database.run(
         'UPDATE products SET stock = stock - ?, updated_at = ? WHERE id = ?',
-        [item.quantity, now, item.productId]
+        [item.quantity * (item.unitsPerBase || 1), now, item.productId]
       );
     }
   }
@@ -2969,7 +3325,8 @@ export async function updateSaleInvoice(
   for (const item of target.items) {
     previousQuantities.set(
       item.productId,
-      (previousQuantities.get(item.productId) || 0) + item.quantity
+      (previousQuantities.get(item.productId) || 0) +
+        item.quantity * (item.unitsPerBase || 1)
     );
   }
 
@@ -2978,6 +3335,9 @@ export async function updateSaleInvoice(
     quantity: number;
     unitPrice: number;
     lineTotal: number;
+    unitId: string;
+    unitName: string;
+    unitsPerBase: number;
   }> = [];
   const requestedQuantities = new Map<number, number>();
   const availableStocks = new Map<number, number>();
@@ -2988,7 +3348,7 @@ export async function updateSaleInvoice(
     }
 
     const productResult = database.exec(
-      `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path
+      `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units
        FROM products WHERE id = ?`,
       [item.productId]
     );
@@ -2997,19 +3357,32 @@ export async function updateSaleInvoice(
     }
 
     const product = mapProductRow(productResult[0].values[0]);
+    const multiUnit = item.unitId
+      ? product.multiUnits?.find((unit) => unit.id === item.unitId)
+      : undefined;
+    if (item.unitId && !multiUnit) {
+      throw new Error(`The selected unit is not configured for ${product.name}.`);
+    }
+    const unitsPerBase = multiUnit?.unitsPerBase ?? 1;
+    const defaultUnitPrice = multiUnit
+      ? multiUnit.price ?? product.retailPrice * unitsPerBase
+      : product.retailPrice;
     const unitPrice =
       item.unitPrice !== undefined && Number.isFinite(item.unitPrice) && item.unitPrice >= 0
         ? Number(item.unitPrice)
-        : product.retailPrice;
+        : defaultUnitPrice;
     resolvedItems.push({
       product,
       quantity: item.quantity,
       unitPrice,
       lineTotal: Number((unitPrice * item.quantity).toFixed(2)),
+      unitId: multiUnit?.id || '',
+      unitName: multiUnit?.name || product.unit,
+      unitsPerBase,
     });
     requestedQuantities.set(
       product.id,
-      (requestedQuantities.get(product.id) || 0) + item.quantity
+      (requestedQuantities.get(product.id) || 0) + item.quantity * unitsPerBase
     );
     availableStocks.set(
       product.id,
@@ -3023,7 +3396,7 @@ export async function updateSaleInvoice(
       if (requestedQuantity > availableStock) {
         const product = resolvedItems.find((item) => item.product.id === productId)?.product;
         throw new Error(
-          `Insufficient stock for ${product?.name || `Product #${productId}`} (${availableStock} available).`
+          `Insufficient stock for ${product?.name || `Product #${productId}`} (${availableStock} base units available).`
         );
       }
     }
@@ -3071,14 +3444,14 @@ export async function updateSaleInvoice(
   try {
     for (const item of target.items) {
       database.run('UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?', [
-        item.quantity,
+        item.quantity * (item.unitsPerBase || 1),
         now,
         item.productId,
       ]);
     }
     for (const item of resolvedItems) {
       database.run('UPDATE products SET stock = stock - ?, updated_at = ? WHERE id = ?', [
-        item.quantity,
+        item.quantity * item.unitsPerBase,
         now,
         item.product.id,
       ]);
@@ -3087,8 +3460,8 @@ export async function updateSaleInvoice(
     database.run('DELETE FROM sale_items WHERE sale_id = ?', [saleId]);
     for (const item of resolvedItems) {
       database.run(
-        `INSERT INTO sale_items (sale_id, product_id, sku, product_name, quantity, unit_price, line_total, name_ar)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO sale_items (sale_id, product_id, sku, product_name, quantity, unit_price, line_total, name_ar, unit_id, unit_name, units_per_base)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           saleId,
           item.product.id,
@@ -3098,6 +3471,9 @@ export async function updateSaleInvoice(
           item.unitPrice,
           item.lineTotal,
           item.product.nameAr || '',
+          item.unitId,
+          item.unitName,
+          item.unitsPerBase,
         ]
       );
     }
@@ -3319,66 +3695,88 @@ export async function importProducts(
   const existingProducts = await listProducts();
   const skuMap = new Map(existingProducts.map((p) => [p.sku.toLowerCase(), p]));
   const barcodeMap = new Map(
-    existingProducts.filter((p) => p.barcode).map((p) => [p.barcode.toLowerCase(), p])
+    existingProducts.flatMap((product) => [
+      [product.barcode.toLowerCase(), product] as const,
+      ...(product.multiUnits || [])
+        .filter((unit) => unit.barcode)
+        .map((unit) => [unit.barcode.toLowerCase(), product] as const),
+      ...(product.additionalBarcodes || [])
+        .map((entry) => [entry.barcode.toLowerCase(), product] as const),
+    ])
   );
 
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    try {
-      const sku = (row.sku || '').trim();
-      let name = (row.name || '').trim();
-      const nameAr = (row.nameAr || row.name_ar || '').trim();
-      if (!name && nameAr) {
-        name = nameAr;
-      }
-      if (!sku || !name) {
-        errors.push(`Row ${i + 1}: SKU and Name are required.`);
-        continue;
-      }
-      const barcode = (row.barcode || sku).trim();
-      const category = (row.category || '').trim() as ProductCategory;
-      const costPrice = Math.max(0, Number(row.costPrice) || 0);
-      const retailPrice = Math.max(0, Number(row.retailPrice) || 0);
-      const taxRate = row.taxRate !== undefined && !isNaN(Number(row.taxRate)) ? Math.max(0, Number(row.taxRate)) : 15;
-      const stock = Number(row.stock) || 0;
-      const reorderLevel = Math.max(0, Number(row.reorderLevel ?? 5));
-      const unit = (row.unit || 'ea').trim();
+  database.run('BEGIN TRANSACTION');
+  try {
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      try {
+        const sku = (row.sku || '').trim();
+        let name = (row.name || '').trim();
+        const nameAr = (row.nameAr || row.name_ar || '').trim();
+        if (!name && nameAr) {
+          name = nameAr;
+        }
+        if (!sku || !name) {
+          errors.push(`Row ${i + 1}: SKU and Name are required.`);
+          continue;
+        }
+        const barcode = (row.barcode || sku).trim();
+        const category = (row.category || '').trim() as ProductCategory;
+        const costPrice = Math.max(0, Number(row.costPrice) || 0);
+        const retailPrice = Math.max(0, Number(row.retailPrice) || 0);
+        const taxRate = row.taxRate !== undefined && !isNaN(Number(row.taxRate)) ? Math.max(0, Number(row.taxRate)) : 15;
+        const stock = Number(row.stock) || 0;
+        const reorderLevel = Math.max(0, Number(row.reorderLevel ?? 5));
+        const unit = (row.unit || 'ea').trim();
 
-      const existing =
-        skuMap.get(sku.toLowerCase()) || (barcode ? barcodeMap.get(barcode.toLowerCase()) : undefined);
+        const existing =
+          skuMap.get(sku.toLowerCase()) || (barcode ? barcodeMap.get(barcode.toLowerCase()) : undefined);
+        validateProductSku(database, existing?.id ?? null, sku);
+        validateProductBarcodes(
+          database,
+          existing?.id ?? null,
+          barcode,
+          existing?.multiUnits || [],
+          existing?.additionalBarcodes || []
+        );
 
-      if (existing) {
-        // Update existing product (update Arabic name, prices, tax rate, and details)
-        database.run(
-          `UPDATE products SET name = ?, name_ar = ?, category = ?, cost_price = ?, retail_price = ?, tax_rate = ?, stock = ?, reorder_level = ?, unit = ?, barcode = ?, updated_at = ? WHERE id = ?`,
-          [
-            name,
-            nameAr || existing.nameAr || '',
-            category,
-            costPrice,
-            retailPrice,
-            taxRate,
-            stock,
-            reorderLevel,
-            unit,
-            barcode,
-            now,
-            existing.id,
-          ]
-        );
-        updated++;
-      } else {
-        // Insert new product
-        database.run(
-          `INSERT INTO products (sku, barcode, name, name_ar, category, cost_price, retail_price, tax_rate, stock, reorder_level, unit, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [sku, barcode, name, nameAr, category, costPrice, retailPrice, taxRate, stock, reorderLevel, unit, now]
-        );
-        imported++;
+        if (existing) {
+          // Update existing product (update Arabic name, prices, tax rate, and details)
+          database.run(
+            `UPDATE products SET name = ?, name_ar = ?, category = ?, cost_price = ?, retail_price = ?, tax_rate = ?, stock = ?, reorder_level = ?, unit = ?, barcode = ?, updated_at = ? WHERE id = ?`,
+            [
+              name,
+              nameAr || existing.nameAr || '',
+              category,
+              costPrice,
+              retailPrice,
+              taxRate,
+              stock,
+              reorderLevel,
+              unit,
+              barcode,
+              now,
+              existing.id,
+            ]
+          );
+          updated++;
+        } else {
+          // Insert new product
+          database.run(
+            `INSERT INTO products (sku, barcode, name, name_ar, category, cost_price, retail_price, tax_rate, stock, reorder_level, unit, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [sku, barcode, name, nameAr, category, costPrice, retailPrice, taxRate, stock, reorderLevel, unit, now]
+          );
+          imported++;
+        }
+      } catch (err) {
+        errors.push(`Row ${i + 1} (${row.sku || 'Unknown'}): ${(err as Error).message}`);
       }
-    } catch (err) {
-      errors.push(`Row ${i + 1} (${row.sku || 'Unknown'}): ${(err as Error).message}`);
     }
+    database.run('COMMIT');
+  } catch (err) {
+    database.run('ROLLBACK');
+    throw err;
   }
 
   saveDatabase();

@@ -49,6 +49,8 @@ interface SettingsViewProps {
   onRestoreDatabase?: (buffer: ArrayBuffer) => Promise<void>;
 }
 
+type BackupMode = 'on-close' | 'manual' | 'scheduled';
+
 export const SettingsView: React.FC<SettingsViewProps> = ({
   settings,
   printQueue,
@@ -81,7 +83,157 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [updateActionError, setUpdateActionError] = useState<string | null>(null);
   const [isRestoring, setIsRestoring] = useState(false);
   const [restoreNotice, setRestoreNotice] = useState<string | null>(null);
+  const [backupDirectory, setBackupDirectory] = useState<string | null>(null);
+  const [backupActionError, setBackupActionError] = useState<string | null>(null);
+  const [backupActionNotice, setBackupActionNotice] = useState<string | null>(null);
+  const [backupActionBusy, setBackupActionBusy] = useState(false);
+  const [backupMode, setBackupMode] = useState<BackupMode>('on-close');
+  const [scheduledBackupTime, setScheduledBackupTime] = useState('02:00');
+  const [backupSettingsBusy, setBackupSettingsBusy] = useState(false);
+  const [googleDriveStatus, setGoogleDriveStatus] = useState<{
+    clientId: string;
+    connected: boolean;
+  } | null>(null);
+  const [googleDriveClientId, setGoogleDriveClientId] = useState('');
+  const [googleDriveBusy, setGoogleDriveBusy] = useState(false);
+  const [googleDriveError, setGoogleDriveError] = useState<string | null>(null);
+  const [googleDriveNotice, setGoogleDriveNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!api?.getBackupConfiguration) return;
+    let active = true;
+    void api.getBackupConfiguration()
+      .then((configuration) => {
+        if (!active) return;
+        setBackupDirectory(configuration.directory);
+        setBackupMode(configuration.mode);
+        setScheduledBackupTime(configuration.scheduledTime);
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setBackupActionError(error instanceof Error ? error.message : 'Could not load backup folder.');
+        }
+      });
+    if (api.getGoogleDriveStatus) {
+      void api.getGoogleDriveStatus()
+        .then((status) => {
+          if (!active) return;
+          setGoogleDriveStatus(status);
+          setGoogleDriveClientId(status.clientId);
+        })
+        .catch((error: unknown) => {
+          if (active) {
+            setGoogleDriveError(error instanceof Error ? error.message : 'Could not load Google Drive status.');
+          }
+        });
+    }
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleChooseBackupDirectory = async () => {
+    const api = window.electronAPI;
+    if (!api?.chooseBackupDirectory) return;
+    setBackupActionBusy(true);
+    setBackupActionError(null);
+    setBackupActionNotice(null);
+    try {
+      const directory = await api.chooseBackupDirectory();
+      if (directory) {
+        setBackupDirectory(directory);
+        setBackupActionNotice(isRtl ? 'تم تحديث مجلد النسخ الاحتياطي.' : 'Backup folder updated.');
+      }
+    } catch (error) {
+      setBackupActionError(error instanceof Error ? error.message : 'Could not choose a backup folder.');
+    } finally {
+      setBackupActionBusy(false);
+    }
+  };
+
+  const handleCreateBackup = async () => {
+    const api = window.electronAPI;
+    if (!api?.createDatabaseBackup) return;
+    setBackupActionBusy(true);
+    setBackupActionError(null);
+    setBackupActionNotice(null);
+    try {
+      const { filePath, googleDriveUploaded } = await api.createDatabaseBackup();
+      setBackupActionNotice(
+        isRtl
+          ? `تم حفظ النسخة الاحتياطية${googleDriveUploaded ? ' ورفعها إلى Google Drive' : ''}: ${filePath}`
+          : `Backup saved to ${filePath}${googleDriveUploaded ? ' and uploaded to Google Drive' : ''}.`
+      );
+    } catch (error) {
+      setBackupActionError(error instanceof Error ? error.message : 'Could not create the backup.');
+    } finally {
+      setBackupActionBusy(false);
+    }
+  };
+
+  const handleSaveBackupConfiguration = async () => {
+    const api = window.electronAPI;
+    if (!api?.setBackupConfiguration) return;
+    setBackupSettingsBusy(true);
+    setBackupActionError(null);
+    setBackupActionNotice(null);
+    try {
+      const configuration = await api.setBackupConfiguration({
+        mode: backupMode,
+        scheduledTime: scheduledBackupTime,
+      });
+      setBackupDirectory(configuration.directory);
+      setBackupMode(configuration.mode);
+      setScheduledBackupTime(configuration.scheduledTime);
+      setBackupActionNotice(isRtl ? 'تم حفظ إعدادات النسخ الاحتياطي.' : 'Backup settings saved.');
+    } catch (error) {
+      setBackupActionError(error instanceof Error ? error.message : 'Could not save backup settings.');
+    } finally {
+      setBackupSettingsBusy(false);
+    }
+  };
+
+  const handleConnectGoogleDrive = async () => {
+    const api = window.electronAPI;
+    if (!api?.connectGoogleDrive) return;
+    setGoogleDriveBusy(true);
+    setGoogleDriveError(null);
+    setGoogleDriveNotice(null);
+    try {
+      const status = await api.connectGoogleDrive(googleDriveClientId);
+      setGoogleDriveStatus(status);
+      setGoogleDriveClientId(status.clientId);
+      setGoogleDriveNotice(
+        isRtl
+          ? 'تم ربط Google Drive. ستُرفع إليه نسخة إضافية عند إنشاء النسخ الاحتياطية.'
+          : 'Google Drive connected. Backups will also be uploaded there.'
+      );
+    } catch (error) {
+      setGoogleDriveError(error instanceof Error ? error.message : 'Could not connect Google Drive.');
+    } finally {
+      setGoogleDriveBusy(false);
+    }
+  };
+
+  const handleDisconnectGoogleDrive = async () => {
+    const api = window.electronAPI;
+    if (!api?.disconnectGoogleDrive) return;
+    setGoogleDriveBusy(true);
+    setGoogleDriveError(null);
+    setGoogleDriveNotice(null);
+    try {
+      const status = await api.disconnectGoogleDrive();
+      setGoogleDriveStatus(status);
+      setGoogleDriveClientId(status.clientId);
+      setGoogleDriveNotice(isRtl ? 'تم فصل Google Drive.' : 'Google Drive disconnected.');
+    } catch (error) {
+      setGoogleDriveError(error instanceof Error ? error.message : 'Could not disconnect Google Drive.');
+    } finally {
+      setGoogleDriveBusy(false);
+    }
+  };
 
   const templateSettings = (
     current: StoreSettings,
@@ -573,7 +725,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       </nav>
 
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className={`min-h-0 overflow-y-auto ${activeSettingsSection === 'updates' ? 'hidden' : 'flex-1'}`}>
         <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-4">
 
           {/* Main Settings Form */}
@@ -652,7 +804,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 gap-4">
                   <div>
                     <label className="block font-medium text-[#333] mb-1">
                       Standard Sales Tax Rate (%)
@@ -1227,47 +1379,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         Select an installed printer for “Use selected template printer”.
                       </p>
                     </div>
-
-                    <div>
-                      <label className="block font-semibold text-slate-800 mb-1">
-                        {t.languageSelect}
-                      </label>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setLanguage('en');
-                            setForm({ ...form, appLanguage: 'en' });
-                          }}
-                          className={`py-2 px-3 rounded-lg border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
-                            language === 'en'
-                              ? 'bg-blue-700 text-white border-blue-700 shadow-xs'
-                              : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
-                          }`}
-                        >
-                          <Globe className="w-3.5 h-3.5" />
-                          <span>English (EN)</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setLanguage('ar');
-                            setForm({ ...form, appLanguage: 'ar' });
-                          }}
-                          className={`py-2 px-3 rounded-lg border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
-                            language === 'ar'
-                              ? 'bg-blue-700 text-white border-blue-700 shadow-xs'
-                              : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
-                          }`}
-                        >
-                          <Globe className="w-3.5 h-3.5" />
-                          <span>العربية (AR)</span>
-                        </button>
-                      </div>
-                      <p className="text-[10px] text-slate-400 mt-1">
-                        Switches interface language and document layout direction (RTL/LTR).
-                      </p>
-                    </div>
                   </div>
 
                 </div>
@@ -1422,6 +1533,232 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <span>Database has been reset and seed catalog successfully restored!</span>
                   </div>
                 )}
+
+                <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-900">
+                        {isRtl ? 'جدولة النسخ الاحتياطي' : 'Backup Schedule'}
+                      </h3>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        {isRtl
+                          ? 'اختر وقت إنشاء النسخ الاحتياطية وسلوك الإغلاق.'
+                          : 'Choose when backups are created and how closing behaves.'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleSaveBackupConfiguration}
+                      disabled={backupSettingsBusy || !window.electronAPI?.setBackupConfiguration}
+                      className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {backupSettingsBusy
+                        ? (isRtl ? 'جارٍ الحفظ...' : 'Saving...')
+                        : (isRtl ? 'حفظ إعدادات النسخ' : 'Save Backup Settings')}
+                    </button>
+                  </div>
+                  <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-3">
+                    {([
+                      {
+                        value: 'on-close',
+                        title: isRtl ? 'عند الإغلاق' : 'On Close',
+                        description: isRtl
+                          ? 'اسأل قبل الإغلاق لإنشاء نسخة احتياطية.'
+                          : 'Ask to create a backup when closing.',
+                      },
+                      {
+                        value: 'manual',
+                        title: isRtl ? 'يدوي' : 'Manual',
+                        description: isRtl
+                          ? 'أنشئ النسخ الاحتياطية يدوياً فقط، دون سؤال عند الإغلاق.'
+                          : 'Back up only when requested; no prompt on close.',
+                      },
+                      {
+                        value: 'scheduled',
+                        title: isRtl ? 'مجدول' : 'Scheduled',
+                        description: isRtl
+                          ? 'أنشئ نسخة يومياً في الوقت المحدد أثناء تشغيل التطبيق.'
+                          : 'Back up daily at the selected time while the app is running.',
+                      },
+                    ] satisfies Array<{ value: BackupMode; title: string; description: string }>).map((option) => (
+                      <label
+                        key={option.value}
+                        className={`flex cursor-pointer gap-3 rounded-lg border p-3 ${
+                          backupMode === option.value
+                            ? 'border-blue-300 bg-blue-50'
+                            : 'border-slate-200 bg-white hover:bg-slate-50'
+                        } ${!window.electronAPI?.setBackupConfiguration ? 'pointer-events-none opacity-50' : ''}`}
+                      >
+                        <input
+                          type="radio"
+                          name="backup-mode"
+                          value={option.value}
+                          checked={backupMode === option.value}
+                          disabled={!window.electronAPI?.setBackupConfiguration || backupSettingsBusy}
+                          onChange={() => setBackupMode(option.value)}
+                          className="mt-0.5 accent-blue-700"
+                        />
+                        <span className="min-w-0">
+                          <span className="block text-xs font-semibold text-slate-900">{option.title}</span>
+                          <span className="mt-1 block text-[10px] leading-relaxed text-slate-600">
+                            {option.description}
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  {backupMode === 'scheduled' && (
+                    <label className="mt-4 flex items-center gap-3 text-xs font-semibold text-slate-700">
+                      {isRtl ? 'وقت النسخ اليومي' : 'Daily backup time'}
+                      <input
+                        type="time"
+                        value={scheduledBackupTime}
+                        onChange={(event) => setScheduledBackupTime(event.target.value)}
+                        disabled={!window.electronAPI?.setBackupConfiguration || backupSettingsBusy}
+                        className="rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50"
+                      />
+                    </label>
+                  )}
+                  {!window.electronAPI?.isElectron && (
+                    <p className="mt-3 text-[10px] text-slate-500">
+                      {isRtl
+                        ? 'إعدادات الجدولة متاحة في تطبيق سطح المكتب فقط.'
+                        : 'Backup scheduling is available in the installed desktop app only.'}
+                    </p>
+                  )}
+                </section>
+
+                <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                        <Database className="h-4 w-4 text-blue-700" />
+                        {isRtl ? 'مجلد النسخ الاحتياطي' : 'Backup Folder'}
+                      </h3>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        {isRtl
+                          ? 'تُحفظ النسخ التي تُنشأ عند إغلاق aptPOS في هذا المجلد.'
+                          : 'Backups created when closing aptPOS are saved here.'}
+                      </p>
+                      <p className="mt-2 break-all rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                        {backupDirectory || (window.electronAPI?.isElectron ? 'Loading...' : 'Desktop app only')}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 flex-col gap-2 sm:w-44">
+                      <button
+                        type="button"
+                        onClick={handleChooseBackupDirectory}
+                        disabled={backupActionBusy || !window.electronAPI?.chooseBackupDirectory}
+                        className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {isRtl ? 'اختيار مجلد' : 'Choose Folder'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCreateBackup}
+                        disabled={backupActionBusy || !window.electronAPI?.createDatabaseBackup}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {backupActionBusy ? (
+                          <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Download className="h-3.5 w-3.5" />
+                        )}
+                        {isRtl ? 'إنشاء نسخة الآن' : 'Back Up Now'}
+                      </button>
+                    </div>
+                  </div>
+                  {backupActionError && (
+                    <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                      {backupActionError}
+                    </p>
+                  )}
+                  {backupActionNotice && (
+                    <p role="status" className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+                      {backupActionNotice}
+                    </p>
+                  )}
+                </section>
+
+                <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <Globe className="h-4 w-4 text-blue-700" />
+                        <h3 className="text-sm font-semibold text-slate-900">Google Drive</h3>
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                          googleDriveStatus?.connected
+                            ? 'bg-emerald-100 text-emerald-700'
+                            : 'bg-slate-100 text-slate-600'
+                        }`}>
+                          {googleDriveStatus?.connected
+                            ? (isRtl ? 'متصل' : 'Connected')
+                            : (isRtl ? 'غير متصل' : 'Not connected')}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        {isRtl
+                          ? 'عند الاتصال، تُرفع نسخة إضافية إلى Google Drive مع حفظ النسخة المحلية.'
+                          : 'When connected, backups are uploaded to Google Drive in addition to the local folder.'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                    <input
+                      type="text"
+                      value={googleDriveClientId}
+                      onChange={(event) => setGoogleDriveClientId(event.target.value)}
+                      disabled={googleDriveBusy || googleDriveStatus?.connected}
+                      aria-label={isRtl ? 'معرّف عميل Google OAuth' : 'Google OAuth Desktop app Client ID'}
+                      placeholder="Google OAuth Desktop app Client ID"
+                      className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50"
+                    />
+                    <button
+                      type="button"
+                      onClick={googleDriveStatus?.connected
+                        ? handleDisconnectGoogleDrive
+                        : handleConnectGoogleDrive}
+                      disabled={
+                        googleDriveBusy ||
+                        (googleDriveStatus?.connected
+                          ? !window.electronAPI?.disconnectGoogleDrive
+                          : !googleDriveClientId.trim() || !window.electronAPI?.connectGoogleDrive)
+                      }
+                      className={`rounded-lg px-4 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50 ${
+                        googleDriveStatus?.connected
+                          ? 'bg-slate-700 hover:bg-slate-800'
+                          : 'bg-blue-700 hover:bg-blue-800'
+                      }`}
+                    >
+                      {googleDriveBusy
+                        ? (isRtl ? 'جارٍ الاتصال...' : 'Connecting...')
+                        : googleDriveStatus?.connected
+                          ? (isRtl ? 'فصل الحساب' : 'Disconnect')
+                          : (isRtl ? 'ربط Google Drive' : 'Connect Google Drive')}
+                    </button>
+                  </div>
+                  <p className="mt-2 text-[10px] text-slate-500">
+                    {isRtl ? 'يتطلب معرّف عميل OAuth لتطبيق سطح المكتب.' : 'Requires a Google OAuth Desktop app Client ID.'}{' '}
+                    <a
+                      href="https://console.cloud.google.com/apis/credentials"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-semibold text-blue-700 hover:text-blue-800"
+                    >
+                      {isRtl ? 'إعداد بيانات الاعتماد' : 'Set up credentials'}
+                    </a>
+                  </p>
+                  {googleDriveError && (
+                    <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                      {googleDriveError}
+                    </p>
+                  )}
+                  {googleDriveNotice && (
+                    <p role="status" className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+                      {googleDriveNotice}
+                    </p>
+                  )}
+                </section>
 
                 {/* Backup & Restore Grid */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1765,33 +2102,86 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       )}
 
       {activeSettingsSection === 'updates' && (
-        <div className="space-y-4">
-          <h2 className="text-lg font-semibold text-slate-900">
-            {isRtl ? 'تحديثات aptPOS' : 'Software Updates'}
-          </h2>
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <div className="mx-auto max-w-5xl space-y-5 p-4 sm:p-6">
+          <div className="flex items-center gap-3">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-700">
+              <RefreshCw className="h-5 w-5" />
+            </span>
+            <h2 className="text-lg font-semibold text-slate-900">
+              {isRtl ? 'تحديثات aptPOS' : 'Software Updates'}
+            </h2>
+          </div>
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex items-center gap-3">
+              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-700">
+                <Globe className="h-5 w-5" />
+              </span>
+              <h3 className="text-sm font-semibold text-slate-900">{t.languageSelect}</h3>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setLanguage('en');
+                  setForm((current) => ({ ...current, appLanguage: 'en' }));
+                }}
+                aria-pressed={language === 'en'}
+                className={`inline-flex items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 ${
+                  language === 'en'
+                    ? 'border-blue-700 bg-blue-700 text-white'
+                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                <Globe className="h-4 w-4" />
+                <span>{t.english}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setLanguage('ar');
+                  setForm((current) => ({ ...current, appLanguage: 'ar' }));
+                }}
+                aria-pressed={language === 'ar'}
+                className={`inline-flex items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 ${
+                  language === 'ar'
+                    ? 'border-blue-700 bg-blue-700 text-white'
+                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                <Globe className="h-4 w-4" />
+                <span>{t.arabic}</span>
+              </button>
+            </div>
+          </section>
           {!window.electronAPI?.checkForUpdates ? (
-            <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900" role="status">
-              {isRtl
-                ? 'التحقق من التحديثات متاح في تطبيق سطح المكتب فقط.'
-                : 'Update checks are available in the installed desktop app only.'}
-            </p>
+            <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-5 text-slate-600 shadow-sm" role="status">
+              <Monitor className="h-5 w-5 shrink-0 text-slate-400" />
+              <p className="text-sm">
+                {isRtl
+                  ? 'التحقق من التحديثات متاح في تطبيق سطح المكتب فقط.'
+                  : 'Update checks are available in the installed desktop app only.'}
+              </p>
+            </div>
           ) : (
-            <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex min-w-0 items-center gap-3">
-                  <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
+                  <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${
                     updateStatus.state === 'error' || updateActionError
                       ? 'bg-red-50 text-red-600'
                       : updateStatus.state === 'up-to-date' || updateStatus.state === 'downloaded'
                         ? 'bg-emerald-50 text-emerald-600'
                         : 'bg-blue-50 text-blue-700'
                   }`}>
-                    {updateStatus.state === 'up-to-date' || updateStatus.state === 'downloaded'
-                      ? <Check className="h-4 w-4" />
-                      : <RefreshCw className={`h-4 w-4 ${updateStatus.state === 'checking' ? 'animate-spin' : ''}`} />}
+                    {updateStatus.state === 'error' || updateActionError
+                      ? <AlertTriangle className="h-5 w-5" />
+                      : updateStatus.state === 'up-to-date' || updateStatus.state === 'downloaded'
+                        ? <Check className="h-5 w-5" />
+                        : <RefreshCw className={`h-5 w-5 ${updateStatus.state === 'checking' ? 'animate-spin' : ''}`} />}
                   </span>
-                  {(updateStatus.state !== 'idle' || updateActionError) && (
-                    <p className={`min-w-0 text-sm font-medium ${
+                  <div className="min-w-0">
+                    <p className={`text-sm font-semibold ${
                       updateStatus.state === 'error' || updateActionError
                         ? 'text-red-700'
                         : updateStatus.state === 'up-to-date' || updateStatus.state === 'downloaded'
@@ -1800,6 +2190,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     }`} role="status">
                       {updateActionError || (() => {
                         switch (updateStatus.state) {
+                          case 'idle':
+                            return isRtl ? 'جاهز للتحقق' : 'Ready to check';
                           case 'checking':
                             return isRtl ? 'جارٍ التحقق من التحديثات...' : 'Checking for updates...';
                           case 'available':
@@ -1829,10 +2221,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         }
                       })()}
                     </p>
-                  )}
+                    {updateStatus.state === 'available' ||
+                    updateStatus.state === 'downloading' ||
+                    updateStatus.state === 'downloaded' ? (
+                      <p className="mt-1 text-xs text-slate-500">
+                        {isRtl ? `الإصدار ${updateStatus.version}` : `Version ${updateStatus.version}`}
+                      </p>
+                    ) : null}
+                  </div>
                 </div>
 
-                <div className="flex shrink-0 gap-2">
+                <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
                   <button
                     type="button"
                     onClick={handleCheckForUpdates}
@@ -1843,7 +2242,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       updateStatus.state === 'installing' ||
                       updateStatus.state === 'downloaded'
                     }
-                    className="inline-flex items-center justify-center gap-2 rounded-xl border border-blue-200 bg-white px-4 py-2.5 text-xs font-bold text-blue-800 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <RefreshCw className={`h-3.5 w-3.5 ${updateStatus.state === 'checking' ? 'animate-spin' : ''}`} />
                     {isRtl ? 'تحقق من التحديثات' : 'Check for Updates'}
@@ -1852,7 +2251,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <button
                       type="button"
                       onClick={handleInstallUpdate}
-                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-700 px-4 py-2.5 text-xs font-bold text-white shadow-sm transition-colors hover:bg-blue-800"
+                      className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2"
                     >
                       <Download className="h-3.5 w-3.5" />
                       {isRtl ? 'تثبيت وإعادة التشغيل' : 'Install & Restart'}
@@ -1862,8 +2261,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
 
               {updateStatus.state === 'downloading' && (
-                <div>
-                  <div className="mb-2 flex justify-between text-[11px] font-semibold text-slate-600">
+                <div className="border-t border-slate-100 px-5 py-4">
+                  <div className="mb-2 flex justify-between text-xs font-medium text-slate-600">
                     <span>{isRtl ? 'تنزيل التحديث' : 'Downloading update'}</span>
                     <span>{Math.round(updateStatus.percent)}%</span>
                   </div>
@@ -1886,14 +2285,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {(updateStatus.state === 'available' ||
                 updateStatus.state === 'downloading' ||
                 updateStatus.state === 'downloaded') && (
-                <div>
+                <div className="border-t border-slate-100 px-5 py-4">
                   {updateStatus.releaseNotes && (
                     <>
-                      <h3 className="mb-2 text-sm font-semibold text-slate-900">
-                        {isRtl ? `ما الجديد في الإصدار ${updateStatus.version}` : `What's new in v${updateStatus.version}`}
+                      <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        {isRtl ? `ملاحظات الإصدار ${updateStatus.version}` : `Release notes · ${updateStatus.version}`}
                       </h3>
-                      <div className="max-h-64 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50 p-4">
-                        <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-700">
+                      <div className="max-h-64 overflow-y-auto rounded-lg bg-slate-50 p-4">
+                        <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-700">
                           {updateStatus.releaseNotes}
                         </p>
                       </div>
@@ -1903,6 +2302,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               )}
             </section>
           )}
+          </div>
         </div>
       )}
 

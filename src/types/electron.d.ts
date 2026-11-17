@@ -18,6 +18,27 @@ declare global {
       getUpdateStatus: () => Promise<UpdateStatus>;
       checkForUpdates: () => Promise<UpdateStatus>;
       installUpdate: () => Promise<void>;
+      getBackupDirectory: () => Promise<string>;
+      getBackupConfiguration: () => Promise<{
+        directory: string;
+        mode: 'on-close' | 'manual' | 'scheduled';
+        scheduledTime: string;
+      }>;
+      setBackupConfiguration: (configuration: {
+        mode: 'on-close' | 'manual' | 'scheduled';
+        scheduledTime: string;
+      }) => Promise<{
+        directory: string;
+        mode: 'on-close' | 'manual' | 'scheduled';
+        scheduledTime: string;
+      }>;
+      chooseBackupDirectory: () => Promise<string | null>;
+      createDatabaseBackup: () => Promise<{ filePath: string; googleDriveUploaded: boolean }>;
+      getGoogleDriveStatus: () => Promise<{ clientId: string; connected: boolean }>;
+      connectGoogleDrive: (clientId: string) => Promise<{ clientId: string; connected: boolean }>;
+      disconnectGoogleDrive: () => Promise<{ clientId: string; connected: boolean }>;
+      resolveCloseRequest: (shouldClose: boolean) => Promise<boolean>;
+      onCloseRequested: (listener: () => void) => () => void;
       onUpdateStatus: (listener: (status: UpdateStatus) => void) => () => void;
     };
   }

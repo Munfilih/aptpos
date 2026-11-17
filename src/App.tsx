@@ -12,7 +12,7 @@ import { ReportsView } from './components/ReportsView';
 import { SettingsView } from './components/SettingsView';
 import { ThermalReceiptModal } from './components/ThermalReceiptModal';
 import { LoginForm } from './components/LoginForm';
-import { LanguageProvider } from './i18n/LanguageContext';
+import { LanguageProvider, useLanguage } from './i18n/LanguageContext';
 import type {
   CashbookEntry,
   CashbookOpeningBalance,
@@ -123,6 +123,77 @@ function isCashbookOpeningBalance(value: unknown): value is CashbookOpeningBalan
   );
 }
 
+interface AppCloseDialogProps {
+  busy: boolean;
+  error: string | null;
+  onBackupAndClose: () => void;
+  onCloseWithoutBackup: () => void;
+  onCancel: () => void;
+}
+
+const AppCloseDialog: React.FC<AppCloseDialogProps> = ({
+  busy,
+  error,
+  onBackupAndClose,
+  onCloseWithoutBackup,
+  onCancel,
+}) => {
+  const { isRtl } = useLanguage();
+
+  return (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/50 p-4">
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="close-backup-title"
+        className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl"
+      >
+        <h2 id="close-backup-title" className="text-lg font-semibold text-slate-900">
+          {isRtl ? 'إنشاء نسخة احتياطية قبل الإغلاق؟' : 'Back up before closing?'}
+        </h2>
+        <p className="mt-2 text-sm leading-relaxed text-slate-600">
+          {isRtl
+            ? 'يمكنك حفظ نسخة محلية ورفع نسخة إلى Google Drive إذا كان متصلاً قبل إغلاق aptPOS.'
+            : 'Create a local backup and upload a copy to Google Drive if connected before closing aptPOS.'}
+        </p>
+        {error && (
+          <p role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+            {error}
+          </p>
+        )}
+        <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {isRtl ? 'العودة إلى التطبيق' : 'Return to app'}
+          </button>
+          <button
+            type="button"
+            onClick={onCloseWithoutBackup}
+            disabled={busy}
+            className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {isRtl ? 'إغلاق دون نسخة' : 'Close without backup'}
+          </button>
+          <button
+            type="button"
+            onClick={onBackupAndClose}
+            disabled={busy}
+            className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-wait disabled:opacity-60"
+          >
+            {busy
+              ? (isRtl ? 'جارٍ إنشاء النسخة...' : 'Creating backup...')
+              : (isRtl ? 'نسخ احتياطي وإغلاق' : 'Back up & close')}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+};
+
 export function App() {
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => {
     try {
@@ -154,6 +225,59 @@ export function App() {
     queuedOffline?: boolean;
   } | null>(null);
   const [restoredSale, setRestoredSale] = useState<Sale | null>(null);
+  const [closeDialogOpen, setCloseDialogOpen] = useState(false);
+  const [closeBackupBusy, setCloseBackupBusy] = useState(false);
+  const [closeBackupError, setCloseBackupError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!api?.onCloseRequested) return;
+    return api.onCloseRequested(() => {
+      setCloseBackupError(null);
+      setCloseDialogOpen(true);
+    });
+  }, []);
+
+  const handleCloseWithoutBackup = async () => {
+    const api = window.electronAPI;
+    if (!api?.resolveCloseRequest) return;
+    try {
+      await api.resolveCloseRequest(true);
+      setCloseDialogOpen(false);
+    } catch (error) {
+      setCloseBackupError(error instanceof Error ? error.message : 'Could not close the app.');
+    }
+  };
+
+  const handleCancelClose = async () => {
+    const api = window.electronAPI;
+    if (!api?.resolveCloseRequest) return;
+    try {
+      await api.resolveCloseRequest(false);
+      setCloseDialogOpen(false);
+    } catch (error) {
+      setCloseBackupError(error instanceof Error ? error.message : 'Could not cancel closing the app.');
+    }
+  };
+
+  const handleBackupAndClose = async () => {
+    const api = window.electronAPI;
+    if (!api?.createDatabaseBackup || !api.resolveCloseRequest) {
+      setCloseBackupError('Backup is only available in the installed desktop app.');
+      return;
+    }
+    setCloseBackupBusy(true);
+    setCloseBackupError(null);
+    try {
+      await api.createDatabaseBackup();
+      await api.resolveCloseRequest(true);
+      setCloseDialogOpen(false);
+    } catch (error) {
+      setCloseBackupError(error instanceof Error ? error.message : 'Could not create the backup.');
+    } finally {
+      setCloseBackupBusy(false);
+    }
+  };
 
   useEffect(() => {
     const handleProductShortcut = (event: KeyboardEvent) => {
@@ -259,7 +383,10 @@ export function App() {
 
   const refreshProducts = async () => {
     const res = await fetch('/api/products');
-    if (res.ok) setProducts(await res.json());
+    if (!res.ok) {
+      throw new Error(`Failed to refresh products (HTTP ${res.status}).`);
+    }
+    setProducts(await res.json());
   };
 
   const refreshCustomers = async () => {
@@ -508,10 +635,11 @@ export function App() {
 
   return (
     <LanguageProvider initialLanguage={settings.appLanguage}>
-      {!currentUser ? (
-        <LoginForm onLoginSuccess={handleLoginSuccess} />
-      ) : (
-        <div className="h-[100dvh] max-h-[100dvh] w-screen flex flex-col bg-slate-50 text-slate-900 overflow-hidden">
+      <>
+        {!currentUser ? (
+          <LoginForm onLoginSuccess={handleLoginSuccess} />
+        ) : (
+          <div className="h-[100dvh] max-h-[100dvh] w-screen flex flex-col bg-slate-50 text-slate-900 overflow-hidden">
           <TopBar
             activeTab={effectiveTab}
             onSelectTab={setActiveTab}
@@ -683,8 +811,18 @@ export function App() {
               onClose={() => setActiveReceipt(null)}
             />
           )}
-        </div>
-      )}
+          </div>
+        )}
+        {closeDialogOpen && (
+          <AppCloseDialog
+            busy={closeBackupBusy}
+            error={closeBackupError}
+            onBackupAndClose={handleBackupAndClose}
+            onCloseWithoutBackup={handleCloseWithoutBackup}
+            onCancel={handleCancelClose}
+          />
+        )}
+      </>
     </LanguageProvider>
   );
 }

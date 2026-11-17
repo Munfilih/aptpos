@@ -9,6 +9,19 @@ export interface InventoryOption {
   imageData?: string;
 }
 
+export interface ProductMultiUnit {
+  id: string;
+  name: string;
+  barcode: string;
+  unitsPerBase: number;
+  price: number | null;
+}
+
+export interface ProductAdditionalBarcode {
+  barcode: string;
+  unitId: string | null;
+}
+
 export type UserRole = 'admin' | 'cashier' | 'custom';
 
 export type TaxType = 'inclusive' | 'exclusive';
@@ -89,12 +102,18 @@ export interface Product {
   stock: number;
   reorderLevel: number;
   unit: string;
+  multiUnits?: ProductMultiUnit[];
+  additionalBarcodes?: ProductAdditionalBarcode[];
   updatedAt: string;
 }
 
 export interface CartItem {
   product: Product;
   quantity: number;
+  unitId?: string;
+  unitName?: string;
+  unitsPerBase?: number;
+  lineId?: string;
 }
 
 export type PaymentMethod = 'Cash' | 'Card' | 'Split' | (string & {});
@@ -109,6 +128,9 @@ export interface SaleItem {
   quantity: number;
   unitPrice: number;
   lineTotal: number;
+  unitId?: string;
+  unitName?: string;
+  unitsPerBase?: number;
   returnedQuantity?: number;
 }
 
@@ -168,6 +190,7 @@ export interface SalesReturnVoucherItem {
   nameAr?: string;
   sku: string;
   quantity: number;
+  unitName?: string;
   refundAmount: number;
 }
 
