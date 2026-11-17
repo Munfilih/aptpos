@@ -34,6 +34,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
 
   const [zatcaQrDataUrl, setZatcaQrDataUrl] = useState<string>('');
   const [printError, setPrintError] = useState<string | null>(null);
+  const [previewBeforePrint, setPreviewBeforePrint] = useState(false);
 
   // Generate the electronic invoice QR code payload.
   useEffect(() => {
@@ -108,11 +109,14 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
         const removePageStyle = pageSize ? applyThermalPageSize(pageSize) : undefined;
         try {
           const result = await window.electronAPI.printReceipt({
-            silent: printerMode !== 'choose-at-print-time',
+            silent: !previewBeforePrint && printerMode !== 'choose-at-print-time',
             printerName: printerMode === 'saved-printer' ? templateSettings?.defaultPrinter || undefined : undefined,
             ...(pageSize ? { pageSize } : {}),
           });
           if (!result.ok) {
+            if (result.error?.toLowerCase() === 'cancelled' || result.error?.toLowerCase() === 'canceled') {
+              return false;
+            }
             throw new Error(result.error || 'Receipt could not be printed.');
           }
         } finally {
@@ -902,6 +906,20 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
             {language === 'ar' ? 'Enter للإنهاء · F12 للطباعة' : 'Enter to finish · F12 to print'}
           </span>
           <div className="flex items-center gap-2">
+            {window.electronAPI?.isElectron && (
+              <label
+                className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-[10px] text-slate-600"
+                title="Open the printer preview instead of printing silently"
+              >
+                <input
+                  type="checkbox"
+                  checked={previewBeforePrint}
+                  onChange={(event) => setPreviewBeforePrint(event.target.checked)}
+                  className="accent-blue-700"
+                />
+                <span>{language === 'ar' ? 'معاينة قبل الطباعة' : 'Preview before printing'}</span>
+              </label>
+            )}
             <button
               type="button"
               onClick={handlePrintAndClose}
@@ -909,7 +927,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               className="inline-flex items-center gap-2 px-3.5 py-2.5 text-xs font-semibold text-blue-700 bg-white border border-blue-200 hover:bg-blue-50 rounded-lg transition-colors whitespace-nowrap"
             >
               <Printer className="w-3.5 h-3.5" />
-              <span>Print Receipt</span>
+              <span>{previewBeforePrint ? 'Preview & Print' : 'Print Receipt'}</span>
             </button>
             <button
               ref={primaryActionBtnRef}
