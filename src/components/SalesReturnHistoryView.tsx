@@ -5,6 +5,7 @@ import { useLanguage } from '../i18n/LanguageContext';
 import { matchesDateBounds, resolveDateBounds, type DateFilter } from '../utils/dateFilters';
 import {
   applyThermalPageSize,
+  applyThermalPageWidth,
   measureThermalPageSize,
   printWithThermalPageSize,
   resolveInvoiceMarginsMm,
@@ -67,26 +68,24 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
 
     try {
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const thermalWidthMm = activeFormat === '58mm' ? 58 : 80;
       const pageSize = activeFormat === 'A4'
         ? { width: 210_000, height: 297_000 }
-        : measureThermalPageSize(printAreaRef.current, {
-            elementWidthMm: activeFormat === '58mm' ? 58 : 80,
-            pageWidthMm: activeFormat === '58mm' ? 58 : 80,
-            padding: `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`,
-            container: document.querySelector('.receipt-print-source'),
-          });
+        : undefined;
 
       if (window.electronAPI?.isElectron) {
         const printerMode = templateSettings?.printerMode
           || (templateSettings?.defaultPrinter ? 'saved-printer' : 'system-default');
-        const removePageStyle = applyThermalPageSize(pageSize);
+        const removePageStyle = activeFormat === 'A4'
+          ? applyThermalPageSize({ width: 210_000, height: 297_000 })
+          : applyThermalPageWidth(thermalWidthMm);
         try {
           const result = await window.electronAPI.printReceipt({
             silent: printerMode !== 'choose-at-print-time',
             printerName: printerMode === 'saved-printer'
               ? templateSettings?.defaultPrinter || undefined
               : undefined,
-            pageSize,
+            ...(pageSize ? { pageSize } : {}),
           });
           if (!result.ok) {
             throw new Error(result.error || 'Return voucher could not be printed.');
@@ -95,7 +94,13 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
           removePageStyle();
         }
       } else {
-        printWithThermalPageSize(pageSize);
+        const browserPageSize = pageSize || measureThermalPageSize(printAreaRef.current, {
+          elementWidthMm: thermalWidthMm,
+          pageWidthMm: thermalWidthMm,
+          padding: `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`,
+          container: document.querySelector('.receipt-print-source'),
+        });
+        printWithThermalPageSize(browserPageSize);
       }
     } catch (error) {
       console.error('Failed to print sales return voucher:', error);

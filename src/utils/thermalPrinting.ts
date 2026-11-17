@@ -90,6 +90,14 @@ export function applyThermalPageSize(pageSize: ThermalPageSize): () => void {
   return () => pageStyle.remove();
 }
 
+export function applyThermalPageWidth(widthMm: 58 | 80): () => void {
+  const pageStyle = document.createElement('style');
+  pageStyle.textContent = `@page { size: ${widthMm}mm auto; margin: 0; }`;
+  document.head.appendChild(pageStyle);
+
+  return () => pageStyle.remove();
+}
+
 export function printWithThermalPageSize(pageSize: ThermalPageSize): void {
   const removePageStyle = applyThermalPageSize(pageSize);
   const cleanup = () => {

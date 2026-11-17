@@ -37,7 +37,7 @@ import { ProductImage } from './ProductImage';
 import { getPaymentMethods } from '../utils/paymentMethods';
 import { getKotNumberFromInvoice } from '../utils/documentNumbers';
 import {
-  applyThermalPageSize,
+  applyThermalPageWidth,
   measureThermalPageSize,
   printWithThermalPageSize,
 } from '../utils/thermalPrinting';
@@ -494,22 +494,12 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       setIsPrintingKot(true);
       document.body.classList.add('kot-printing');
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      const kotPageSize = measureThermalPageSize(
-        document.getElementById('kot-print-area'),
-        {
-          elementWidthMm: 72,
-          pageWidthMm: 80,
-          padding: '3mm',
-          container: document.querySelector('.kot-print-source'),
-        }
-      );
       if (window.electronAPI?.isElectron) {
-        const removePageStyle = applyThermalPageSize(kotPageSize);
+        const removePageStyle = applyThermalPageWidth(80);
         try {
           const result = await window.electronAPI.printReceipt({
             silent: true,
             printerName: settings.kotPrinter || undefined,
-            pageSize: kotPageSize,
           });
           if (!result.ok) {
             throw new Error(result.error || 'Kitchen order ticket could not be printed.');
@@ -522,6 +512,15 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           removePageStyle();
         }
       } else {
+        const kotPageSize = measureThermalPageSize(
+          document.getElementById('kot-print-area'),
+          {
+            elementWidthMm: 72,
+            pageWidthMm: 80,
+            padding: '3mm',
+            container: document.querySelector('.kot-print-source'),
+          }
+        );
         printWithThermalPageSize(kotPageSize);
         setFeedback({
           type: 'info',

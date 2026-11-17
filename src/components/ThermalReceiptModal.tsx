@@ -5,7 +5,7 @@ import type { PaperWidth, Sale, SalesReturnVoucher, StoreSettings } from '../typ
 import { useLanguage } from '../i18n/LanguageContext';
 import { generateZatcaTlvBase64 } from '../utils/zatcaQr';
 import {
-  applyThermalPageSize,
+  applyThermalPageWidth,
   measureThermalPageSize,
   printWithThermalPageSize,
   resolveInvoiceMarginsMm,
@@ -87,13 +87,15 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const handlePrint = async () => {
     setPrintError(null);
     try {
-      const pageSize = activeFormat === 'A4'
+      const isElectron = window.electronAPI?.isElectron === true;
+      const thermalWidthMm = activeFormat === '58mm' ? 58 : 80;
+      const pageSize = activeFormat === 'A4' || isElectron
         ? undefined
         : measureThermalPageSize(
             document.querySelector<HTMLElement>('.thermal-receipt-print-area:not(.paper-a4)'),
             {
-              elementWidthMm: activeFormat === '58mm' ? 58 : 80,
-              pageWidthMm: activeFormat === '58mm' ? 58 : 80,
+              elementWidthMm: thermalWidthMm,
+              pageWidthMm: thermalWidthMm,
               padding: `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`,
               container: document.querySelector('.receipt-print-source'),
             }
@@ -101,12 +103,13 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
       if (window.electronAPI?.isElectron) {
         const printerMode = templateSettings?.printerMode
           || (templateSettings?.defaultPrinter ? 'saved-printer' : 'system-default');
-        const removePageStyle = pageSize ? applyThermalPageSize(pageSize) : undefined;
+        const removePageStyle = activeFormat === 'A4'
+          ? undefined
+          : applyThermalPageWidth(thermalWidthMm);
         try {
           const result = await window.electronAPI.printReceipt({
             silent: printerMode !== 'choose-at-print-time',
             printerName: printerMode === 'saved-printer' ? templateSettings?.defaultPrinter || undefined : undefined,
-            pageSize,
           });
           if (!result.ok) {
             throw new Error(result.error || 'Receipt could not be printed.');
