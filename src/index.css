@@ -359,20 +359,6 @@
     page-break-before: always;
   }
 
-  .a4-invoice-page > .border,
-  .a4-invoice-page > section {
-    flex-shrink: 0;
-  }
-
-  .a4-invoice-page .overflow-hidden {
-    overflow: visible !important;
-  }
-
-  .a4-invoice-page table {
-    width: 100% !important;
-    table-layout: fixed !important;
-  }
-
   .a4-invoice-page thead {
     display: table-header-group;
   }
@@ -380,14 +366,6 @@
   .a4-invoice-page tr {
     break-inside: avoid;
     page-break-inside: avoid;
-  }
-
-  .a4-invoice-bottom {
-    margin-top: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 3mm;
-    flex-shrink: 0;
   }
 
   .no-print {
