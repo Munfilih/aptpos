@@ -38,13 +38,13 @@ Runs in sequence:
 2. `electron:compile` — TypeScript → `dist-electron/` + esbuild server bundle
 3. `electron-builder --win nsis --x64` — packages and creates the NSIS installer
 
-Output: `release\aptPOS-Setup-<version>.exe` (version is read from `package.json`; current: `1.0.17`)
+Output: `release\aptPOS-Setup-<version>.exe` (version is read from `package.json`; current: `1.0.18`)
 
 ## Thermal receipt sizing
 
 Thermal jobs use a content-measured page height and a fixed 58 mm or 80 mm width. Electron receives dimensions in microns (58,000 or 80,000 wide); the height is converted from the rendered CSS-pixel height with a 1 mm trailing allowance. Printing uses 100% scale and no software margins. A driver option such as Epson's “Roll Paper 80 x 3276 mm” is a maximum roll length, not the height used for each receipt.
 
-The Sale Complete window has a per-receipt “Preview before printing” option. When enabled in Electron, it opens the printer preview/dialog instead of sending a silent job; when disabled, the configured silent-print mode is unchanged.
+The Sale Complete window has a per-receipt “Preview before printing” option. When enabled, it shows the rendered invoice in an in-app preview before sending the job using the configured printer mode. When disabled, the configured print flow is unchanged.
 
 ## Rebuild after source changes
 
@@ -62,7 +62,7 @@ npm run clean && npm run electron:build
 
 Packaged apps check the configured GitHub Releases feed on startup and can also check from Settings. The app asks before downloading an available update; users can also start the download from Settings.
 
-To publish a release, update the version in `package.json` and `package-lock.json`, then push a matching tag such as `v1.0.17`. The `.github/workflows/publish-release.yml` workflow builds the Windows installer and publishes the installer and update metadata to GitHub Releases.
+To publish a release, update the version in `package.json` and `package-lock.json`, then push a matching tag such as `v1.0.18`. The `.github/workflows/publish-release.yml` workflow builds the Windows installer and publishes the installer and update metadata to GitHub Releases.
 
 ## Window behaviour
 

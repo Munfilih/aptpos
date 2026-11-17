@@ -54,6 +54,65 @@
   display: none !important;
 }
 
+@media screen {
+  .invoice-print-dialog.receipt-preview-open {
+    overflow: visible !important;
+  }
+
+  .receipt-print-source.receipt-print-preview-active {
+    display: block !important;
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    overflow: auto;
+    padding: 20px 12px 96px;
+    background: rgb(15 23 42 / 0.72);
+  }
+
+  .receipt-print-preview-active .thermal-receipt-print-area:not(.paper-a4) {
+    box-sizing: border-box;
+    width: 80mm;
+    max-width: 80mm;
+    margin: 0 auto;
+    padding:
+      var(--invoice-margin-top, 2mm)
+      var(--invoice-margin-right, 2mm)
+      var(--invoice-margin-bottom, 2mm)
+      var(--invoice-margin-left, 2mm);
+    border: 0;
+    background: #ffffff;
+    box-shadow: 0 8px 28px rgb(0 0 0 / 0.25);
+  }
+
+  .receipt-print-preview-active .thermal-receipt-print-area.paper-58mm {
+    width: 58mm;
+    max-width: 58mm;
+  }
+
+  .receipt-print-preview-active .thermal-receipt-print-area.paper-a4 {
+    width: 210mm;
+    max-width: none;
+    margin: 0 auto;
+  }
+
+  .receipt-print-preview-active .a4-invoice-page {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 3mm;
+    width: 210mm;
+    height: 297mm;
+    margin: 0 auto 12mm;
+    padding:
+      var(--invoice-margin-top, 5mm)
+      var(--invoice-margin-right, 5mm)
+      var(--invoice-margin-bottom, 5mm)
+      var(--invoice-margin-left, 5mm);
+    background: #ffffff;
+    box-shadow: 0 8px 28px rgb(0 0 0 / 0.25);
+  }
+}
+
 @media print {
   html,
   body {

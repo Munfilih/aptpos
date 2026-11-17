@@ -35,6 +35,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const [zatcaQrDataUrl, setZatcaQrDataUrl] = useState<string>('');
   const [printError, setPrintError] = useState<string | null>(null);
   const [previewBeforePrint, setPreviewBeforePrint] = useState(false);
+  const [showPrintPreview, setShowPrintPreview] = useState(false);
 
   // Generate the electronic invoice QR code payload.
   useEffect(() => {
@@ -109,7 +110,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
         const removePageStyle = pageSize ? applyThermalPageSize(pageSize) : undefined;
         try {
           const result = await window.electronAPI.printReceipt({
-            silent: !previewBeforePrint && printerMode !== 'choose-at-print-time',
+            silent: printerMode !== 'choose-at-print-time',
             printerName: printerMode === 'saved-printer' ? templateSettings?.defaultPrinter || undefined : undefined,
             ...(pageSize ? { pageSize } : {}),
           });
@@ -135,6 +136,11 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   };
 
   const handlePrintAndClose = async () => {
+    if (previewBeforePrint && !showPrintPreview) {
+      setPrintError(null);
+      setShowPrintPreview(true);
+      return;
+    }
     if (await handlePrint()) onClose();
   };
 
@@ -155,18 +161,26 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
       if (e.key === 'Enter') {
         e.preventDefault();
         e.stopPropagation();
+        if (showPrintPreview) {
+          void handlePrintAndClose();
+          return;
+        }
         onClose();
         return;
       }
       if (e.key === 'Escape') {
         e.preventDefault();
+        if (showPrintPreview) {
+          setShowPrintPreview(false);
+          return;
+        }
         onClose();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [onClose, handlePrintAndClose]);
+  }, [onClose, handlePrintAndClose, showPrintPreview]);
 
   const isInclusive = (sale.taxType || settings.taxType) === 'inclusive';
 
@@ -225,7 +239,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
       aria-modal="true"
       aria-labelledby="tender-modal-title"
     >
-      <div className="invoice-print-dialog bg-white border border-slate-200 rounded-2xl w-full max-w-lg max-h-[92vh] overflow-hidden shadow-2xl flex flex-col">
+      <div className={`invoice-print-dialog bg-white border border-slate-200 rounded-2xl w-full max-w-lg max-h-[92vh] overflow-hidden shadow-2xl flex flex-col${showPrintPreview ? ' receipt-preview-open' : ''}`}>
         <div className="no-print px-5 py-4 border-b border-slate-200 flex items-start justify-between gap-3 shrink-0 bg-white">
           <div className="flex items-center gap-2 min-w-0">
             <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
@@ -363,7 +377,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
 
         </div>
 
-        <div className="receipt-print-source">
+        <div className={`receipt-print-source${showPrintPreview ? ' receipt-print-preview-active' : ''}`}>
           {activeFormat === 'A4' ? (
             /* ======================================================== */
             /* A4 FORMAT TAX INVOICE                                    */
@@ -909,7 +923,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
             {window.electronAPI?.isElectron && (
               <label
                 className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-[10px] text-slate-600"
-                title="Open the printer preview instead of printing silently"
+                title="Preview the receipt before printing"
               >
                 <input
                   type="checkbox"
@@ -927,7 +941,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               className="inline-flex items-center gap-2 px-3.5 py-2.5 text-xs font-semibold text-blue-700 bg-white border border-blue-200 hover:bg-blue-50 rounded-lg transition-colors whitespace-nowrap"
             >
               <Printer className="w-3.5 h-3.5" />
-              <span>{previewBeforePrint ? 'Preview & Print' : 'Print Receipt'}</span>
+              <span>{previewBeforePrint ? 'Preview Receipt' : 'Print Receipt'}</span>
             </button>
             <button
               ref={primaryActionBtnRef}
@@ -941,6 +955,35 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
           </div>
         </div>
       </div>
+      {showPrintPreview && (
+        <div className="receipt-preview-controls no-print fixed bottom-4 left-1/2 z-[70] flex w-[min(94vw,480px)] -translate-x-1/2 items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-xl">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-slate-900">
+              {language === 'ar' ? 'معاينة الفاتورة' : 'Receipt preview'}
+            </div>
+            {printError && (
+              <div role="alert" className="mt-1 text-xs text-red-700">{printError}</div>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowPrintPreview(false)}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              {language === 'ar' ? 'رجوع' : 'Back'}
+            </button>
+            <button
+              type="button"
+              onClick={handlePrintAndClose}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800"
+            >
+              <Printer className="h-3.5 w-3.5" />
+              {language === 'ar' ? 'طباعة' : 'Print'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
