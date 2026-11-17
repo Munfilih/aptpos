@@ -17,6 +17,7 @@ declare global {
         Promise<{ canceled: boolean; filePath?: string }>;
       getUpdateStatus: () => Promise<UpdateStatus>;
       checkForUpdates: () => Promise<UpdateStatus>;
+      downloadUpdate: () => Promise<UpdateStatus>;
       installUpdate: () => Promise<void>;
       getBackupDirectory: () => Promise<string>;
       getBackupConfiguration: () => Promise<{

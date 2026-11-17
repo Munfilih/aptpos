@@ -66,8 +66,44 @@ function publishUpdateStatus(status: UpdateStatus): void {
   }
 }
 
+async function downloadAvailableUpdate(): Promise<UpdateStatus> {
+  if (updateStatus.state !== 'available') {
+    throw new Error('No update is currently available to download.');
+  }
+
+  const { version, releaseNotes } = updateStatus;
+  publishUpdateStatus({
+    state: 'downloading',
+    version,
+    percent: 0,
+    ...(releaseNotes ? { releaseNotes } : {}),
+  });
+  await autoUpdater.downloadUpdate();
+  return updateStatus;
+}
+
+async function confirmUpdateDownload(version: string): Promise<void> {
+  const parent = mainWindow;
+  if (!parent || parent.isDestroyed()) return;
+
+  const { response } = await dialog.showMessageBox(parent, {
+    type: 'info',
+    title: 'Update available',
+    message: `aptPOS ${version} is available.`,
+    detail: 'Would you like to download this update now?',
+    buttons: ['Download', 'Later'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  });
+
+  if (response === 0 && updateStatus.state === 'available' && updateStatus.version === version) {
+    await downloadAvailableUpdate();
+  }
+}
+
 function initializeAutoUpdater(): void {
-  autoUpdater.autoDownload = true;
+  autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.allowPrerelease = false;
 
@@ -81,6 +117,11 @@ function initializeAutoUpdater(): void {
       state: 'available',
       version: info.version,
       ...(currentReleaseNotes ? { releaseNotes: currentReleaseNotes } : {}),
+    });
+    void confirmUpdateDownload(info.version).catch((error: unknown) => {
+      console.error('Failed to confirm update download:', error);
+      const message = error instanceof Error ? error.message : 'The update download could not be started.';
+      publishUpdateStatus({ state: 'error', message });
     });
   });
   autoUpdater.on('update-not-available', (info) => {
@@ -962,6 +1003,11 @@ ipcMain.handle('pos:updates:get-status', (event) => {
 ipcMain.handle('pos:updates:check', async (event) => {
   assertTrustedSender(event);
   return checkForUpdates();
+});
+
+ipcMain.handle('pos:updates:download', async (event) => {
+  assertTrustedSender(event);
+  return downloadAvailableUpdate();
 });
 
 ipcMain.handle('pos:updates:install', (event) => {

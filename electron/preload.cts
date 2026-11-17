@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('pos:share-receipt-whatsapp', options),
   getUpdateStatus: () => ipcRenderer.invoke('pos:updates:get-status'),
   checkForUpdates: () => ipcRenderer.invoke('pos:updates:check'),
+  downloadUpdate: () => ipcRenderer.invoke('pos:updates:download'),
   installUpdate: () => ipcRenderer.invoke('pos:updates:install'),
   getBackupDirectory: () => ipcRenderer.invoke('pos:backup:get-directory'),
   getBackupConfiguration: () => ipcRenderer.invoke('pos:backup:get-configuration'),

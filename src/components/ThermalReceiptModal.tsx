@@ -5,13 +5,14 @@ import type { PaperWidth, Sale, SalesReturnVoucher, StoreSettings } from '../typ
 import { useLanguage } from '../i18n/LanguageContext';
 import { generateZatcaTlvBase64 } from '../utils/zatcaQr';
 import {
+  applyThermalPageWidth,
   applyThermalPageSize,
   measureThermalPageSize,
   printWithThermalPageSize,
   resolveInvoiceMarginsMm,
 } from '../utils/thermalPrinting';
 
-const A4_ITEMS_PER_PAGE = 15;
+const A4_ITEMS_PER_PAGE = 13;
 
 interface ThermalReceiptModalProps {
   sale: Sale;
@@ -89,27 +90,34 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const handlePrint = async () => {
     setPrintError(null);
     try {
+      const isElectron = window.electronAPI?.isElectron === true;
       const thermalWidthMm = activeFormat === '58mm' ? 58 : 80;
       const pageSize = activeFormat === 'A4'
         ? { width: 210_000, height: 297_000 }
-        : measureThermalPageSize(
-            document.querySelector<HTMLElement>('.thermal-receipt-print-area:not(.paper-a4)'),
-            {
-              elementWidthMm: thermalWidthMm,
-              pageWidthMm: thermalWidthMm,
-              padding: `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`,
-              container: document.querySelector('.receipt-print-source'),
-            }
-          );
+        : isElectron
+          ? undefined
+          : measureThermalPageSize(
+              document.querySelector<HTMLElement>('.thermal-receipt-print-area:not(.paper-a4)'),
+              {
+                elementWidthMm: thermalWidthMm,
+                pageWidthMm: thermalWidthMm,
+                padding: `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`,
+                container: document.querySelector('.receipt-print-source'),
+              }
+            );
       if (window.electronAPI?.isElectron) {
         const printerMode = templateSettings?.printerMode
           || (templateSettings?.defaultPrinter ? 'saved-printer' : 'system-default');
-        const removePageStyle = pageSize ? applyThermalPageSize(pageSize) : undefined;
+        const removePageStyle = activeFormat === 'A4' && pageSize
+          ? applyThermalPageSize(pageSize)
+          : activeFormat === 'A4'
+            ? undefined
+            : applyThermalPageWidth(thermalWidthMm);
         try {
           const result = await window.electronAPI.printReceipt({
             silent: printerMode !== 'choose-at-print-time',
             printerName: printerMode === 'saved-printer' ? templateSettings?.defaultPrinter || undefined : undefined,
-            pageSize,
+            ...(activeFormat === 'A4' && pageSize ? { pageSize } : {}),
           });
           if (!result.ok) {
             throw new Error(result.error || 'Receipt could not be printed.');
@@ -503,20 +511,21 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               </div>
 
               {/* Financial Totals & QR Code Grid */}
-              {pageIndex === a4ItemPages.length - 1 && <div className="grid grid-cols-2 gap-4 items-start pt-1">
+              <div className="a4-invoice-bottom">
+              {pageIndex === a4ItemPages.length - 1 && <div className="a4-invoice-summary grid grid-cols-2 gap-4 items-start">
                 {/* Left: Invoice QR Code */}
                 <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
                   <div className="flex items-center gap-2.5">
                     {showQr && (
-                      <div className="w-20 h-20 bg-white border border-slate-200 p-1 rounded-md flex items-center justify-center shrink-0">
+                      <div className="w-28 h-28 bg-white border border-slate-200 p-1 rounded-md flex items-center justify-center shrink-0">
                         {zatcaQrDataUrl ? (
                           <img
                             src={zatcaQrDataUrl}
                             alt="Invoice QR Code"
-                            className="w-18 h-18 object-contain"
+                            className="w-26 h-26 object-contain"
                           />
                         ) : (
-                          <QrCode className="w-14 h-14 text-slate-900" />
+                          <QrCode className="w-20 h-20 text-slate-900" />
                         )}
                       </div>
                     )}
@@ -636,6 +645,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                   Page {pageIndex + 1} of {a4ItemPages.length}
                 </div>
               </footer>
+              </div>
                 </section>
               ))}
             </div>
