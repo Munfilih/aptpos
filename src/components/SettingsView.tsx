@@ -328,7 +328,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     password: '',
     role: 'cashier',
     displayName: '',
-    permissions: ['register', 'sales'],
+    permissions: ['register', 'sales', 'reports'],
   });
   const [userFormSaving, setUserFormSaving] = useState(false);
   const [userFormError, setUserFormError] = useState<string | null>(null);
@@ -393,7 +393,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       password: '',
       role: 'cashier',
       displayName: '',
-      permissions: ['register', 'sales'],
+      permissions: ['register', 'sales', 'reports'],
     });
     setUserFormError(null);
     setUserModalOpen(true);
@@ -406,7 +406,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       password: '', // Leave blank to keep existing password
       role: user.role,
       displayName: user.displayName,
-      permissions: user.permissions && user.permissions.length > 0 ? user.permissions : ['register', 'sales'],
+      permissions: user.permissions && user.permissions.length > 0
+        ? [...new Set([
+            ...user.permissions,
+            ...(user.permissions.includes('sales') ? ['reports'] : []),
+          ])]
+        : ['register', 'sales', 'reports'],
     });
     setUserFormError(null);
     setUserModalOpen(true);
@@ -458,6 +463,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         'purchases',
         'customers',
         'vendors',
+        'accounts',
+        'reports',
         'settings',
       ];
       const requestedPerms = new Set(userFormData.permissions);
@@ -1978,11 +1985,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </div>
                   <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
                     <span><span className="font-medium text-slate-700">register</span> — POS Register (checkout)</span>
-                    <span><span className="font-medium text-slate-700">sales</span> — Sales history & reports</span>
+                    <span><span className="font-medium text-slate-700">sales</span> — Sales history</span>
                     <span><span className="font-medium text-slate-700">inventory</span> — Product catalog & stock</span>
                     <span><span className="font-medium text-slate-700">purchases</span> — Purchase orders</span>
                     <span><span className="font-medium text-slate-700">customers</span> — Customer ledger</span>
                     <span><span className="font-medium text-slate-700">vendors</span> — Vendor accounts</span>
+                    <span><span className="font-medium text-slate-700">accounts</span> — Cashbook access</span>
+                    <span><span className="font-medium text-slate-700">reports</span> — Business reports</span>
                     <span><span className="font-medium text-slate-700">settings</span> — System settings</span>
                   </div>
                 </div>
@@ -2422,9 +2431,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         ...userFormData,
                         role,
                         permissions: role === 'admin'
-                          ? ['register', 'inventory', 'purchases', 'customers', 'vendors', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings']
+                          ? ['register', 'inventory', 'purchases', 'customers', 'vendors', 'accounts', 'reports', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings']
                           : role === 'cashier'
-                          ? ['register', 'sales']
+                          ? ['register', 'sales', 'reports']
                           : userFormData.permissions,
                       })}
                       className={`py-2 px-3 rounded-lg border text-xs font-semibold capitalize transition-all ${
@@ -2450,7 +2459,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     Access Permissions
                   </label>
                   <div className="grid grid-cols-2 gap-1.5 p-3 bg-slate-50 border border-slate-200 rounded-xl">
-                    {(['register', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'inventory', 'purchases', 'customers', 'vendors', 'settings'] as const).map((perm) => {
+                    {(['register', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'inventory', 'purchases', 'customers', 'vendors', 'accounts', 'reports', 'settings'] as const).map((perm) => {
                       const checked = userFormData.permissions.includes(perm);
                       return (
                         <label key={perm} className="flex items-center gap-2 cursor-pointer select-none py-1 px-2 hover:bg-slate-100 rounded-lg">
@@ -2499,6 +2508,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                   ? 'Manage Sales Returns'
                                 : perm === 'delete-sales'
                                   ? 'Delete Sales'
+                                : perm === 'accounts'
+                                  ? 'Accounts'
+                                : perm === 'reports'
+                                  ? 'Reports'
                                   : perm}
                           </span>
                         </label>

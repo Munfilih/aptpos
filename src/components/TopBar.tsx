@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import {
   X,
   Menu,
@@ -11,7 +11,6 @@ import {
   Wallet,
   Settings as SettingsIcon,
   ChevronRight,
-  CalendarDays,
   LogOut,
   RotateCcw,
   BarChart3,
@@ -70,13 +69,6 @@ export const TopBar: React.FC<TopBarProps> = ({
   const { t, language } = useLanguage();
   const [showNavigationDrawer, setShowNavigationDrawer] = useState(false);
   const [openNavigationGroup, setOpenNavigationGroup] = useState<'history' | 'parties' | null>(null);
-  const [systemTime, setSystemTime] = useState(() => new Date());
-  const calendarInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setSystemTime(new Date()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   const navItems: TopNavItem[] = [
     { id: 'register', label: t.navRegister, icon: ShoppingBag },
@@ -97,8 +89,8 @@ export const TopBar: React.FC<TopBarProps> = ({
       ],
     },
     { id: 'inventory', label: t.navInventory, icon: Package, adminOnly: true },
-    { id: 'accounts', label: t.navAccounts, icon: Wallet, adminOnly: true },
-    { id: 'reports', label: t.navReports, icon: BarChart3, permission: 'sales' },
+    { id: 'accounts', label: t.navAccounts, icon: Wallet, permission: 'accounts' },
+    { id: 'reports', label: t.navReports, icon: BarChart3, permission: 'reports' },
     { id: 'settings', label: t.navSettings, icon: SettingsIcon, adminOnly: true },
     {
       id: 'parties',
@@ -149,24 +141,6 @@ export const TopBar: React.FC<TopBarProps> = ({
     setOpenNavigationGroup(null);
   };
 
-  const openCalendar = () => {
-    const calendarInput = calendarInputRef.current;
-    if (!calendarInput) return;
-
-    calendarInput.value = [
-      systemTime.getFullYear(),
-      String(systemTime.getMonth() + 1).padStart(2, '0'),
-      String(systemTime.getDate()).padStart(2, '0'),
-    ].join('-');
-
-    if (typeof calendarInput.showPicker === 'function') {
-      calendarInput.showPicker();
-    } else {
-      calendarInput.focus();
-      calendarInput.click();
-    }
-  };
-
   return (
     <>
       <header className="no-print h-14 bg-white border-b border-slate-200 px-3 sm:px-6 flex items-center justify-between gap-2 sm:gap-6 shrink-0 z-20">
@@ -189,40 +163,17 @@ export const TopBar: React.FC<TopBarProps> = ({
           </button>
         </div>
 
-        {/* Zone 2: System date, time, and calendar */}
-        <div className="flex shrink-0 items-center gap-2">
-          <div className="relative shrink-0">
-            <button
-              type="button"
-              onClick={openCalendar}
-              title={language === 'ar' ? 'فتح التقويم' : 'Open calendar'}
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:border-blue-300 hover:bg-blue-50 sm:gap-2.5 sm:px-3"
-            >
-              <CalendarDays className="h-4 w-4 shrink-0 text-blue-700" />
-              <span className="whitespace-nowrap">
-                {systemTime.toLocaleDateString(language === 'ar' ? 'ar-SA' : 'en-US', {
-                  year: 'numeric',
-                  month: 'short',
-                  day: 'numeric',
-                })}
-              </span>
-              <span className="whitespace-nowrap font-mono tabular-nums">
-                {systemTime.toLocaleTimeString(language === 'ar' ? 'ar-SA' : 'en-US', {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                  second: '2-digit',
-                })}
-              </span>
-            </button>
-            <input
-              ref={calendarInputRef}
-              type="date"
-              aria-label={language === 'ar' ? 'التقويم' : 'Calendar'}
-              className="pointer-events-none absolute h-px w-px opacity-0"
-              tabIndex={-1}
-            />
+        {currentUser && (
+          <div className="min-w-0 max-w-[55%] text-right">
+            <div className="truncate text-xs font-semibold text-slate-800">
+              {currentUser.displayName || currentUser.username}
+            </div>
+            <div className="truncate text-[10px] text-slate-500">
+              {currentUser.username} · {currentUser.role}
+            </div>
           </div>
-        </div>
+        )}
+
       </header>
 
       {/* Slide-over Navigation Drawer */}

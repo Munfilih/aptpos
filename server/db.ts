@@ -499,7 +499,7 @@ function seedInitialData(database: Database): void {
       'aptpwd123',
       'admin',
       'Company Admin / مدير الشركة',
-      'register,inventory,purchases,customers,vendors,sales,edit-sales,sales-return,manage-sales-returns,delete-sales,settings',
+      'register,inventory,purchases,customers,vendors,accounts,reports,sales,edit-sales,sales-return,manage-sales-returns,delete-sales,settings',
     ]);
     userStmt.free();
   }
@@ -2444,7 +2444,7 @@ export async function authenticateUser(
   const permissions = row[5]
     ? String(row[5]).split(',').filter(Boolean)
     : (role === 'admin'
-        ? ['register', 'inventory', 'purchases', 'customers', 'vendors', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings']
+        ? ['register', 'inventory', 'purchases', 'customers', 'vendors', 'accounts', 'reports', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings']
         : ['register', 'sales']);
 
   return {
@@ -2468,7 +2468,7 @@ export async function listUsers(): Promise<UserAccount[]> {
     const permissions = row[4]
       ? String(row[4]).split(',').filter(Boolean)
       : (role === 'admin'
-          ? ['register', 'inventory', 'purchases', 'customers', 'vendors', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings']
+          ? ['register', 'inventory', 'purchases', 'customers', 'vendors', 'accounts', 'reports', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings']
           : ['register', 'sales']);
 
     return {
@@ -2504,7 +2504,7 @@ export async function createUser(input: {
   const permissions = input.permissions && input.permissions.length > 0
     ? input.permissions
     : (role === 'admin'
-        ? ['register', 'inventory', 'purchases', 'customers', 'vendors', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings']
+        ? ['register', 'inventory', 'purchases', 'customers', 'vendors', 'accounts', 'reports', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings']
         : ['register', 'sales']);
 
   const permsStr = permissions.join(',');
@@ -2562,7 +2562,7 @@ export async function updateUser(
     : (current[5]
         ? String(current[5]).split(',').filter(Boolean)
         : (role === 'admin'
-            ? ['register', 'inventory', 'purchases', 'customers', 'vendors', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings']
+            ? ['register', 'inventory', 'purchases', 'customers', 'vendors', 'accounts', 'reports', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings']
             : ['register', 'sales']));
 
   const permsStr = permissions.join(',');

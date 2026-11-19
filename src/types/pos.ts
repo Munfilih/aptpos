@@ -114,6 +114,7 @@ export interface CartItem {
   unitName?: string;
   unitsPerBase?: number;
   lineId?: string;
+  scannedBarcode?: string;
 }
 
 export type PaymentMethod = 'Cash' | 'Card' | 'Split' | (string & {});

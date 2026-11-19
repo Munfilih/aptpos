@@ -11,7 +11,6 @@ import {
   ShoppingBag,
   ArrowRight,
   ArrowLeft,
-  PauseCircle,
   X,
   Layers,
   LayoutGrid,
@@ -19,7 +18,6 @@ import {
   PackageCheck,
   CreditCard,
   Banknote,
-  RotateCcw,
   Printer,
 } from 'lucide-react';
 import type {
@@ -245,10 +243,6 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   const [mobileTab, setMobileTab] = useState<'table' | 'checkout'>('table');
   const [rposTicketWidth, setRposTicketWidth] = useState(loadRposTicketWidth);
   const [barcodeInput, setBarcodeInput] = useState('');
-  const [allProductSearch, setAllProductSearch] = useState('');
-  const [isAllProductSearchFocused, setIsAllProductSearchFocused] = useState(false);
-  const [selectedSearchIndex, setSelectedSearchIndex] = useState(0);
-  const allProductSearchRef = useRef<HTMLDivElement>(null);
   const [isCatalogOpen, setIsCatalogOpen] = useState(false);
   const [isBrowsingCategories, setIsBrowsingCategories] = useState(false);
   const [catalogSearch, setCatalogSearch] = useState('');
@@ -259,6 +253,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   const [rposCategoryError, setRposCategoryError] = useState<string | null>(null);
   const [editingTicketItemId, setEditingTicketItemId] = useState<string | null>(null);
   const [selectedTicketItemId, setSelectedTicketItemId] = useState<string | null>(null);
+  const [pendingPriceItem, setPendingPriceItem] = useState<CartItem | null>(null);
   const [zeroPriceDialogItems, setZeroPriceDialogItems] = useState<CartItem[] | null>(null);
   const [selectedZeroPriceItemId, setSelectedZeroPriceItemId] = useState<string | null>(null);
   const [ticketEditPrice, setTicketEditPrice] = useState('');
@@ -451,6 +446,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   const isSubmittingRef = useRef(false);
   const completeSaleRef = useRef<((confirmed?: boolean) => Promise<void>) | null>(null);
   const [isSaleConfirmationOpen, setIsSaleConfirmationOpen] = useState(false);
+  const [isCancelConfirmationOpen, setIsCancelConfirmationOpen] = useState(false);
   const [isTenderModalOpen, setIsTenderModalOpen] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'error' | 'info'; text: string } | null>(null);
   const [isPrintingKot, setIsPrintingKot] = useState(false);
@@ -705,6 +701,43 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     }, 200);
   }, [restoredSale, products]);
 
+  const clearCart = useCallback(() => {
+    setSelectedTicketItemId(null);
+    setEditingTicketItemId(null);
+    setPendingPriceItem(null);
+    setTabs((prev) =>
+      prev.map((tab) =>
+        tab.id === activeTabId
+          ? {
+              ...tab,
+              cart: [],
+              invoiceNumber: undefined,
+              customerName: settings.defaultCustomer || 'Walk-in Customer / عميل نقدي',
+              discountValue: '',
+              paymentMethod: 'Cash',
+              cashTendered: '',
+              cashTenderedManuallySet: false,
+              cardTendered: '',
+              editingSaleId: undefined,
+              editingOriginalItems: undefined,
+              isHeld: false,
+            }
+          : tab
+      )
+    );
+    setFeedback(null);
+    focusBarcodeInput();
+  }, [activeTabId, settings.defaultCustomer, focusBarcodeInput]);
+
+  const confirmCancelCart = useCallback(() => {
+    setIsCancelConfirmationOpen(true);
+  }, []);
+
+  const cancelCurrentTicket = useCallback(() => {
+    setIsCancelConfirmationOpen(false);
+    clearCart();
+  }, [clearCart]);
+
   // Global Keyboard shortcuts & scanning lock trap
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -718,6 +751,17 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         }
         e.preventDefault();
         e.stopPropagation();
+        return;
+      }
+
+      if (isCancelConfirmationOpen) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setIsCancelConfirmationOpen(false);
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          cancelCurrentTicket();
+        }
         return;
       }
 
@@ -754,26 +798,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         setIsCatalogOpen((prev) => !prev);
       } else if (e.key === 'F5') {
         e.preventDefault();
-        setTabs((prev) =>
-          prev.map((tab) =>
-            tab.id === activeTabId
-              ? {
-                  ...tab,
-                  cart: [],
-                  invoiceNumber: undefined,
-                  customerName: settings.defaultCustomer || 'Walk-in Customer / عميل نقدي',
-                  discountValue: '',
-                  cashTendered: '',
-                  cardTendered: '',
-                  editingSaleId: undefined,
-                  editingOriginalItems: undefined,
-                  isHeld: false,
-                }
-              : tab
-          )
-        );
-        setFeedback(null);
-        focusBarcodeInput();
+        confirmCancelCart();
       } else if (e.key === 'F6') {
         e.preventDefault();
         handleHoldCurrentTab();
@@ -796,7 +821,10 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     wrongBarcodeModal,
     isCatalogOpen,
     isSaleConfirmationOpen,
+    isCancelConfirmationOpen,
     isTenderModalOpen,
+    confirmCancelCart,
+    cancelCurrentTicket,
     cart,
     isSubmitting,
     activeTabId,
@@ -871,7 +899,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   };
 
   // Add a product in its scanned or selected unit while reserving base-unit stock.
-  const addToCart = (product: Product, unitId?: string) => {
+  const addToCart = (product: Product, unitId?: string, scannedBarcode?: string) => {
     setFeedback(null);
     const unit = getUnitDetails(product, unitId);
     if (unitId && !unit.unitId) {
@@ -913,19 +941,26 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       unitName: unit.unitName,
       unitsPerBase: unit.unitsPerBase,
       lineId,
+      scannedBarcode,
     };
     if (settings.barcodeScanBeep) playScannerBeep();
-    if (isZeroPriced) openTicketItemEditor(nextItem);
+    if (isZeroPriced) {
+      setPendingPriceItem(nextItem);
+      openTicketItemEditor(nextItem);
+      return;
+    }
 
     setCart((prev) => {
-      const sameUnit = isZeroPriced
-        ? undefined
-        : prev.find(
-            (item) => item.product.id === product.id && (item.unitId || '') === (unit.unitId || '')
-          );
+      const sameUnit = prev.find(
+        (item) => item.product.id === product.id && (item.unitId || '') === (unit.unitId || '')
+      );
       if (sameUnit) {
         return [
-          { ...sameUnit, quantity: sameUnit.quantity + 1 },
+          {
+            ...sameUnit,
+            quantity: sameUnit.quantity + 1,
+            scannedBarcode: scannedBarcode || sameUnit.scannedBarcode,
+          },
           ...prev.filter((item) => getCartItemLineId(item) !== getCartItemLineId(sameUnit)),
         ];
       }
@@ -940,12 +975,36 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     setEditingTicketItemId(getCartItemLineId(item));
   };
 
+  const closeTicketItemEditor = () => {
+    setEditingTicketItemId(null);
+    setPendingPriceItem(null);
+  };
+
   const saveTicketItemEdits = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const item = cart.find((cartItem) => getCartItemLineId(cartItem) === editingTicketItemId);
+    const item = cart.find((cartItem) => getCartItemLineId(cartItem) === editingTicketItemId) ??
+      (pendingPriceItem && getCartItemLineId(pendingPriceItem) === editingTicketItemId
+        ? pendingPriceItem
+        : undefined);
+    const isPendingPriceItem = Boolean(
+      pendingPriceItem && getCartItemLineId(pendingPriceItem) === editingTicketItemId
+    );
     const price = Number(ticketEditPrice);
     const quantity = Number(ticketEditQuantity);
     const unit = item ? getUnitDetails(item.product, ticketEditUnitId || undefined) : null;
+
+    if (
+      item?.product.retailPrice === 0 &&
+      (!/^\d{1,4}(?:\.\d{0,2})?$/.test(ticketEditPrice) || price <= 0 || price > 9999.99)
+    ) {
+      setFeedback({
+        type: 'error',
+        text: isRtl
+          ? 'يجب أن يكون السعر أكبر من صفر وألا يتجاوز 9999.99.'
+          : 'Price must be greater than zero and at most 9,999.99.',
+      });
+      return;
+    }
 
     if (
       !item ||
@@ -992,28 +1051,33 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       return;
     }
 
+    const updatedItem: CartItem = {
+      ...item,
+      quantity,
+      unitId: unit.unitId,
+      unitName: unit.unitName,
+      unitsPerBase: unit.unitsPerBase,
+      lineId: nextLineId,
+      product: { ...item.product, unit: unit.unitName, retailPrice: price },
+    };
     setCart((prev) =>
-      prev.map((entry) =>
-        getCartItemLineId(entry) === editingTicketItemId
-          ? {
-              ...entry,
-              quantity,
-              unitId: unit.unitId,
-              unitName: unit.unitName,
-              unitsPerBase: unit.unitsPerBase,
-              lineId: nextLineId,
-              product: { ...entry.product, unit: unit.unitName, retailPrice: price },
-            }
-          : entry
-      )
+      isPendingPriceItem
+        ? [updatedItem, ...prev]
+        : prev.map((entry) =>
+            getCartItemLineId(entry) === editingTicketItemId ? updatedItem : entry
+          )
     );
     setFeedback(null);
     setSelectedTicketItemId(nextLineId);
     setEditingTicketItemId(null);
+    setPendingPriceItem(null);
   };
 
   const adjustTicketEditQuantity = (delta: number) => {
-    const item = cart.find((cartItem) => getCartItemLineId(cartItem) === editingTicketItemId);
+    const item = cart.find((cartItem) => getCartItemLineId(cartItem) === editingTicketItemId) ??
+      (pendingPriceItem && getCartItemLineId(pendingPriceItem) === editingTicketItemId
+        ? pendingPriceItem
+        : undefined);
     const currentQuantity = Number(ticketEditQuantity);
     const current = Number.isFinite(currentQuantity) && currentQuantity >= 1 ? currentQuantity : 1;
     const units = item ? getUnitDetails(item.product, ticketEditUnitId || undefined).unitsPerBase : 1;
@@ -1027,31 +1091,13 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     if (selectedTicketItemId === lineId) setSelectedTicketItemId(null);
   };
 
-  const clearCart = () => {
-    setSelectedTicketItemId(null);
-    setEditingTicketItemId(null);
-    setTabs((prev) =>
-      prev.map((tab) =>
-        tab.id === activeTabId
-          ? {
-              ...tab,
-              cart: [],
-              invoiceNumber: undefined,
-              customerName: settings.defaultCustomer || 'Walk-in Customer / عميل نقدي',
-              discountValue: '',
-              paymentMethod: 'Cash',
-              cashTendered: '',
-              cashTenderedManuallySet: false,
-              cardTendered: '',
-              editingSaleId: undefined,
-              editingOriginalItems: undefined,
-              isHeld: false,
-            }
-          : tab
-      )
-    );
-    setFeedback(null);
-    focusBarcodeInput();
+  const selectTicketItem = (lineId: string) => {
+    setSelectedTicketItemId(lineId);
+    requestAnimationFrame(() => {
+      Array.from(document.querySelectorAll<HTMLElement>('[data-ticket-item]'))
+        .find((element) => element.dataset.ticketItemId === lineId)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
   };
 
   // Multi-tab Management
@@ -1175,40 +1221,6 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     return bMap;
   }, [products]);
 
-  const matchingAllSearchProducts = useMemo(() => {
-    const q = allProductSearch.trim().toLowerCase();
-    if (!q) return [];
-    return products
-      .filter((p) =>
-        p.name.toLowerCase().includes(q) ||
-        (p.nameAr && p.nameAr.toLowerCase().includes(q)) ||
-        p.sku.toLowerCase().includes(q) ||
-        p.barcode.toLowerCase().includes(q) ||
-        (p.multiUnits || []).some((unit) => unit.barcode.toLowerCase().includes(q)) ||
-        (p.additionalBarcodes || []).some((entry) => entry.barcode.toLowerCase().includes(q)) ||
-        p.category.toLowerCase().includes(q)
-      )
-      .slice(0, 10);
-  }, [products, allProductSearch]);
-
-  useEffect(() => {
-    setSelectedSearchIndex(0);
-  }, [allProductSearch]);
-
-  // Dismiss product search results when clicking outside the search field
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (
-        allProductSearchRef.current &&
-        !allProductSearchRef.current.contains(e.target as Node)
-      ) {
-        setIsAllProductSearchFocused(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
   // BARCODE SCAN HANDLER WITH SCANNER-LOCK ON INVALID BARCODE
   const handleBarcodeSubmit = (e: React.SyntheticEvent) => {
     e.preventDefault();
@@ -1226,7 +1238,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     const exactMatch = barcodeMap.get(q);
 
     if (exactMatch) {
-      addToCart(exactMatch.product, exactMatch.unitId);
+      addToCart(exactMatch.product, exactMatch.unitId, raw);
       setBarcodeInput('');
       focusBarcodeInput();
       return;
@@ -1676,12 +1688,16 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 
   const editingCartItem = cart.find(
     (item) => getCartItemLineId(item) === editingTicketItemId
+  ) ?? (
+    pendingPriceItem && getCartItemLineId(pendingPriceItem) === editingTicketItemId
+      ? pendingPriceItem
+      : undefined
   );
 
   return (
     <div
       onClick={handleContainerClick}
-      className="flex-1 flex flex-col min-h-0 bg-slate-100 overflow-hidden relative"
+      className="flex-1 flex flex-col min-h-0 bg-slate-100 overflow-hidden relative pb-[0.5cm]"
     >
       {/* 1. TOP BAR: MULTI-INVOICE TICKET TABS */}
       <header className="bg-white border-b border-slate-200 px-3 sm:px-4 py-2 flex items-center justify-between gap-2 shrink-0 z-10 shadow-xs">
@@ -1757,52 +1773,8 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             <span className="hidden sm:inline">{isRtl ? 'فاتورة جديدة' : 'New Tab'}</span>
           </button>
 
-          {cart.length > 0 && (
-            <button
-              type="button"
-              onClick={clearCart}
-              className="px-2.5 py-1.5 bg-white hover:bg-red-50 text-red-600 hover:text-red-700 border border-red-200 rounded-lg text-xs font-semibold inline-flex items-center gap-1 shrink-0 transition-colors"
-              title={isRtl ? 'مسح الفاتورة الحالية (F5)' : 'Clear current ticket (F5)'}
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>{isRtl ? 'مسح' : 'Clear'}</span>
-              <span className="text-[9px] font-mono opacity-70">F5</span>
-            </button>
-          )}
-
-          {cart.length > 0 && (
-            <button
-              type="button"
-              onClick={handleHoldCurrentTab}
-              className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-800 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 shrink-0 transition-colors"
-              title={isRtl ? 'تعليق الفاتورة الحالية والانتقال لأخرى (F6)' : 'Hold this ticket and switch to a new tab (F6)'}
-            >
-              <PauseCircle className="w-3.5 h-3.5 text-amber-600" />
-              <span>{isRtl ? 'تعليق' : 'Hold'}</span>
-              <span className="text-[9px] font-mono opacity-70">F6</span>
-            </button>
-          )}
-
-          <div className="flex items-center gap-2 whitespace-nowrap text-[9px] text-slate-400">
-            <span><kbd className="font-mono">F2</kbd> {isRtl ? 'مسح' : 'Scan'}</span>
-            <span>·</span>
-            <span><kbd className="font-mono">F5</kbd> {isRtl ? 'مسح الفاتورة' : 'Clear Ticket'}</span>
-            <span>·</span>
-            <span>{isRtl ? 'اضغط' : 'Press'} <kbd className="font-mono">F9</kbd> {isRtl ? 'للتسوية' : 'to Settle'}</span>
-          </div>
         </div>
 
-        {/* Right Info: Store Name & Cashier */}
-        <div className="hidden lg:flex items-center gap-3 text-xs text-slate-500 shrink-0">
-          <span className="font-medium text-slate-700">
-            {isRtl && settings.storeNameAr ? settings.storeNameAr : settings.storeName}
-            {!isRtl && settings.storeNameAr ? ` · ${settings.storeNameAr}` : ''}
-          </span>
-          <span className="w-1 h-1 rounded-full bg-slate-300" />
-          <span className="bg-slate-100 px-2 py-0.5 rounded text-slate-600 font-mono">
-            {settings.cashierName}
-          </span>
-        </div>
       </header>
 
       {/* Universal Register Feedback Banner (Always visible in both POS and RPOS) */}
@@ -1880,7 +1852,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         {/* ======================================================== */}
         {isRpos ? (
           <main
-            className={`order-1 flex-1 flex flex-col min-w-0 bg-slate-50 border-r border-slate-200 overflow-hidden ${
+            className={`order-1 flex-1 flex flex-col min-h-0 min-w-0 bg-slate-50 border-r border-slate-200 overflow-hidden ${
               mobileTab === 'table' ? 'flex' : 'hidden lg:flex'
             }`}
           >
@@ -1953,7 +1925,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             </div>
 
             {/* 3. Product Cards Grid */}
-            <div className="flex-1 overflow-y-auto p-3 sm:p-4 bg-slate-100/60">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3 sm:p-4 bg-slate-100/60">
               {isBrowsingCategories ? (
                 <>
                   {rposCategoryError && (
@@ -2184,16 +2156,16 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           </main>
         ) : (
           <main
-            className={`flex-1 flex flex-col min-w-0 bg-white border-r border-slate-200 overflow-hidden ${
+            className={`flex-1 flex flex-col min-h-0 min-w-0 bg-white border-r border-slate-200 overflow-hidden ${
               mobileTab === 'table' ? 'flex' : 'hidden min-[900px]:flex'
             }`}
           >
           {/* BARCODE SCANNING & QUICK ACTION BAR */}
-          <div className="p-3 sm:p-4 bg-slate-50 border-b border-slate-200 space-y-2.5 shrink-0">
-            <form onSubmit={handleBarcodeSubmit} className="flex flex-col gap-2">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <div className="p-2 sm:p-3 bg-slate-50 border-b border-slate-200 space-y-1.5 shrink-0">
+            <form onSubmit={handleBarcodeSubmit} className="flex flex-col gap-1.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
               <div className="relative min-w-0">
-                <Barcode className={`w-5 h-5 text-blue-700 absolute ${isRtl ? 'right-3.5' : 'left-3.5'} top-1/2 -translate-y-1/2 pointer-events-none`} />
+                <Barcode className={`w-4 h-4 text-blue-700 absolute ${isRtl ? 'right-3' : 'left-3'} top-1/2 -translate-y-1/2 pointer-events-none`} />
                 <input
                   ref={barcodeInputRef}
                   id="pos-barcode-scanner-input"
@@ -2209,103 +2181,25 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   }}
                   onChange={(e) => setBarcodeInput(e.target.value)}
                   placeholder={t.scanOrSearch}
-                  className={`w-full ${isRtl ? 'pr-11 pl-3' : 'pl-11 pr-3'} py-2.5 text-xs sm:text-sm bg-white border-2 border-slate-300 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 rounded-lg text-slate-900 placeholder:text-slate-400 font-mono transition-all disabled:bg-slate-100 disabled:opacity-50`}
+                  className={`w-full ${isRtl ? 'pr-9 pl-3' : 'pl-9 pr-3'} py-1.5 text-xs sm:text-sm bg-white border-2 border-slate-300 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 rounded-lg text-slate-900 placeholder:text-slate-400 font-mono transition-all disabled:bg-slate-100 disabled:opacity-50`}
                 />
               </div>
-              <div ref={allProductSearchRef} className="relative min-w-0">
-                <Search className={`w-5 h-5 text-slate-500 absolute ${isRtl ? 'right-3.5' : 'left-3.5'} top-1/2 -translate-y-1/2 pointer-events-none`} />
-                <input
-                  type="text"
-                  value={allProductSearch}
-                  onFocus={() => setIsAllProductSearchFocused(true)}
-                  onChange={(e) => {
-                    setAllProductSearch(e.target.value);
-                    setSelectedSearchIndex(0);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape') {
-                      setIsAllProductSearchFocused(false);
-                    } else if (e.key === 'ArrowDown' && matchingAllSearchProducts.length > 0) {
-                      e.preventDefault();
-                      setSelectedSearchIndex((index) =>
-                        (index + 1) % matchingAllSearchProducts.length
-                      );
-                    } else if (e.key === 'ArrowUp' && matchingAllSearchProducts.length > 0) {
-                      e.preventDefault();
-                      setSelectedSearchIndex((index) =>
-                        (index - 1 + matchingAllSearchProducts.length) % matchingAllSearchProducts.length
-                      );
-                    } else if (e.key === 'Enter') {
-                      e.preventDefault();
-                      const selectedProduct = matchingAllSearchProducts[selectedSearchIndex];
-                      if (selectedProduct) {
-                        addToCart(selectedProduct);
-                        setAllProductSearch('');
-                        setIsAllProductSearchFocused(false);
-                        focusBarcodeInput();
-                      }
-                    }
-                  }}
-                  placeholder={isRtl ? 'البحث في جميع المنتجات...' : 'Search all products...'}
-                  aria-label={isRtl ? 'البحث في جميع المنتجات' : 'Search all products'}
-                  className={`w-full ${isRtl ? 'pr-11 pl-3' : 'pl-11 pr-3'} py-2.5 text-xs sm:text-sm bg-white border-2 border-slate-300 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 rounded-lg text-slate-900 placeholder:text-slate-400 transition-all`}
-                />
-                {isAllProductSearchFocused && allProductSearch.trim() && (
-                  <div className="absolute left-0 right-0 top-full mt-1.5 z-30 bg-white border border-slate-300 rounded-xl shadow-2xl overflow-hidden max-h-80 overflow-y-auto">
-                    {matchingAllSearchProducts.length === 0 ? (
-                      <div className="p-4 text-xs text-center text-slate-500">
-                        {isRtl ? 'لا توجد منتجات مطابقة' : 'No matching products found'}
-                      </div>
-                    ) : (
-                      matchingAllSearchProducts.map((product) => (
-                        <button
-                          key={product.id}
-                          type="button"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onMouseEnter={() => setSelectedSearchIndex(matchingAllSearchProducts.indexOf(product))}
-                          onClick={() => {
-                            addToCart(product);
-                            setAllProductSearch('');
-                            setIsAllProductSearchFocused(false);
-                            focusBarcodeInput();
-                          }}
-                          className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 text-left border-b border-slate-100 last:border-b-0 ${
-                            matchingAllSearchProducts[selectedSearchIndex]?.id === product.id
-                              ? 'bg-blue-100 ring-1 ring-inset ring-blue-300'
-                              : 'hover:bg-blue-50'
-                          }`}
-                        >
-                          <span className="min-w-0">
-                            <span className="block truncate text-xs font-semibold text-slate-900">
-                              {isRtl && product.nameAr ? product.nameAr : product.name}
-                            </span>
-                            <span className="block truncate text-[11px] text-slate-500">
-                              {product.sku}{product.barcode ? ` · ${product.barcode}` : ''}
-                            </span>
-                          </span>
-                          <span className="shrink-0 font-mono text-xs font-semibold text-slate-700">
-                            {c} {product.retailPrice.toFixed(2)}
-                          </span>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
+              <button
+                type="button"
+                onClick={() => setIsCatalogOpen(true)}
+                className="inline-flex min-w-0 items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:border-blue-500 hover:bg-blue-50 hover:text-blue-700"
+              >
+                <LayoutGrid className="h-4 w-4" />
+                {isRtl ? 'الكتالوج' : 'Catalogue'}
+              </button>
               </div>
 
             </form>
 
-            <div className="flex items-center justify-end text-[11px] text-slate-500 pt-0.5">
-              <div className="text-slate-600 font-medium">
-                {isRtl ? 'الأصناف في الفاتورة:' : 'Active Items:'} <span className="font-bold text-blue-700">{cart.length}</span> {isRtl ? 'بنود' : 'lines'} ·{' '}
-                <span className="font-bold text-blue-700">{totalUnitsInCart}</span> {isRtl ? 'قطع' : 'units'}
-              </div>
-            </div>
           </div>
 
           {/* THE ENTERPRISE SCANNED PRODUCTS TABLE */}
-          <div className="flex-1 overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             {cart.length === 0 ? (
               <div className="h-full min-h-[360px] flex flex-col items-center justify-center p-8 text-center bg-slate-50/50">
                 <div className="w-20 h-20 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 mb-4 shadow-xs">
@@ -2341,7 +2235,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                       key={lineId}
                       data-ticket-item
                       data-ticket-item-id={lineId}
-                      onClick={() => setSelectedTicketItemId(lineId)}
+                      onClick={() => selectTicketItem(lineId)}
                       onDoubleClick={() => openTicketItemEditor(item)}
                       title={isRtl ? 'انقر مرتين لتعديل الصنف' : 'Double-click to edit item'}
                       className={`grid cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-xl border p-2.5 transition-colors ${
@@ -2408,6 +2302,11 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                             {lineTax.toFixed(2)}
                           </span>
                         </span>
+                        {(item.scannedBarcode || item.product.barcode) && (
+                          <span className="whitespace-nowrap font-mono text-[10px] text-slate-400/70">
+                            ({item.scannedBarcode || item.product.barcode})
+                          </span>
+                        )}
                         <span className="ml-auto whitespace-nowrap text-right">
                           {isRtl ? 'الإجمالي' : 'Total'}{' '}
                           <strong className="font-mono text-xs font-black text-red-600">
@@ -2447,10 +2346,10 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         )}
         <aside
           style={isRpos ? { width: `min(${rposTicketWidth}px, calc(100vw - 120px))` } : undefined}
-          className={`${isRpos ? 'order-3' : 'order-2'} shrink-0 ${
+          className={`${isRpos ? 'order-3' : 'order-2'} z-0 shrink-0 ${
             isRpos
               ? 'min-w-[150px] max-w-[800px]'
-              : 'w-full min-[900px]:w-[320px] min-[1100px]:w-[380px] xl:w-[420px]'
+              : 'w-full min-[900px]:fixed min-[900px]:inset-y-0 min-[900px]:right-0 min-[900px]:z-30 min-[900px]:w-1/3 min-[900px]:h-[100dvh]'
           } bg-white flex flex-col min-h-0 border-l border-slate-200 ${
             isRpos ? 'xl:flex-none' : 'lg:flex-none'
           } ${
@@ -2530,7 +2429,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                             key={lineId}
                           data-ticket-item
                             data-ticket-item-id={lineId}
-                            onClick={() => setSelectedTicketItemId(lineId)}
+                            onClick={() => selectTicketItem(lineId)}
                           onDoubleClick={() => openTicketItemEditor(item)}
                           title={isRtl ? 'انقر مرتين لتعديل الصنف' : 'Double-click to edit item'}
                           className={`grid cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-xl border p-2.5 transition-colors ${
@@ -2597,6 +2496,11 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                                 {lineTax.toFixed(2)}
                               </span>
                             </span>
+                            {(item.scannedBarcode || item.product.barcode) && (
+                              <span className="whitespace-nowrap font-mono text-[10px] text-slate-400/70">
+                                ({item.scannedBarcode || item.product.barcode})
+                              </span>
+                            )}
                             <span className="ml-auto whitespace-nowrap text-right">
                               {isRtl ? 'الإجمالي' : 'Total'}{' '}
                               <strong className="font-mono text-xs font-black text-red-600">
@@ -2613,8 +2517,8 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             )}
             {/* Financial Ledger Summary */}
             {!isRpos && (
-              <div className="space-y-3">
-                <section className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+              <div className="space-y-4">
+                <section className="space-y-2">
                   <label className="block text-xs font-semibold text-slate-700">
                     {isRtl ? 'العميل' : 'Customer'}
                   </label>
@@ -2697,7 +2601,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   </div>
                 </section>
 
-                <section className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+                <section className="space-y-2">
                   <label className="block text-xs font-semibold text-slate-700">
                     {isRtl ? 'خصم الفاتورة' : 'Invoice Discount'}
                   </label>
@@ -2724,7 +2628,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   </div>
                 </section>
 
-                <section className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+                <section className="space-y-2">
                   <h3 className="text-xs font-semibold text-slate-700">
                     {isRtl ? 'طريقة الدفع' : 'Payment Method'}
                   </h3>
@@ -2751,7 +2655,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                 </section>
 
                 {paymentMethod === 'Cash' && (
-                  <section className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <section className="space-y-2">
                     <label className="block text-xs font-semibold text-slate-700">
                       {isRtl ? 'المبلغ النقدي المستلم' : 'Cash Received'}
                       <input
@@ -2797,7 +2701,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                 )}
 
                 {paymentMethod === 'Split' && (
-                  <section className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <section className="space-y-2">
                     <div className="grid grid-cols-2 gap-2">
                       <label className="text-[11px] font-semibold text-slate-700">
                         {isRtl ? 'المبلغ النقدي' : 'Cash Amount'}
@@ -2840,7 +2744,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   </section>
                 )}
 
-                <section className="space-y-1.5 rounded-xl border border-blue-100 bg-blue-50/60 p-3 text-xs">
+                <section className="space-y-1.5 border-t border-slate-200 pt-3 text-xs">
                   <div className="flex justify-between text-slate-600">
                     <span>{isRtl ? 'المجموع الفرعي' : 'Subtotal'}</span>
                     <span className="font-mono">{c} {subtotal.toFixed(settings.decimalPoints ?? 2)}</span>
@@ -2866,20 +2770,29 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           </div>
 
           {!isRpos && (
-            <footer className="shrink-0 border-t border-slate-200 bg-white p-3">
+            <footer className="shrink-0 border-t border-slate-200 bg-white p-4">
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={confirmCancelCart}
+                  disabled={isSubmitting}
+                  className="flex h-14 items-center justify-center gap-2 rounded-lg border border-red-700 bg-red-700 px-4 text-sm font-bold text-white transition-colors hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isRtl ? 'إلغاء' : 'Cancel'}
+                </button>
               <button
                 type="button"
                 onClick={() => void handleCompleteSale()}
                 disabled={!canCompleteSale}
-                className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                className="flex h-14 items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 text-sm font-bold text-white transition-colors hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
               >
-                <CheckCircle2 className="h-4 w-4" />
                 {isSubmitting
                   ? (isRtl ? 'جارٍ إتمام البيع...' : 'Completing Sale...')
                   : activeTab.editingSaleId
                     ? (isRtl ? 'حفظ الفاتورة' : 'Save Invoice')
                     : (isRtl ? 'تسوية الدفع وإتمام البيع' : 'Settle & Complete Sale')}
               </button>
+              </div>
             </footer>
           )}
 
@@ -2924,6 +2837,66 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             </span>
             <span className="font-mono tabular-nums">{c} {total.toFixed(2)}</span>
           </button>
+        </div>
+      )}
+
+      {!isRpos && (
+        <footer
+          className={`${mobileTab === 'table' ? 'flex' : 'hidden min-[900px]:flex'} fixed bottom-0 left-0 z-40 h-[0.5cm] w-full min-[900px]:w-2/3 items-center border-t border-slate-200 bg-white px-2`}
+        >
+          <div className="flex w-full flex-nowrap items-center justify-between gap-1 overflow-hidden whitespace-nowrap text-[9px] text-slate-500">
+            <span><kbd className="font-mono">F2</kbd> {isRtl ? 'مسح' : 'Scan'}</span>
+            <span><kbd className="font-mono">F4</kbd> {isRtl ? 'كتالوج الأصناف' : 'Browse catalog'}</span>
+            <span><kbd className="font-mono">F5</kbd> {isRtl ? 'إلغاء' : 'Cancel'}</span>
+            <span><kbd className="font-mono">F6</kbd> {isRtl ? 'تعليق' : 'Hold ticket'}</span>
+            <span><kbd className="font-mono">F9/F10</kbd> {isRtl ? 'تسوية الدفع' : 'Settle'}</span>
+          </div>
+        </footer>
+      )}
+
+      {isCancelConfirmationOpen && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cancel-ticket-title"
+          aria-describedby="cancel-ticket-description"
+          dir={isRtl ? 'rtl' : 'ltr'}
+        >
+          <div className="w-full max-w-sm overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start gap-3 border-b border-red-100 bg-red-50 px-5 py-4">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-red-100 text-red-700">
+                <AlertTriangle className="h-5 w-5" />
+              </span>
+              <div>
+                <h2 id="cancel-ticket-title" className="text-sm font-bold text-slate-900">
+                  {isRtl ? 'إلغاء الفاتورة الحالية؟' : 'Cancel current ticket?'}
+                </h2>
+                <p id="cancel-ticket-description" className="mt-1 text-xs leading-relaxed text-slate-600">
+                  {isRtl
+                    ? 'سيؤدي ذلك إلى مسح جميع الأصناف وإعادة تعيين الفاتورة.'
+                    : 'This will remove all items and reset the ticket.'}
+                </p>
+              </div>
+            </div>
+            <footer className="flex justify-end gap-2 border-t border-slate-200 bg-white px-5 py-3">
+              <button
+                type="button"
+                autoFocus
+                onClick={() => setIsCancelConfirmationOpen(false)}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                {isRtl ? 'الاحتفاظ بالفاتورة' : 'Keep ticket'}
+              </button>
+              <button
+                type="button"
+                onClick={cancelCurrentTicket}
+                className="rounded-lg bg-red-700 px-4 py-2 text-xs font-bold text-white hover:bg-red-800"
+              >
+                {isRtl ? 'نعم، إلغاء الفاتورة' : 'Yes, cancel ticket'}
+              </button>
+            </footer>
+          </div>
         </div>
       )}
 
@@ -3001,11 +2974,17 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           aria-modal="true"
           aria-labelledby="edit-ticket-item-title"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setEditingTicketItemId(null);
+            if (event.target === event.currentTarget) closeTicketItemEditor();
           }}
         >
           <form
             onSubmit={saveTicketItemEdits}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                const integerDigits = ticketEditPrice.split('.')[0].replace(/\D/g, '').length;
+                if (integerDigits > 3) event.preventDefault();
+              }
+            }}
             className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-4 shadow-2xl"
           >
             <div className="mb-4 flex items-center justify-between">
@@ -3014,7 +2993,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
               </h2>
               <button
                 type="button"
-                onClick={() => setEditingTicketItemId(null)}
+                onClick={closeTicketItemEditor}
                 className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
                 aria-label={isRtl ? 'إغلاق' : 'Close'}
               >
@@ -3054,12 +3033,23 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                 <input
                   type="number"
                   inputMode="decimal"
-                  min="0"
-                  step="any"
+                  min={editingCartItem?.product.retailPrice === 0 ? '0.01' : '0'}
+                  max={editingCartItem?.product.retailPrice === 0 ? '9999.99' : undefined}
+                  step={editingCartItem?.product.retailPrice === 0 ? '0.01' : 'any'}
                   ref={ticketEditPriceInputRef}
                   required
                   value={ticketEditPrice}
-                  onChange={(event) => setTicketEditPrice(event.target.value)}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    if (
+                      editingCartItem?.product.retailPrice === 0 &&
+                      value !== '' &&
+                      !/^\d{0,4}(?:\.\d{0,2})?$/.test(value)
+                    ) {
+                      return;
+                    }
+                    setTicketEditPrice(value);
+                  }}
                   onFocus={(event) => event.currentTarget.select()}
                   onClick={(event) => event.currentTarget.select()}
                   className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100"
@@ -3121,7 +3111,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setEditingTicketItemId(null)}
+                onClick={closeTicketItemEditor}
                 className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
               >
                 {isRtl ? 'إلغاء' : 'Cancel'}
@@ -3596,7 +3586,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           aria-modal="true"
           aria-labelledby="catalog-modal-title"
         >
-          <div className="bg-white border border-slate-200 rounded-2xl max-w-4xl w-full h-[88vh] flex flex-col overflow-hidden shadow-2xl">
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-4xl w-full h-[88vh] min-h-0 flex flex-col overflow-hidden shadow-2xl">
             {/* Catalog Modal Header */}
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between shrink-0 bg-slate-50">
               <div className="flex items-center gap-2.5">
@@ -3677,7 +3667,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             </div>
 
             {/* Product Cards Grid */}
-            <div className="flex-1 overflow-y-auto p-4 sm:p-5 bg-slate-50">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-5 bg-slate-50">
               {paginatedCatalogProducts.length === 0 ? (
                 <div className="h-48 flex flex-col items-center justify-center text-center text-slate-500">
                   <p className="text-sm font-semibold">{isRtl ? 'لا توجد منتجات مطابقة' : 'No matching products found'}</p>

@@ -608,14 +608,11 @@ export function App() {
   const hasPermission = (tabId: NavTab) => {
     if (!currentUser) return false;
     if (tabId === 'settings' && !isAdmin) return false;
-    if (tabId === 'accounts' && !isAdmin) return false;
     if (isAdmin) return true;
     const requiredPermission =
       tabId === 'return-register' || tabId === 'return-history'
         ? 'sales-return'
-        : tabId === 'reports'
-          ? 'sales'
-          : tabId;
+        : tabId;
     if (
       (tabId === 'return-register' || tabId === 'return-history') &&
       currentUser.permissions?.includes('manage-sales-returns')
@@ -640,12 +637,14 @@ export function App() {
           <LoginForm onLoginSuccess={handleLoginSuccess} />
         ) : (
           <div className={`pos-app-shell${activeReceipt ? ' invoice-print-open' : ''} h-[100dvh] max-h-[100dvh] w-screen flex flex-col bg-slate-50 text-slate-900 overflow-hidden`}>
-          <TopBar
-            activeTab={effectiveTab}
-            onSelectTab={setActiveTab}
-            onLogout={handleLogout}
-            currentUser={currentUser}
-          />
+          {effectiveTab !== 'register' && (
+            <TopBar
+              activeTab={effectiveTab}
+              onSelectTab={setActiveTab}
+              onLogout={handleLogout}
+              currentUser={currentUser}
+            />
+          )}
 
           {loading ? (
             <main className="flex-1 flex items-center justify-center">
@@ -654,15 +653,25 @@ export function App() {
           ) : (
             <main className="flex-1 flex min-h-0 overflow-hidden">
           {effectiveTab === 'register' && (
-            <RegisterView
-              products={products}
-              customers={customers}
-              settings={settings}
-              onSaleCompleted={handleSaleCompleted}
-              restoredSale={restoredSale}
-              onClearRestoredSale={() => setRestoredSale(null)}
-              receiptModalOpen={Boolean(activeReceipt)}
-            />
+            <div className="w-full min-[900px]:w-2/3 flex flex-col min-h-0">
+              <TopBar
+                activeTab={effectiveTab}
+                onSelectTab={setActiveTab}
+                onLogout={handleLogout}
+                currentUser={currentUser}
+              />
+              <div className="flex-1 min-h-0 flex">
+                <RegisterView
+                  products={products}
+                  customers={customers}
+                  settings={settings}
+                  onSaleCompleted={handleSaleCompleted}
+                  restoredSale={restoredSale}
+                  onClearRestoredSale={() => setRestoredSale(null)}
+                  receiptModalOpen={Boolean(activeReceipt)}
+                />
+              </div>
+            </div>
           )}
 
           {effectiveTab === 'inventory' && isAdmin && (
@@ -756,7 +765,7 @@ export function App() {
             />
           )}
 
-          {effectiveTab === 'reports' && (isAdmin || currentUser.permissions?.includes('sales')) && (
+          {effectiveTab === 'reports' && hasPermission('reports') && (
             <ReportsView
               key="reports"
               mode="reports"
@@ -771,7 +780,7 @@ export function App() {
             />
           )}
 
-          {effectiveTab === 'accounts' && isAdmin && (
+          {effectiveTab === 'accounts' && hasPermission('accounts') && (
             <ReportsView
               key="cashbook"
               mode="cashbook"

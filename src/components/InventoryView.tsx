@@ -649,7 +649,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       costPrice: product.costPrice.toFixed(2),
       retailPrice: product.retailPrice.toFixed(2),
       taxRate: String(product.taxRate ?? 15),
-      stock: String(product.stock),
+      stock: '',
       reorderLevel: String(product.reorderLevel),
       unit: product.unit,
     });
@@ -881,7 +881,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         taxRate: Number.isFinite(enteredTaxRate)
           ? Math.min(100, Math.max(0, enteredTaxRate))
           : 15,
-        stock: Math.max(0, parseInt(form.stock, 10) || 0),
+        ...(editingProduct ? {} : { stock: Math.max(0, parseInt(form.stock, 10) || 0) }),
         reorderLevel: Math.max(0, parseInt(form.reorderLevel, 10) || 0),
         unit: form.unit.trim() || 'ea',
         multiUnits,
@@ -2610,23 +2610,25 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2 sm:gap-3">
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">
-                    {isRtl ? 'المخزون الافتتاحي' : 'Opening Stock'}
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    data-product-field="stock"
-                    onFocus={(event) => event.currentTarget.select()}
-                    onClick={(event) => event.currentTarget.select()}
-                    onKeyDown={handleProductFieldEnter}
-                    value={form.stock}
-                    onChange={(e) => setForm({ ...form, stock: e.target.value })}
-                    className="w-full px-2.5 py-1.5 font-mono border border-slate-200 rounded-lg text-slate-900 tabular-nums focus:outline-none focus:border-blue-700"
-                  />
-                </div>
+              <div className={`grid ${editingProduct ? 'grid-cols-1' : 'grid-cols-2'} gap-2 sm:gap-3`}>
+                {!editingProduct && (
+                  <div>
+                    <label className="block font-medium text-slate-700 mb-1">
+                      {isRtl ? 'المخزون الافتتاحي' : 'Opening Stock'}
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      data-product-field="stock"
+                      onFocus={(event) => event.currentTarget.select()}
+                      onClick={(event) => event.currentTarget.select()}
+                      onKeyDown={handleProductFieldEnter}
+                      value={form.stock}
+                      onChange={(e) => setForm({ ...form, stock: e.target.value })}
+                      className="w-full px-2.5 py-1.5 font-mono border border-slate-200 rounded-lg text-slate-900 tabular-nums focus:outline-none focus:border-blue-700"
+                    />
+                  </div>
+                )}
                 <div>
                   <label className="block font-medium text-slate-700 mb-1">
                     {isRtl ? 'حد إعادة الطلب' : 'Low Stock Reorder Level'}
