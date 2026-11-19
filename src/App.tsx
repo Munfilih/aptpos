@@ -653,7 +653,7 @@ export function App() {
           ) : (
             <main className="flex-1 flex min-h-0 overflow-hidden">
           {effectiveTab === 'register' && (
-            <div className="w-full min-[900px]:w-2/3 flex flex-col min-h-0">
+            <div className={`${isRposMode ? 'w-full' : 'w-full min-[900px]:w-2/3'} flex flex-col min-h-0`}>
               <TopBar
                 activeTab={effectiveTab}
                 onSelectTab={setActiveTab}

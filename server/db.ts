@@ -27,6 +27,7 @@ import type {
   Vendor,
 } from '../src/types/pos';
 import { calculateSaleReturnRefund } from '../src/utils/saleReturns';
+import { calculateSalesTax } from '../src/utils/salesTax';
 import { getKotNumberFromInvoice } from '../src/utils/documentNumbers';
 
 const DATA_DIR = process.env.POS_DATA_DIR || path.resolve(process.cwd(), 'data');
@@ -85,6 +86,15 @@ export async function getDb(): Promise<Database> {
 }
 
 function initSchema(database: Database): void {
+  const hasColumn = (table: string, column: string) =>
+    database.exec(`PRAGMA table_info(${table})`)[0]?.values.some(
+      (row) => String(row[1]) === column
+    ) || false;
+  const hadProductTaxRate = hasColumn('products', 'tax_rate');
+  const hadSaleItemTaxRate = hasColumn('sale_items', 'tax_rate');
+  const hadSaleItemTaxAmount = hasColumn('sale_items', 'tax_amount');
+  const hadSaleItemDiscountAmount = hasColumn('sale_items', 'discount_amount');
+
   database.run(`
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,6 +134,7 @@ function initSchema(database: Database): void {
       discount_value REAL NOT NULL DEFAULT 0,
       discount_amount REAL NOT NULL DEFAULT 0,
       tax_rate REAL NOT NULL DEFAULT 15.0,
+      tax_type TEXT,
       tax_amount REAL NOT NULL DEFAULT 0,
       total REAL NOT NULL,
       payment_method TEXT NOT NULL,
@@ -151,6 +162,9 @@ function initSchema(database: Database): void {
       unit_id TEXT NOT NULL DEFAULT '',
       unit_name TEXT NOT NULL DEFAULT '',
       units_per_base INTEGER NOT NULL DEFAULT 1,
+      tax_rate REAL,
+      tax_amount REAL,
+      discount_amount REAL,
       FOREIGN KEY (sale_id) REFERENCES sales(id)
     );
 
@@ -197,6 +211,7 @@ function initSchema(database: Database): void {
       type TEXT NOT NULL CHECK (type IN ('category', 'brand', 'taxRate', 'unit')),
       value TEXT NOT NULL,
       image_data TEXT NOT NULL DEFAULT '',
+      is_default INTEGER NOT NULL DEFAULT 0,
       UNIQUE(type, value)
     );
 
@@ -330,6 +345,11 @@ function initSchema(database: Database): void {
     'ALTER TABLE sale_items ADD COLUMN unit_id TEXT NOT NULL DEFAULT ""',
     'ALTER TABLE sale_items ADD COLUMN unit_name TEXT NOT NULL DEFAULT ""',
     'ALTER TABLE sale_items ADD COLUMN units_per_base INTEGER NOT NULL DEFAULT 1',
+    'ALTER TABLE sale_items ADD COLUMN tax_rate REAL',
+    'ALTER TABLE sale_items ADD COLUMN tax_amount REAL',
+    'ALTER TABLE sale_items ADD COLUMN discount_amount REAL',
+    'ALTER TABLE sales ADD COLUMN tax_type TEXT',
+    'ALTER TABLE inventory_options ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE sale_returns ADD COLUMN voucher_id INTEGER',
     'ALTER TABLE sale_returns ADD COLUMN tax_refund_amount REAL NOT NULL DEFAULT 0',
     'ALTER TABLE products ADD COLUMN tax_rate REAL DEFAULT 15',
@@ -355,6 +375,78 @@ function initSchema(database: Database): void {
     }
   }
 
+  if (!hadProductTaxRate) {
+    const configuredTaxRate = Number(
+      database.exec("SELECT value FROM settings WHERE key = 'taxRate'")[0]?.values[0]?.[0]
+    );
+    const legacyTaxRate = Number.isFinite(configuredTaxRate) &&
+      configuredTaxRate >= 0 && configuredTaxRate <= 100
+      ? configuredTaxRate
+      : 15;
+    database.run('UPDATE products SET tax_rate = ?', [legacyTaxRate]);
+  }
+  if (!hadSaleItemTaxRate) {
+    database.run(
+      `UPDATE sale_items
+       SET tax_rate = COALESCE(
+         (SELECT CASE WHEN products.tax_rate = 0 THEN 0 END
+          FROM products WHERE products.id = sale_items.product_id),
+         (SELECT tax_rate FROM sales WHERE sales.id = sale_items.sale_id),
+         15
+       )`
+    );
+  }
+  const zeroVatRepair = database.exec(
+    "SELECT value FROM settings WHERE key = 'zeroVatLineTaxRepairV1'"
+  )[0]?.values[0]?.[0];
+  if (String(zeroVatRepair ?? '') !== '1') {
+    database.run(
+      `UPDATE sale_items
+       SET tax_rate = 0
+       WHERE tax_rate = COALESCE(
+         (SELECT tax_rate FROM sales WHERE sales.id = sale_items.sale_id),
+         15
+       )
+       AND EXISTS (
+         SELECT 1 FROM sales
+         WHERE sales.id = sale_items.sale_id AND sales.tax_type IS NULL
+       )
+       AND EXISTS (
+         SELECT 1 FROM products
+         WHERE products.id = sale_items.product_id AND products.tax_rate = 0
+       )`
+    );
+    database.run(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('zeroVatLineTaxRepairV1', '1')"
+    );
+  }
+  if (!hadSaleItemTaxAmount) {
+    database.run(
+      `UPDATE sale_items
+       SET tax_amount = CASE
+         WHEN (SELECT tax_rate FROM sales WHERE sales.id = sale_items.sale_id) > 0
+         THEN ROUND(
+           (SELECT tax_amount FROM sales WHERE sales.id = sale_items.sale_id) *
+           line_total /
+           MAX(1, (SELECT SUM(line_total) FROM sale_items AS sale_gross WHERE sale_gross.sale_id = sale_items.sale_id)),
+           2
+         )
+         ELSE 0
+       END`
+    );
+  }
+  if (!hadSaleItemDiscountAmount) {
+    database.run(
+      `UPDATE sale_items
+       SET discount_amount = ROUND(
+         (SELECT discount_amount FROM sales WHERE sales.id = sale_items.sale_id) *
+         line_total /
+         MAX(1, (SELECT SUM(line_total) FROM sale_items AS sale_gross WHERE sale_gross.sale_id = sale_items.sale_id)),
+         2
+       )`
+    );
+  }
+
   database.run(
     `INSERT OR IGNORE INTO issued_invoice_numbers (invoice_number, created_at)
      SELECT receipt_number, created_at FROM sales WHERE receipt_number <> ''`
@@ -368,11 +460,14 @@ function seedInventoryOptions(database: Database): void {
     "SELECT value FROM settings WHERE key = 'taxRate'"
   )[0]?.values[0]?.[0];
   const defaultTaxRate = Number(configuredTaxRate);
+  const validDefaultTaxRate = Number.isFinite(defaultTaxRate) && defaultTaxRate >= 0 && defaultTaxRate <= 100
+    ? defaultTaxRate
+    : 15;
   const defaults: Array<[InventoryOptionType, string]> = [
     ...['ea', 'pcs', 'box', 'pack', 'btl', 'kg', 'g', 'L', 'ml'].map(
       (value) => ['unit', value] as [InventoryOptionType, string]
     ),
-    ['taxRate', String(Number.isFinite(defaultTaxRate) ? defaultTaxRate : 15)],
+    ['taxRate', String(validDefaultTaxRate)],
   ];
 
   const insert = database.prepare(
@@ -401,6 +496,27 @@ function seedInventoryOptions(database: Database): void {
   for (const [type, value] of options) {
     const normalizedValue = type === 'taxRate' ? String(Number(value)) : value.trim();
     if (normalizedValue) insert.run([type, normalizedValue]);
+  }
+  const configuredRate = String(validDefaultTaxRate);
+  const defaultOption = database.exec(
+    `SELECT id FROM inventory_options
+     WHERE type = 'taxRate' AND is_default = 1 ORDER BY id LIMIT 1`
+  )[0]?.values[0]?.[0];
+  const matchingOption = database.exec(
+    `SELECT id FROM inventory_options
+     WHERE type = 'taxRate' AND value = ? ORDER BY id LIMIT 1`,
+    [configuredRate]
+  )[0]?.values[0]?.[0];
+  const fallbackOption = database.exec(
+    `SELECT id FROM inventory_options WHERE type = 'taxRate' ORDER BY id LIMIT 1`
+  )[0]?.values[0]?.[0];
+  const selectedOption = defaultOption ?? matchingOption ?? fallbackOption;
+  if (selectedOption !== undefined) {
+    database.run(
+      `UPDATE inventory_options SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END
+       WHERE type = 'taxRate'`,
+      [selectedOption]
+    );
   }
   insert.free();
 }
@@ -875,15 +991,7 @@ export async function listInventoryOptions(): Promise<InventoryOption[]> {
     UNION SELECT 'unit', unit FROM products WHERE TRIM(unit) <> ''
     UNION SELECT 'taxRate', CAST(tax_rate AS TEXT) FROM products
   `);
-  const configuredTaxRate = database.exec(
-    "SELECT value FROM settings WHERE key = 'taxRate'"
-  )[0]?.values[0]?.[0];
-  const usedOptions = [
-    ...(productOptions[0]?.values || []),
-    ...(configuredTaxRate !== undefined && Number.isFinite(Number(configuredTaxRate))
-      ? [['taxRate', String(Number(configuredTaxRate))]]
-      : []),
-  ];
+  const usedOptions = productOptions[0]?.values || [];
   const insert = database.prepare(
     'INSERT OR IGNORE INTO inventory_options (type, value) VALUES (?, ?)'
   );
@@ -904,7 +1012,7 @@ export async function listInventoryOptions(): Promise<InventoryOption[]> {
   }
   insert.free();
   const result = database.exec(
-    `SELECT id, type, value, image_data
+    `SELECT id, type, value, image_data, is_default
      FROM inventory_options
      ORDER BY type, value COLLATE NOCASE`
   );
@@ -914,6 +1022,7 @@ export async function listInventoryOptions(): Promise<InventoryOption[]> {
     type: String(row[1]) as InventoryOptionType,
     value: String(row[2]),
     imageData: String(row[3] || ''),
+    isDefault: Boolean(row[4]),
   }));
 }
 
@@ -941,16 +1050,16 @@ export async function createInventoryOption(input: {
   );
   const id = Number(database.exec('SELECT last_insert_rowid()')[0].values[0][0]);
   saveDatabase();
-  return { id, type: input.type, value, imageData };
+  return { id, type: input.type, value, imageData, isDefault: false };
 }
 
 export async function updateInventoryOption(
   id: number,
-  input: { value: unknown; imageData?: unknown }
+  input: { value: unknown; imageData?: unknown; isDefault?: unknown }
 ): Promise<InventoryOption | null> {
   const database = await getDb();
   const result = database.exec(
-    'SELECT type, value, image_data FROM inventory_options WHERE id = ?',
+    'SELECT type, value, image_data, is_default FROM inventory_options WHERE id = ?',
     [id]
   );
   const row = result[0]?.values[0];
@@ -984,31 +1093,38 @@ export async function updateInventoryOption(
       );
     }
   }
+  if (type === 'taxRate' && input.isDefault === true) {
+    database.run(`UPDATE inventory_options SET is_default = 0 WHERE type = 'taxRate'`);
+  }
   database.run(
-    'UPDATE inventory_options SET value = ?, image_data = ? WHERE id = ?',
-    [value, imageData, id]
+    `UPDATE inventory_options
+     SET value = ?, image_data = ?, is_default = CASE
+       WHEN type = 'taxRate' AND ? = 1 THEN 1 ELSE is_default END
+     WHERE id = ?`,
+    [value, imageData, type === 'taxRate' && (input.isDefault === true || Boolean(row[3])) ? 1 : 0, id]
   );
   saveDatabase();
-  return { id, type, value, imageData };
+  return {
+    id,
+    type,
+    value,
+    imageData,
+    isDefault: type === 'taxRate' && (input.isDefault === true || Boolean(row[3])),
+  };
 }
 
 export async function deleteInventoryOption(id: number): Promise<void> {
   const database = await getDb();
   const result = database.exec(
-    'SELECT type, value FROM inventory_options WHERE id = ?',
+    'SELECT type, value, is_default FROM inventory_options WHERE id = ?',
     [id]
   );
   const row = result[0]?.values[0];
   if (!row) throw new Error('Inventory option not found.');
   const type = String(row[0]) as InventoryOptionType;
   const value = String(row[1]);
-  if (type === 'taxRate') {
-    const configuredTaxRate = database.exec(
-      "SELECT value FROM settings WHERE key = 'taxRate'"
-    )[0]?.values[0]?.[0];
-    if (configuredTaxRate !== undefined && Number(configuredTaxRate) === Number(value)) {
-      throw new Error('This tax rate is the store default and cannot be deleted.');
-    }
+  if (type === 'taxRate' && Boolean(row[2])) {
+    throw new Error('The default tax rate cannot be deleted. Choose another default first.');
   }
   const productField: Record<InventoryOptionType, string> = {
     category: 'category',
@@ -1032,6 +1148,16 @@ export async function deleteInventoryOption(id: number): Promise<void> {
   }
   database.run('DELETE FROM inventory_options WHERE id = ?', [id]);
   saveDatabase();
+}
+
+function getDefaultInventoryTaxRate(database: Database): number {
+  const configuredRate = Number(
+    database.exec(
+      `SELECT value FROM inventory_options
+       WHERE type = 'taxRate' AND is_default = 1 LIMIT 1`
+    )[0]?.values[0]?.[0]
+  );
+  return Number.isFinite(configuredRate) ? configuredRate : 15;
 }
 
 export async function createProduct(
@@ -1062,7 +1188,7 @@ export async function createProduct(
         input.category,
         Number(input.costPrice),
         Number(input.retailPrice),
-        input.taxRate !== undefined ? Number(input.taxRate) : 15,
+        input.taxRate !== undefined ? Number(input.taxRate) : getDefaultInventoryTaxRate(database),
         Number(input.stock),
         Number(input.reorderLevel),
         input.unit.trim() || 'ea',
@@ -1138,7 +1264,9 @@ export async function updateProduct(
         input.category !== undefined ? input.category : current.category,
         input.costPrice !== undefined ? Number(input.costPrice) : current.costPrice,
         input.retailPrice !== undefined ? Number(input.retailPrice) : current.retailPrice,
-        input.taxRate !== undefined ? Number(input.taxRate) : (current.taxRate ?? 15),
+        input.taxRate !== undefined
+          ? Number(input.taxRate)
+          : (current.taxRate ?? getDefaultInventoryTaxRate(database)),
         input.stock !== undefined ? Number(input.stock) : current.stock,
         input.reorderLevel !== undefined ? Number(input.reorderLevel) : current.reorderLevel,
         input.unit !== undefined ? input.unit.trim() : current.unit,
@@ -1351,15 +1479,19 @@ export async function listSales(): Promise<Sale[]> {
     `SELECT id, receipt_number, created_at, cashier_name, customer_name,
             subtotal, discount_type, discount_value, discount_amount,
             tax_rate, tax_amount, total, payment_method,
-            amount_tendered, change_due, status
+            amount_tendered, change_due, status, tax_type
      FROM sales ORDER BY id DESC`
   );
 
   if (!salesRes[0]) return [];
 
   const itemsRes = database.exec(
-    `SELECT id, sale_id, product_id, sku, product_name, quantity, unit_price, line_total, name_ar, unit_id, unit_name, units_per_base
-     FROM sale_items ORDER BY id ASC`
+    `SELECT si.id, si.sale_id, si.product_id, si.sku, si.product_name, si.quantity,
+            si.unit_price, si.line_total, si.name_ar, si.unit_id, si.unit_name,
+            si.units_per_base, si.tax_rate, si.tax_amount, si.discount_amount, p.tax_rate
+     FROM sale_items si
+     LEFT JOIN products p ON p.id = si.product_id
+     ORDER BY si.id ASC`
   );
 
   const itemsBySale = new Map<number, SaleItem[]>();
@@ -1378,6 +1510,13 @@ export async function listSales(): Promise<Sale[]> {
         unitId: row[9] ? String(row[9]) : undefined,
         unitName: row[10] ? String(row[10]) : undefined,
         unitsPerBase: Number(row[11] || 1),
+        taxRate: row[12] !== null && row[12] !== undefined
+          ? Number(row[12])
+          : row[15] !== null && row[15] !== undefined
+            ? Number(row[15])
+            : undefined,
+        taxAmount: row[13] === null || row[13] === undefined ? undefined : Number(row[13]),
+        discountAmount: row[14] === null || row[14] === undefined ? undefined : Number(row[14]),
       };
       const list = itemsBySale.get(item.saleId) || [];
       list.push(item);
@@ -1439,6 +1578,9 @@ export async function listSales(): Promise<Sale[]> {
       discountValue: Number(row[7]),
       discountAmount: Number(row[8]),
       taxRate: Number(row[9]),
+      taxType: row[16] === 'inclusive' || row[16] === 'exclusive'
+        ? String(row[16]) as 'inclusive' | 'exclusive'
+        : undefined,
       taxAmount: Number(row[10]),
       total: Number(row[11]),
       paymentMethod: String(row[12]) as PaymentMethod,
@@ -1494,6 +1636,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
     unitId: string;
     unitName: string;
     unitsPerBase: number;
+    taxRate: number;
   }> = [];
 
   for (const reqItem of input.items) {
@@ -1535,6 +1678,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
       unitId: multiUnit?.id || '',
       unitName: multiUnit?.name || product.unit,
       unitsPerBase,
+      taxRate: product.taxRate ?? getDefaultInventoryTaxRate(database),
     });
   }
 
@@ -1553,23 +1697,15 @@ export async function createSale(input: CreateSaleInput): Promise<{
     }
   }
 
-  const netAfterDiscount = Math.max(0, grossTotal - discountAmount);
-  let taxAmount = 0;
-  let total = 0;
-  let subtotal = 0;
-
-  if (settings.taxType === 'inclusive') {
-    // Retail price already includes tax: Tax = Net - (Net / (1 + Rate/100))
-    total = netAfterDiscount;
-    taxAmount = Number((netAfterDiscount - netAfterDiscount / (1 + settings.taxRate / 100)).toFixed(2));
-    // Subtotal is strictly WITHOUT tax
-    subtotal = Number((total - taxAmount).toFixed(2));
-  } else {
-    // Exclusive: Tax is added on top of net subtotal
-    subtotal = netAfterDiscount;
-    taxAmount = Number(((netAfterDiscount * settings.taxRate) / 100).toFixed(2));
-    total = Number((netAfterDiscount + taxAmount).toFixed(2));
-  }
+  const taxBreakdown = calculateSalesTax(
+    resolvedItems.map((item) => ({ amount: item.lineTotal, taxRate: item.taxRate })),
+    discountAmount,
+    settings.taxType
+  );
+  const { subtotal, taxAmount } = taxBreakdown;
+  const totalTaxRates = [...new Set(resolvedItems.map((item) => item.taxRate))];
+  const saleTaxRate = totalTaxRates.length === 1 ? totalTaxRates[0] : 0;
+  let total = taxBreakdown.total;
 
   if (settings.roundTotalToFiveCents) {
     total = Number((Math.round(total * 20) / 20).toFixed(2));
@@ -1600,7 +1736,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
     }
     const existingSale = database.exec(
       `SELECT id, customer_name, subtotal, discount_type, discount_value, discount_amount,
-              tax_rate, tax_amount, total, payment_method, amount_tendered, change_due, status
+              tax_rate, tax_amount, total, payment_method, amount_tendered, change_due, status, tax_type
        FROM sales WHERE receipt_number = ?`,
       [receiptNumber]
     );
@@ -1608,7 +1744,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
       const row = existingSale[0].values[0];
       const saleId = Number(row[0]);
       const existingItems = database.exec(
-        'SELECT product_id, quantity, unit_price, unit_id, units_per_base FROM sale_items WHERE sale_id = ? ORDER BY id ASC',
+        'SELECT product_id, quantity, unit_price, unit_id, units_per_base, tax_rate FROM sale_items WHERE sale_id = ? ORDER BY id ASC',
         [saleId]
       )[0]?.values || [];
       const sameItems =
@@ -1620,7 +1756,8 @@ export async function createSale(input: CreateSaleInput): Promise<{
             Number(existingItem[1]) === item.quantity &&
             Math.abs(Number(existingItem[2]) - item.unitPrice) < 0.005 &&
             String(existingItem[3] || '') === item.unitId &&
-            Number(existingItem[4] || 1) === item.unitsPerBase
+            Number(existingItem[4] || 1) === item.unitsPerBase &&
+            Number(existingItem[5]) === item.taxRate
           );
         });
       const sameRequest =
@@ -1629,13 +1766,14 @@ export async function createSale(input: CreateSaleInput): Promise<{
         String(row[3]) === input.discountType &&
         Number(row[4]) === discountValue &&
         Number(row[5]) === discountAmount &&
-        Number(row[6]) === settings.taxRate &&
+        Number(row[6]) === saleTaxRate &&
         Number(row[7]) === taxAmount &&
         Number(row[8]) === total &&
         String(row[9]) === input.paymentMethod &&
         Number(row[10]) === amountTendered &&
         Number(row[11]) === changeDue &&
         String(row[12]) === 'COMPLETED' &&
+        String(row[13]) === settings.taxType &&
         sameItems;
       if (sameRequest) {
         const sale = (await listSales()).find((entry) => entry.id === saleId);
@@ -1673,9 +1811,9 @@ export async function createSale(input: CreateSaleInput): Promise<{
     `INSERT INTO sales (
       receipt_number, created_at, cashier_name, customer_name,
       subtotal, discount_type, discount_value, discount_amount,
-      tax_rate, tax_amount, total, payment_method,
+      tax_rate, tax_type, tax_amount, total, payment_method,
       amount_tendered, change_due, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED')`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED')`,
     [
       receiptNumber,
       now,
@@ -1685,7 +1823,8 @@ export async function createSale(input: CreateSaleInput): Promise<{
       input.discountType,
       discountValue,
       discountAmount,
-      settings.taxRate,
+      saleTaxRate,
+      settings.taxType,
       taxAmount,
       total,
       input.paymentMethod,
@@ -1698,10 +1837,13 @@ export async function createSale(input: CreateSaleInput): Promise<{
   const saleId = Number(idRes[0].values[0][0]);
 
   const saleItems: SaleItem[] = [];
-  for (const item of resolvedItems) {
+  for (const [itemIndex, item] of resolvedItems.entries()) {
+    const taxLine = taxBreakdown.lines[itemIndex];
     database.run(
-      `INSERT INTO sale_items (sale_id, product_id, sku, product_name, quantity, unit_price, line_total, name_ar, unit_id, unit_name, units_per_base)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO sale_items (
+         sale_id, product_id, sku, product_name, quantity, unit_price, line_total, name_ar,
+         unit_id, unit_name, units_per_base, tax_rate, tax_amount, discount_amount
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         saleId,
         item.product.id,
@@ -1714,6 +1856,9 @@ export async function createSale(input: CreateSaleInput): Promise<{
         item.unitId,
         item.unitName,
         item.unitsPerBase,
+        item.taxRate,
+        taxLine.taxAmount,
+        taxLine.discountAmount,
       ]
     );
     const itemIdRes = database.exec('SELECT last_insert_rowid()');
@@ -1730,6 +1875,9 @@ export async function createSale(input: CreateSaleInput): Promise<{
       unitId: item.unitId || undefined,
       unitName: item.unitName,
       unitsPerBase: item.unitsPerBase,
+      taxRate: item.taxRate,
+      taxAmount: taxLine.taxAmount,
+      discountAmount: taxLine.discountAmount,
     });
 
     database.run('UPDATE products SET stock = stock - ?, updated_at = ? WHERE id = ?', [
@@ -1762,7 +1910,8 @@ export async function createSale(input: CreateSaleInput): Promise<{
     discountType: input.discountType,
     discountValue,
     discountAmount,
-    taxRate: settings.taxRate,
+    taxType: settings.taxType,
+    taxRate: saleTaxRate,
     taxAmount,
     total,
     paymentMethod: input.paymentMethod,
@@ -1921,9 +2070,19 @@ function validateSalesReturnEntries(
       return (item.returnedQuantity || 0) + requestedQuantity >= item.quantity;
     });
     const remainingTax = Math.max(0, sale.taxAmount - (sale.returnedTaxAmount || 0));
-    const estimatedTaxRefund = sale.total > 0
-      ? Number(((sale.taxAmount * refund.total) / sale.total).toFixed(2))
-      : 0;
+    const hasItemTaxBreakdown = requestedItems.every((requested) =>
+      sale.items.find((item) => item.id === requested.saleItemId)?.taxAmount !== undefined
+    );
+    const estimatedTaxRefund = hasItemTaxBreakdown
+      ? Number(requestedItems.reduce((sum, requested) => {
+          const item = sale.items.find((entry) => entry.id === requested.saleItemId);
+          return sum + (item && item.quantity > 0
+            ? (item.taxAmount! * requested.quantity) / item.quantity
+            : 0);
+        }, 0).toFixed(2))
+      : sale.total > 0
+        ? Number(((sale.taxAmount * refund.total) / sale.total).toFixed(2))
+        : 0;
     const taxRefundAmount = Number(
       Math.min(remainingTax, completesSale ? remainingTax : estimatedTaxRefund).toFixed(2)
     );
@@ -3338,6 +3497,7 @@ export async function updateSaleInvoice(
     unitId: string;
     unitName: string;
     unitsPerBase: number;
+    taxRate: number;
   }> = [];
   const requestedQuantities = new Map<number, number>();
   const availableStocks = new Map<number, number>();
@@ -3379,6 +3539,7 @@ export async function updateSaleInvoice(
       unitId: multiUnit?.id || '',
       unitName: multiUnit?.name || product.unit,
       unitsPerBase,
+      taxRate: product.taxRate ?? getDefaultInventoryTaxRate(database),
     });
     requestedQuantities.set(
       product.id,
@@ -3411,22 +3572,15 @@ export async function updateSaleInvoice(
       ? Number(((grossTotal * Math.min(100, discountValue)) / 100).toFixed(2))
       : Number(Math.min(grossTotal, discountValue).toFixed(2))
     : 0;
-  const netAfterDiscount = Math.max(0, grossTotal - discountAmount);
-  let taxAmount: number;
-  let total: number;
-  let subtotal: number;
-
-  if (settings.taxType === 'inclusive') {
-    total = netAfterDiscount;
-    taxAmount = Number(
-      (netAfterDiscount - netAfterDiscount / (1 + settings.taxRate / 100)).toFixed(2)
-    );
-    subtotal = Number((total - taxAmount).toFixed(2));
-  } else {
-    subtotal = netAfterDiscount;
-    taxAmount = Number(((netAfterDiscount * settings.taxRate) / 100).toFixed(2));
-    total = Number((netAfterDiscount + taxAmount).toFixed(2));
-  }
+  const taxBreakdown = calculateSalesTax(
+    resolvedItems.map((item) => ({ amount: item.lineTotal, taxRate: item.taxRate })),
+    discountAmount,
+    settings.taxType
+  );
+  const { subtotal, taxAmount } = taxBreakdown;
+  const totalTaxRates = [...new Set(resolvedItems.map((item) => item.taxRate))];
+  const saleTaxRate = totalTaxRates.length === 1 ? totalTaxRates[0] : 0;
+  let total = taxBreakdown.total;
   if (settings.roundTotalToFiveCents) {
     total = Number((Math.round(total * 20) / 20).toFixed(2));
   }
@@ -3458,10 +3612,13 @@ export async function updateSaleInvoice(
     }
 
     database.run('DELETE FROM sale_items WHERE sale_id = ?', [saleId]);
-    for (const item of resolvedItems) {
+    for (const [itemIndex, item] of resolvedItems.entries()) {
+      const taxLine = taxBreakdown.lines[itemIndex];
       database.run(
-        `INSERT INTO sale_items (sale_id, product_id, sku, product_name, quantity, unit_price, line_total, name_ar, unit_id, unit_name, units_per_base)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO sale_items (
+           sale_id, product_id, sku, product_name, quantity, unit_price, line_total, name_ar,
+           unit_id, unit_name, units_per_base, tax_rate, tax_amount, discount_amount
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           saleId,
           item.product.id,
@@ -3474,6 +3631,9 @@ export async function updateSaleInvoice(
           item.unitId,
           item.unitName,
           item.unitsPerBase,
+          item.taxRate,
+          taxLine.taxAmount,
+          taxLine.discountAmount,
         ]
       );
     }
@@ -3481,7 +3641,7 @@ export async function updateSaleInvoice(
     database.run(
       `UPDATE sales
        SET cashier_name = ?, customer_name = ?, subtotal = ?, discount_type = ?, discount_value = ?,
-           discount_amount = ?, tax_rate = ?, tax_amount = ?, total = ?, payment_method = ?,
+           discount_amount = ?, tax_rate = ?, tax_type = ?, tax_amount = ?, total = ?, payment_method = ?,
            amount_tendered = ?, change_due = ?, status = 'COMPLETED'
        WHERE id = ?`,
       [
@@ -3491,7 +3651,8 @@ export async function updateSaleInvoice(
         input.discountType,
         discountValue,
         discountAmount,
-        settings.taxRate,
+        saleTaxRate,
+        settings.taxType,
         taxAmount,
         total,
         input.paymentMethod,
@@ -3724,7 +3885,12 @@ export async function importProducts(
         const category = (row.category || '').trim() as ProductCategory;
         const costPrice = Math.max(0, Number(row.costPrice) || 0);
         const retailPrice = Math.max(0, Number(row.retailPrice) || 0);
-        const taxRate = row.taxRate !== undefined && !isNaN(Number(row.taxRate)) ? Math.max(0, Number(row.taxRate)) : 15;
+        const hasTaxRate = row.taxRate !== undefined && row.taxRate !== null &&
+          String(row.taxRate).trim() !== '';
+        const taxRate = hasTaxRate ? Number(row.taxRate) : getDefaultInventoryTaxRate(database);
+        if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 100) {
+          throw new Error('Tax rate must be a number between 0 and 100.');
+        }
         const stock = Number(row.stock) || 0;
         const reorderLevel = Math.max(0, Number(row.reorderLevel ?? 5));
         const unit = (row.unit || 'ea').trim();
@@ -3739,7 +3905,6 @@ export async function importProducts(
           existing?.multiUnits || [],
           existing?.additionalBarcodes || []
         );
-
         if (existing) {
           // Update existing product (update Arabic name, prices, tax rate, and details)
           database.run(
@@ -3769,6 +3934,10 @@ export async function importProducts(
           );
           imported++;
         }
+        database.run(
+          'INSERT OR IGNORE INTO inventory_options (type, value) VALUES (?, ?)',
+          ['taxRate', String(taxRate)]
+        );
       } catch (err) {
         errors.push(`Row ${i + 1} (${row.sku || 'Unknown'}): ${(err as Error).message}`);
       }

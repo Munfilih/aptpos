@@ -7,7 +7,7 @@ export interface SaleReturnAllocation {
 }
 
 export function calculateSaleReturnRefund(
-  sale: Pick<Sale, 'total' | 'items'>,
+  sale: Pick<Sale, 'total' | 'items' | 'taxType'>,
   requestedItems: Array<{ saleItemId: number; quantity: number }>,
   previouslyRefunded: number
 ): { total: number; allocations: SaleReturnAllocation[] } {
@@ -15,9 +15,18 @@ export function calculateSaleReturnRefund(
   const byId = new Map(sale.items.map((item) => [item.id, item]));
   const allocations = requestedItems.map(({ saleItemId, quantity }) => {
     const item = byId.get(saleItemId);
+    const itemTaxableTotal = item &&
+      item.taxAmount !== undefined &&
+      item.discountAmount !== undefined &&
+      sale.taxType
+      ? Math.max(0, item.lineTotal - item.discountAmount) +
+        (sale.taxType === 'exclusive' ? item.taxAmount : 0)
+      : null;
     const amount =
-      item && grossTotal > 0
-        ? (sale.total * item.lineTotal * quantity) / (grossTotal * item.quantity)
+      item && itemTaxableTotal !== null && item.quantity > 0
+        ? (itemTaxableTotal * quantity) / item.quantity
+        : item && grossTotal > 0
+          ? (sale.total * item.lineTotal * quantity) / (grossTotal * item.quantity)
         : 0;
     return {
       saleItemId,

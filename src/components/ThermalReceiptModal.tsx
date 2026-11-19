@@ -1,9 +1,14 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Printer, X, Check, FileText, QrCode, Banknote, CreditCard, Receipt } from 'lucide-react';
 import QRCode from 'qrcode';
 import type { PaperWidth, Sale, SalesReturnVoucher, StoreSettings } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
 import { generateZatcaTlvBase64 } from '../utils/zatcaQr';
+import {
+  calculateSalesTax,
+  getPrintedSalesTaxBreakdown,
+  getSalesTaxCategorySummaries,
+} from '../utils/salesTax';
 import {
   applyThermalPageSize,
   measureThermalPageSize,
@@ -31,6 +36,40 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const { language } = useLanguage();
   const activeFormat: PaperWidth = settings.paperWidth || '80mm';
   const templateSettings = settings.invoiceTemplates?.[activeFormat];
+  const saleTaxType = sale.taxType || settings.taxType;
+  const printedTaxBreakdown = useMemo(
+    () => getPrintedSalesTaxBreakdown(sale, settings.taxType),
+    [sale, settings.taxType]
+  );
+  const taxableLines = useMemo(
+    () => sale.items.map((item) => ({
+      amount: item.lineTotal,
+      taxRate: item.taxRate ?? sale.taxRate,
+    })),
+    [sale.items, sale.taxRate]
+  );
+  const invoiceLineBreakdown = useMemo(
+    () => calculateSalesTax(taxableLines, 0, saleTaxType),
+    [taxableLines, saleTaxType]
+  );
+  const discountedLineBreakdown = useMemo(
+    () => calculateSalesTax(taxableLines, sale.discountAmount, saleTaxType),
+    [taxableLines, sale.discountAmount, saleTaxType]
+  );
+  const unitPricesWithoutTax = useMemo(
+    () => sale.items.map((item) =>
+      calculateSalesTax(
+        [{ amount: item.unitPrice, taxRate: item.taxRate ?? sale.taxRate }],
+        0,
+        saleTaxType
+      ).subtotal
+    ),
+    [sale.items, sale.taxRate, saleTaxType]
+  );
+  const taxCategories = useMemo(
+    () => getSalesTaxCategorySummaries(taxableLines, discountedLineBreakdown),
+    [taxableLines, discountedLineBreakdown]
+  );
 
   const [zatcaQrDataUrl, setZatcaQrDataUrl] = useState<string>('');
   const [printError, setPrintError] = useState<string | null>(null);
@@ -43,7 +82,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
     const seller = settings.storeNameAr || settings.storeName || 'aptPOS Retail';
     const vat = settings.taxId || '300000000000003';
     const total = sale.total;
-    const tax = sale.taxAmount;
+    const tax = printedTaxBreakdown.taxAmount;
     const time = sale.createdAt;
 
     try {
@@ -75,7 +114,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [sale, settings]);
+  }, [sale, settings, printedTaxBreakdown]);
 
   const primaryActionBtnRef = useRef<HTMLButtonElement>(null);
 
@@ -182,8 +221,6 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, [onClose, handlePrintAndClose, showPrintPreview]);
 
-  const isInclusive = (sale.taxType || settings.taxType) === 'inclusive';
-
   // Visibility settings helpers with defaults
   const showNameEn = (templateSettings?.invoiceShowProductName ?? settings.invoiceShowProductName) !== false;
   const showNameAr = (templateSettings?.invoiceShowProductNameAr ?? settings.invoiceShowProductNameAr) !== false;
@@ -203,9 +240,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
     )
   );
 
-  const subtotalExcl = (isInclusive && Math.abs(sale.subtotal - sale.total) < 0.05 && sale.taxAmount > 0)
-    ? (sale.total - sale.taxAmount)
-    : sale.subtotal;
+  const subtotalExcl = printedTaxBreakdown.subtotal;
 
   const returnDetails = returnVouchers
     .map((voucher) => {
@@ -222,7 +257,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const totalRefunded = sale.returnedTotal ?? linkedRefundTotal;
   const taxRefunded = sale.returnedTaxAmount ?? 0;
   const netAfterReturns = Math.max(0, sale.total - totalRefunded);
-  const netTaxAfterReturns = Math.max(0, sale.taxAmount - taxRefunded);
+  const netTaxAfterReturns = Math.max(0, printedTaxBreakdown.taxAmount - taxRefunded);
   const formatReturnDate = (date: string) =>
     new Date(date).toLocaleString(language === 'ar' ? 'ar-SA' : 'en-US', {
       year: 'numeric',
@@ -463,24 +498,26 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
 
               {/* Line Items Table */}
               <div className="border border-slate-200 rounded-lg overflow-hidden">
-                <table className="w-full text-left border-collapse text-xs">
+                <table className="w-full table-fixed text-left border-collapse text-xs">
                   <thead>
                     <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 text-[10px]">
-                      <th className="py-1.5 px-2.5 w-7 text-center">#</th>
-                      <th className="py-1.5 px-2.5">Item Description / بيان الصنف</th>
-                      <th className="py-1.5 px-2 text-center w-16">Qty / الكمية</th>
-                      <th className="py-1.5 px-2.5 text-right w-24">Price / السعر</th>
-                      {showTax && <th className="py-1.5 px-2 text-right w-16">VAT</th>}
-                      <th className="py-1.5 px-2.5 text-right w-24">Total / الإجمالي</th>
+                      <th className="w-[4%] py-1.5 px-1 text-center">#</th>
+                      <th className="w-[24%] py-1.5 px-1.5">Item Description / بيان الصنف</th>
+                      <th className="w-[6%] py-1.5 px-1 text-center">Qty</th>
+                      <th className="w-[8%] py-1.5 px-1 text-center">Unit</th>
+                      <th className="w-[15%] py-1.5 px-1 text-right">Unit Price<br />(Excl. Tax)</th>
+                      {showTax && <th className="w-[7%] py-1.5 px-1 text-right">Tax %</th>}
+                      <th className="w-[17%] py-1.5 px-1 text-right">Subtotal<br />(Excl. Tax)</th>
+                      <th className="w-[19%] py-1.5 px-1 text-right">Item Total<br />(Incl. Tax)</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
                     {pageItems.map((item, pageItemIndex) => (
                       <tr key={item.id} className="hover:bg-slate-50/70">
-                        <td className="py-1.5 px-2.5 text-center text-slate-400 text-[10px]">
+                        <td className="py-1.5 px-1 text-center text-slate-400 text-[10px]">
                           {pageIndex * A4_ITEMS_PER_PAGE + pageItemIndex + 1}
                         </td>
-                        <td className="py-1.5 px-2.5 font-sans">
+                        <td className="py-1.5 px-1.5 font-sans break-words">
                           {showNameEn && (
                             <div className="font-semibold text-slate-900 text-xs leading-tight">
                               {item.productName}
@@ -491,29 +528,31 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                               {item.nameAr}
                             </div>
                           )}
-                          {item.unitName && (
-                            <div className="text-[9px] text-slate-500">{item.unitName}</div>
-                          )}
                           {showBarcode && item.sku && (
                             <div className="text-[9px] text-slate-400 font-mono mt-0.5">
                               SKU: {item.sku}
                             </div>
                           )}
                         </td>
-                        <td className="py-1.5 px-2 text-center font-bold text-slate-900">
+                        <td className="py-1.5 px-1 text-center font-bold text-slate-900">
                           {item.quantity}
-                          {item.unitName && <div className="text-[9px] font-normal text-slate-500">{item.unitName}</div>}
                         </td>
-                        <td className="py-1.5 px-2.5 text-right text-slate-700">
-                          {c} {item.unitPrice.toFixed(2)}
+                        <td className="py-1.5 px-1 text-center text-slate-700 break-words">
+                          {item.unitName || '—'}
+                        </td>
+                        <td className="py-1.5 px-1 text-right text-slate-700 break-all">
+                          {c} {unitPricesWithoutTax[pageIndex * A4_ITEMS_PER_PAGE + pageItemIndex].toFixed(2)}
                         </td>
                         {showTax && (
-                          <td className="py-1.5 px-2 text-right text-slate-500 text-[10px]">
-                            {sale.taxRate}%
+                          <td className="py-1.5 px-1 text-right text-slate-500 text-[10px]">
+                            {item.taxRate ?? sale.taxRate}%
                           </td>
                         )}
-                        <td className="py-1.5 px-2.5 text-right font-bold text-slate-900">
-                          {c} {item.lineTotal.toFixed(2)}
+                        <td className="py-1.5 px-1 text-right text-slate-700 break-all">
+                          {c} {invoiceLineBreakdown.lines[pageIndex * A4_ITEMS_PER_PAGE + pageItemIndex].subtotal.toFixed(2)}
+                        </td>
+                        <td className="py-1.5 px-1 text-right font-bold text-slate-900 break-all">
+                          {c} {invoiceLineBreakdown.lines[pageIndex * A4_ITEMS_PER_PAGE + pageItemIndex].total.toFixed(2)}
                         </td>
                       </tr>
                     ))}
@@ -547,7 +586,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                 <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg space-y-1 text-[11px] font-mono">
                   {showTax && (
                     <div className="flex justify-between text-slate-600">
-                      <span>Subtotal (Excl. Tax / غير شامل):</span>
+                      <span>Subtotal (Without Tax / غير شامل):</span>
                       <span className="font-semibold text-slate-900">
                         {c} {subtotalExcl.toFixed(settings.decimalPoints ?? 2)}
                       </span>
@@ -561,14 +600,24 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                       </span>
                     </div>
                   )}
-                  {showTax && (
-                    <div className="flex justify-between text-slate-600">
-                      <span>VAT / الضريبة ({sale.taxRate}%):</span>
-                      <span className="font-semibold text-slate-900">
-                        {c} {sale.taxAmount.toFixed(settings.decimalPoints ?? 2)}
-                      </span>
-                    </div>
-                  )}
+                  {showTax && taxCategories.map(({ rate, taxableAmount, taxAmount }) => (
+                    <React.Fragment key={rate}>
+                      <div className="flex justify-between text-slate-600">
+                        <span>{rate}% Taxable / القيمة الخاضعة للضريبة:</span>
+                        <span className="font-semibold text-slate-900">
+                          {c} {taxableAmount.toFixed(settings.decimalPoints ?? 2)}
+                        </span>
+                      </div>
+                      {rate > 0 && (
+                        <div className="flex justify-between text-slate-600">
+                          <span>{rate}% VAT / الضريبة:</span>
+                          <span className="font-semibold text-slate-900">
+                            {c} {taxAmount.toFixed(settings.decimalPoints ?? 2)}
+                          </span>
+                        </div>
+                      )}
+                    </React.Fragment>
+                  ))}
                   <div className="flex justify-between text-sm font-black text-slate-950 pt-1.5 border-t-2 border-slate-300">
                     <span className="font-sans">Total / الإجمالي:</span>
                     <span>
@@ -745,32 +794,37 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               )}
 
               {/* Line Items */}
-              <div className="border-b border-dashed border-slate-300 pb-2.5 mb-2.5 space-y-2">
-                {sale.items.map((item) => (
-                  <div key={item.id}>
+              <div className="border-b border-dashed border-slate-300 pb-2.5 mb-2.5">
+                <div className="grid grid-cols-[0.45fr_0.55fr_1.15fr_0.45fr_1.1fr_1.1fr] gap-0.5 border-b border-slate-300 pb-1 text-[8px] font-bold text-slate-600">
+                  <span className="text-center">Qty</span>
+                  <span className="text-center">Unit</span>
+                  <span className="text-right">Unit Price<br />Excl. Tax</span>
+                  {showTax && <span className="text-right">Tax %</span>}
+                  <span className="text-right">Subtotal<br />Excl. Tax</span>
+                  <span className="text-right">Item Total<br />Incl. Tax</span>
+                </div>
+                {sale.items.map((item, index) => (
+                  <div key={item.id} className="border-b border-dashed border-slate-200 py-1.5 last:border-0">
                     {showNameEn && (
-                      <div className="font-medium text-slate-900 truncate">{item.productName}</div>
+                      <div className="font-medium text-slate-900 break-words">{item.productName}</div>
                     )}
                     {showNameAr && item.nameAr && (
-                      <div className="text-[10px] text-slate-600 truncate" dir="rtl">
+                      <div className="text-[10px] text-slate-600 break-words" dir="rtl">
                         {item.nameAr}
                       </div>
-                    )}
-                    {item.unitName && (
-                      <div className="text-[9px] text-slate-500">{item.unitName}</div>
                     )}
                     {showBarcode && item.sku && (
                       <div className="text-[9px] text-slate-400 font-mono">
                         SKU: {item.sku}
                       </div>
                     )}
-                    <div className="flex justify-between text-[11px] text-slate-700">
-                      <span>
-                        {item.quantity}{item.unitName ? ` ${item.unitName}` : ''} x {c} {item.unitPrice.toFixed(2)}
-                      </span>
-                      <span className="font-semibold text-slate-900">
-                        {c} {item.lineTotal.toFixed(2)}
-                      </span>
+                    <div className="grid grid-cols-[0.45fr_0.55fr_1.15fr_0.45fr_1.1fr_1.1fr] gap-0.5 text-[8px] text-slate-700">
+                      <span className="text-center">{item.quantity}</span>
+                      <span className="text-center break-words">{item.unitName || '—'}</span>
+                      <span className="text-right break-all">{c}{unitPricesWithoutTax[index].toFixed(2)}</span>
+                      {showTax && <span className="text-right">{item.taxRate ?? sale.taxRate}%</span>}
+                      <span className="text-right break-all">{c}{invoiceLineBreakdown.lines[index].subtotal.toFixed(2)}</span>
+                      <span className="text-right font-semibold break-all">{c}{invoiceLineBreakdown.lines[index].total.toFixed(2)}</span>
                     </div>
                   </div>
                 ))}
@@ -780,7 +834,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               <div className="space-y-1 text-[11px] border-b border-dashed border-slate-300 pb-2.5 mb-2.5">
                 {showTax && (
                   <div className="flex justify-between">
-                    <span className="text-slate-600">Subtotal (Excl. Tax / غير شامل)</span>
+                    <span className="text-slate-600">Subtotal (Without Tax / غير شامل)</span>
                     <span>
                       {c} {subtotalExcl.toFixed(settings.decimalPoints ?? 2)}
                     </span>
@@ -800,16 +854,20 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                     </span>
                   </div>
                 )}
-                {showTax && (
-                  <div className="flex justify-between">
-                    <span className="text-slate-600">
-                      VAT / ضريبة ({sale.taxRate}%)
-                    </span>
-                    <span>
-                      {c} {sale.taxAmount.toFixed(settings.decimalPoints ?? 2)}
-                    </span>
-                  </div>
-                )}
+                {showTax && taxCategories.map(({ rate, taxableAmount, taxAmount }) => (
+                  <React.Fragment key={rate}>
+                    <div className="flex justify-between">
+                      <span className="text-slate-600">{rate}% Taxable</span>
+                      <span>{c} {taxableAmount.toFixed(settings.decimalPoints ?? 2)}</span>
+                    </div>
+                    {rate > 0 && (
+                      <div className="flex justify-between">
+                        <span className="text-slate-600">{rate}% VAT</span>
+                        <span>{c} {taxAmount.toFixed(settings.decimalPoints ?? 2)}</span>
+                      </div>
+                    )}
+                  </React.Fragment>
+                ))}
                 <div className="flex justify-between text-sm font-bold text-slate-950 pt-1 border-t border-slate-200">
                   <span>TOTAL / الإجمالي شامل الضريبة</span>
                   <span>

@@ -760,7 +760,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <span>Sales & Taxation</span>
                   </h2>
                   <p className="text-xs text-[#666] mt-1">
-                    Configure tax modes, rounding rules, and checkout safeguards.
+                    Product tax rates are managed under Inventory &gt; Manage. Choose here whether each product price includes tax or adds it at checkout.
                   </p>
                 </div>
 
@@ -771,7 +771,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       Tax Calculation Mode
                     </label>
                     <p className="text-[11px] text-slate-500 mt-0.5">
-                      Choose whether retail shelf prices already include sales tax or if tax is computed and added on top at checkout.
+                      Each product uses its assigned Inventory tax rate. Choose whether retail prices include that tax or if it is added at checkout.
                     </p>
                   </div>
 
@@ -823,25 +823,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
 
                 <div className="grid grid-cols-1 gap-4">
-                  <div>
-                    <label className="block font-medium text-[#333] mb-1">
-                      Standard Sales Tax Rate (%)
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      max={100}
-                      step="0.01"
-                      value={form.taxRate}
-                      onFocus={(event) => event.currentTarget.select()}
-                      onClick={(event) => event.currentTarget.select()}
-                      onChange={(e) =>
-                        setForm({ ...form, taxRate: Math.max(0, Number(e.target.value) || 0) })
-                      }
-                      className="w-full px-3 py-2 font-mono border border-[#c9c9c9] rounded-md text-[#1f1f1f] tabular-nums focus:outline-none focus:border-[#0f6cbd] bg-white"
-                    />
-                  </div>
-
                   <div>
                     <label className="block font-medium text-slate-700 mb-1">
                       Currency Symbol

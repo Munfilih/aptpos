@@ -7,6 +7,7 @@ export interface InventoryOption {
   type: InventoryOptionType;
   value: string;
   imageData?: string;
+  isDefault?: boolean;
 }
 
 export interface ProductMultiUnit {
@@ -133,6 +134,9 @@ export interface SaleItem {
   unitName?: string;
   unitsPerBase?: number;
   returnedQuantity?: number;
+  taxRate?: number;
+  taxAmount?: number;
+  discountAmount?: number;
 }
 
 export interface Sale {

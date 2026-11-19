@@ -34,6 +34,7 @@ import { useLanguage } from '../i18n/LanguageContext';
 import { ProductImage } from './ProductImage';
 import { getPaymentMethods } from '../utils/paymentMethods';
 import { getKotNumberFromInvoice } from '../utils/documentNumbers';
+import { calculateSalesTax } from '../utils/salesTax';
 import {
   applyThermalPageWidth,
   measureThermalPageSize,
@@ -830,7 +831,6 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     activeTabId,
     settings.defaultCustomer,
     settings.taxType,
-    settings.taxRate,
     settings.roundTotalToFiveCents,
     isRpos,
     isRtl,
@@ -1365,26 +1365,19 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     return Number(Math.min(grossTotal, numericDiscount).toFixed(2));
   }, [grossTotal, discountType, numericDiscount]);
 
-  const netAfterDiscount = Math.max(0, grossTotal - discountAmount);
-
-  // Saudi 15% VAT calculation & Subtotal without tax
-  const { taxAmount, calculatedTotal, subtotal } = useMemo(() => {
-    const rate = settings.taxRate > 0 ? settings.taxRate : 15.0;
-    if (settings.taxType === 'inclusive') {
-      const totalAmount = netAfterDiscount;
-      const computedTax = Number((totalAmount - totalAmount / (1 + rate / 100)).toFixed(2));
-      const netSubtotal = Number((totalAmount - computedTax).toFixed(2));
-      return { taxAmount: computedTax, calculatedTotal: totalAmount, subtotal: netSubtotal };
-    } else {
-      const netSubtotal = netAfterDiscount;
-      const computedTax = Number(((netSubtotal * rate) / 100).toFixed(2));
-      return {
-        taxAmount: computedTax,
-        calculatedTotal: Number((netSubtotal + computedTax).toFixed(2)),
-        subtotal: netSubtotal,
-      };
-    }
-  }, [netAfterDiscount, settings.taxType, settings.taxRate]);
+  const taxBreakdown = useMemo(
+    () => calculateSalesTax(
+      cart.map((item) => ({
+        amount: item.product.retailPrice * item.quantity,
+        taxRate: item.product.taxRate ?? 0,
+      })),
+      discountAmount,
+      settings.taxType
+    ),
+    [cart, discountAmount, settings.taxType]
+  );
+  const { taxAmount, subtotal } = taxBreakdown;
+  const calculatedTotal = taxBreakdown.total;
 
   const total = useMemo(() => {
     if (settings.roundTotalToFiveCents) {
@@ -2216,15 +2209,15 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
               <div className="space-y-2 bg-slate-50 p-3 sm:p-4">
                 {cart.map((item) => {
                   const lineSubtotal = item.product.retailPrice * item.quantity;
-                  const taxRate = settings.taxRate || 15;
-                  const lineTax =
-                    settings.taxType === 'inclusive'
-                      ? Number((lineSubtotal - lineSubtotal / (1 + taxRate / 100)).toFixed(2))
-                      : Number(((lineSubtotal * taxRate) / 100).toFixed(2));
-                  const lineWithoutTax =
-                    settings.taxType === 'inclusive'
-                      ? Number((lineSubtotal - lineTax).toFixed(2))
-                      : lineSubtotal;
+                  const taxRate = item.product.taxRate ?? 0;
+                  const lineTax = calculateSalesTax(
+                    [{ amount: lineSubtotal, taxRate }],
+                    0,
+                    settings.taxType
+                  ).lines[0].taxAmount;
+                  const lineWithoutTax = settings.taxType === 'inclusive'
+                    ? Number((lineSubtotal - lineTax).toFixed(2))
+                    : lineSubtotal;
                   const lineTotal =
                     settings.taxType === 'inclusive'
                       ? lineSubtotal
@@ -2410,11 +2403,12 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
                     {cart.map((item) => {
                       const lineSubtotal = item.product.retailPrice * item.quantity;
-                      const taxRate = settings.taxRate || 15;
-                      const lineTax =
-                        settings.taxType === 'inclusive'
-                          ? Number((lineSubtotal - lineSubtotal / (1 + taxRate / 100)).toFixed(2))
-                          : Number(((lineSubtotal * taxRate) / 100).toFixed(2));
+                      const taxRate = item.product.taxRate ?? 0;
+                      const lineTax = calculateSalesTax(
+                        [{ amount: lineSubtotal, taxRate }],
+                        0,
+                        settings.taxType
+                      ).lines[0].taxAmount;
                       const lineWithoutTax =
                         settings.taxType === 'inclusive'
                           ? Number((lineSubtotal - lineTax).toFixed(2))
@@ -2756,7 +2750,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                     </div>
                   )}
                   <div className="flex justify-between text-slate-600">
-                    <span>{isRtl ? `ضريبة القيمة المضافة (${settings.taxRate || 15}%)` : `VAT (${settings.taxRate || 15}%)`}</span>
+                    <span>{isRtl ? 'ضريبة القيمة المضافة' : 'VAT'}</span>
                     <span className="font-mono">{c} {taxAmount.toFixed(2)}</span>
                   </div>
                   <div className="flex items-baseline justify-between border-t border-blue-200 pt-2">
@@ -2810,7 +2804,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   </div>
                 )}
                 <div className="flex justify-between text-slate-600">
-                  <span>{isRtl ? `ضريبة القيمة المضافة (${settings.taxRate || 15}%)` : `VAT (${settings.taxRate || 15}%)`}</span>
+                  <span>{isRtl ? 'ضريبة القيمة المضافة' : 'VAT'}</span>
                   <span className="font-mono font-semibold">{c} {taxAmount.toFixed(2)}</span>
                 </div>
                 <div className="flex items-baseline justify-between border-t border-slate-200 pt-2">
@@ -3408,7 +3402,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   </div>
                 )}
                 <div className="flex justify-between text-sm text-slate-600">
-                  <span>{isRtl ? `ضريبة القيمة المضافة (${settings.taxRate || 15}%)` : `VAT (${settings.taxRate || 15}%)`}</span>
+                  <span>{isRtl ? 'ضريبة القيمة المضافة' : 'VAT'}</span>
                   <span className="font-mono">{c} {taxAmount.toFixed(2)}</span>
                 </div>
                 <div className="flex items-baseline justify-between border-t border-blue-200 pt-2">

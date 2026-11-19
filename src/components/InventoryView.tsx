@@ -57,7 +57,8 @@ function isInventoryOption(value: unknown): value is InventoryOption {
     (value.type === 'category' || value.type === 'brand' || value.type === 'taxRate' || value.type === 'unit') &&
     'value' in value &&
     typeof value.value === 'string' &&
-    (!('imageData' in value) || typeof value.imageData === 'string')
+    (!('imageData' in value) || typeof value.imageData === 'string') &&
+    (!('isDefault' in value) || typeof value.isDefault === 'boolean')
   );
 }
 
@@ -358,9 +359,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     () => [...new Set([
       ...inventoryOptions.filter((option) => option.type === 'taxRate').map((option) => Number(option.value)),
       ...products.map((product) => product.taxRate ?? 15),
-      settings.taxRate,
     ])].filter(Number.isFinite).sort((a, b) => a - b),
-    [inventoryOptions, products, settings.taxRate]
+    [inventoryOptions, products]
+  );
+  const defaultTaxRate = Number(
+    inventoryOptions.find((option) => option.type === 'taxRate' && option.isDefault)?.value ??
+    taxRates[0] ??
+    15
   );
   const units = useMemo(
     () => [...new Set([...inventoryOptions.filter((option) => option.type === 'unit').map((option) => option.value), ...products.map((product) => product.unit)])].sort(),
@@ -598,6 +603,32 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     }
   };
 
+  const setDefaultTaxRate = async (option: InventoryOption) => {
+    setOptionsError(null);
+    try {
+      const response = await fetch(`/api/inventory-options/${option.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: option.value, isDefault: true }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok || !isInventoryOption(payload)) {
+        const message =
+          typeof payload === 'object' && payload !== null && 'error' in payload &&
+          typeof payload.error === 'string'
+            ? payload.error
+            : 'Could not set the default tax rate.';
+        throw new Error(message);
+      }
+      setInventoryOptions((current) => current.map((entry) => ({
+        ...entry,
+        isDefault: entry.type === 'taxRate' && entry.id === payload.id,
+      })));
+    } catch (error) {
+      setOptionsError((error as Error).message);
+    }
+  };
+
   const openCreateModal = () => {
     setEditingProduct(null);
     setForm({
@@ -605,7 +636,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       sku: generateNextSku(),
       category: categories[0] || EMPTY_FORM.category,
       brand: '',
-      taxRate: String(taxRates[0] ?? settings.taxRate),
+      taxRate: String(defaultTaxRate),
       unit: units[0] || EMPTY_FORM.unit,
     });
     setProductLookupCode('');
@@ -620,8 +651,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   };
 
   useEffect(() => {
-    if (createProductRequest > 0) openCreateModal();
-  }, [createProductRequest]);
+    if (createProductRequest > 0 && !optionsLoading) openCreateModal();
+  }, [createProductRequest, optionsLoading]);
 
   const openEditModal = (product: Product) => {
     setEditingProduct(product);
@@ -695,7 +726,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       sku: nextSku,
       barcode: code,
       category: categories[0] || EMPTY_FORM.category,
-      taxRate: String(taxRates[0] ?? settings.taxRate),
+      taxRate: String(defaultTaxRate),
       unit: units[0] || EMPTY_FORM.unit,
     });
     setProductImagePath('');
@@ -1239,9 +1270,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
         const costPrice = costIdx !== -1 ? Math.max(0, parseFloat(String(row[costIdx])) || 0) : 0;
         const retailPrice = retailIdx !== -1 ? Math.max(0, parseFloat(String(row[retailIdx])) || 0) : 0;
-        const taxRate = taxIdx !== -1 && row[taxIdx] !== undefined && String(row[taxIdx]).trim() !== ''
-          ? Math.max(0, parseFloat(String(row[taxIdx])) || 0)
-          : 15;
+        const rawTaxRate = taxIdx !== -1 && row[taxIdx] !== undefined
+          ? String(row[taxIdx]).trim().replace(/%$/, '').trim()
+          : '';
+        const taxRate = rawTaxRate ? Number(rawTaxRate) : defaultTaxRate;
+        if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 100) {
+          throw new Error(`Tax rate in row ${i + 1} must be a number between 0 and 100.`);
+        }
         const stock = stockIdx !== -1 ? Math.max(0, parseInt(String(row[stockIdx]), 10) || 0) : 0;
         const reorderLevel = reorderIdx !== -1 ? Math.max(0, parseInt(String(row[reorderIdx]), 10) || 5) : 5;
         const unit = unitIdx !== -1 && row[unitIdx] !== undefined ? String(row[unitIdx]).trim() : 'ea';
@@ -1299,6 +1334,18 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       const errors = Array.isArray(data.errors)
         ? data.errors.filter((error: unknown): error is string => typeof error === 'string')
         : [];
+      const optionsResponse = await fetch('/api/inventory-options');
+      const optionsPayload: unknown = await optionsResponse.json();
+      if (!optionsResponse.ok || !Array.isArray(optionsPayload) || !optionsPayload.every(isInventoryOption)) {
+        const message =
+          typeof optionsPayload === 'object' && optionsPayload !== null && 'error' in optionsPayload &&
+          typeof optionsPayload.error === 'string'
+            ? optionsPayload.error
+            : 'Imported products, but could not refresh the managed tax rates.';
+        setOptionsError(message);
+      } else {
+        setInventoryOptions(optionsPayload);
+      }
       setImportModalOpen(false);
       if (errors.length > 0) {
         const visibleErrors = errors.slice(0, 8);
@@ -1445,7 +1492,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition-colors whitespace-nowrap shrink-0 shadow-xs"
+              disabled={optionsLoading}
+              className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition-colors whitespace-nowrap shrink-0 shadow-xs disabled:cursor-not-allowed disabled:opacity-50"
               title={isRtl ? 'استيراد منتجات من ملف إكسل أو CSV' : 'Import products from Excel (.xlsx, .xls) or CSV'}
             >
               <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
@@ -1463,8 +1511,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             <button
               type="button"
               onClick={openCreateModal}
+              disabled={optionsLoading}
               title={isRtl ? 'إضافة منتج (F8)' : 'Add Product (F8)'}
-              className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors whitespace-nowrap shrink-0"
+              className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors whitespace-nowrap shrink-0 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>
@@ -1805,10 +1854,25 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                       {managementType === 'taxRate' ? `${option.value}%` : option.value}
                     </h3>
                     <p className="mt-1 text-[11px] text-slate-500">
-                      {managementType === 'brand' ? (isRtl ? 'علامة تجارية' : 'Brand') : managementType === 'taxRate' ? (isRtl ? 'معدل الضريبة' : 'Tax rate') : (isRtl ? 'وحدة قياس' : 'Unit of measure')}
+                      {managementType === 'taxRate' && option.isDefault
+                        ? (isRtl ? 'الافتراضي' : 'Default')
+                        : managementType === 'brand'
+                          ? (isRtl ? 'علامة تجارية' : 'Brand')
+                          : managementType === 'taxRate'
+                            ? (isRtl ? 'معدل الضريبة' : 'Tax rate')
+                            : (isRtl ? 'وحدة قياس' : 'Unit of measure')}
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
+                    {managementType === 'taxRate' && !option.isDefault && (
+                      <button
+                        type="button"
+                        onClick={() => void setDefaultTaxRate(option)}
+                        className="rounded-lg px-2 py-1 text-[10px] font-semibold text-blue-700 hover:bg-blue-50"
+                      >
+                        {isRtl ? 'تعيين كافتراضي' : 'Set default'}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => openOptionDialog(managementType, option)}
