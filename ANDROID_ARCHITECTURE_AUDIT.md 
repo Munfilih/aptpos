@@ -1,0 +1,175 @@
+aptPOS Android Architecture Audit
+
+1. Project Overview
+
+The objective is to create a complete Android version of aptPOS while preserving the existing React user interface and POS functionality.
+
+The existing Windows/Electron application on the "main" branch must remain unchanged.
+
+All Android development must happen in the "android-port" branch.
+
+2. Existing Technology Stack
+
+The current project uses:
+
+- React 19
+- TypeScript
+- Vite
+- Electron 33
+- Express.js
+- SQLite using sql.js
+- Tailwind CSS
+
+3. Existing Architecture
+
+Frontend
+
+- Main entry: "src/main.tsx"
+- Main application: "src/App.tsx"
+- POS interface components: "src/components/"
+- Styling: Tailwind CSS
+
+Backend
+
+- Main backend: "server.ts"
+- Database operations: "server/db/"
+- API communication: HTTP endpoints under "/api/*"
+
+Desktop Integration
+
+The Electron application currently handles:
+
+- Application lifecycle
+- File system access
+- Printing
+- Backup and restore
+- Windows-specific dialogs
+- Application updates
+- IPC communication
+
+These Electron-specific features cannot be assumed to work directly on Android.
+
+4. Proposed Android Architecture
+
+Frontend
+
+Continue using the existing React interface.
+
+Use Capacitor to package the React application as a native Android application.
+
+Database
+
+Implement native Android SQLite storage.
+
+Requirements:
+
+- Fully offline operation
+- Persistent local data
+- Reliable invoice numbering
+- Transaction-safe sales operations
+- Product and stock management
+- Database backup and restore
+
+Backend/API
+
+Create an Android-compatible service layer.
+
+The existing Express backend and database operations must be migrated or adapted rather than assuming the desktop server can run unchanged on Android.
+
+Native Android Integration
+
+Replace Electron APIs with Android-compatible implementations.
+
+Required integrations:
+
+- Local file access
+- Database storage
+- Application lifecycle
+- Backup and restore
+- Barcode scanning
+- Thermal printing
+
+5. Thermal Printer Requirements
+
+Support:
+
+- Bluetooth ESC/POS printers
+- USB ESC/POS printers
+- 58mm receipt paper
+- 80mm receipt paper
+- English text
+- Arabic text
+- QR codes
+- Barcodes
+- Automatic receipt printing
+
+Printer functionality must be tested on real Android devices and compatible printers.
+
+6. Features to Preserve
+
+The Android version should retain the existing features wherever technically possible:
+
+- User login and authentication
+- POS register
+- Product management
+- Barcode scanning
+- Sales and payments
+- Sales history
+- Purchases
+- Inventory management
+- Customers
+- Vendors
+- Sales returns
+- Cashbook
+- Reports
+- Store settings
+- Receipt customization
+- Database backup and restore
+
+7. Development Milestones
+
+- [ ] Complete frontend and backend API audit.
+- [ ] Audit all Electron API dependencies.
+- [ ] Define shared platform interfaces.
+- [ ] Create Capacitor Android project.
+- [ ] Implement native SQLite integration.
+- [ ] Migrate existing database operations.
+- [ ] Implement offline POS operations.
+- [ ] Implement Bluetooth printing.
+- [ ] Implement USB printing.
+- [ ] Implement Android backup and restore.
+- [ ] Configure GitHub Actions.
+- [ ] Generate Android APK.
+- [ ] Test all major POS functions.
+
+8. GitHub Build Requirements
+
+Use GitHub Actions for cloud-based Android builds.
+
+Required outputs:
+
+- Debug APK
+- Release APK
+- Build logs
+- Downloadable APK artifacts
+
+Android signing credentials must be stored securely using GitHub repository secrets.
+
+9. Important Development Rules
+
+1. Never modify the existing "main" branch.
+2. Keep all Android changes in "android-port".
+3. Preserve the existing POS design.
+4. Do not remove existing POS features without a technical reason.
+5. Do not use a simple WebView wrapper as the final Android implementation.
+6. Ensure offline database operations work correctly.
+7. Prevent duplicate invoice numbers.
+8. Protect existing business data.
+9. Test printing on physical hardware.
+10. Do not declare the Android application production-ready until the core features have been tested.
+
+10. Final Objective
+
+Deliver a complete, installable Android APK of aptPOS with offline SQLite database support, existing POS functionality, Bluetooth and USB thermal printer support, and reliable backup and restore.
+
+The Android application must operate independently of the Windows Electron application while sharing the existing business logic and design wherever possible.
