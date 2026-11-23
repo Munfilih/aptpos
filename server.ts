@@ -3,6 +3,7 @@ import express from 'express';
 import fs from 'fs';
 import os from 'node:os';
 import path from 'path';
+import { createDecipheriv, createHash } from 'node:crypto';
 import type { Server } from 'http';
 import { fileURLToPath } from 'url';
 import {
@@ -73,7 +74,8 @@ import {
   openCashierShift,
 } from './server/db';
 import { APP_COMPONENTS, APP_VERSIONS } from './src/types/pos';
-import type { AppComponentId, AppVersion } from './src/types/pos';
+import { parseVersionComponentPolicies } from './src/utils/versionComponentPolicies';
+import type { AppComponentId, AppVersion, VersionComponentPolicies } from './src/types/pos';
 
 const translationCache = new Map<string, string>();
 const inFlightTranslations = new Map<string, Promise<string>>();
@@ -245,6 +247,180 @@ async function postToDemoPortal(
   return payload as Record<string, unknown>;
 }
 
+async function requestVersionControlPortal(
+  method: 'GET' | 'PUT',
+  allowedModules?: VersionComponentPolicies
+): Promise<{ versionComponentPolicies: VersionComponentPolicies; updatedAt: string | null }> {
+  const apiKey = (process.env.VERSION_CONTROL_API_KEY || '').trim();
+  if (!apiKey) {
+    throw new Error('Set VERSION_CONTROL_API_KEY on both the POS server and Auth API.');
+  }
+  const configuredUrl = process.env.DEMO_PORTAL_API_URL || 'https://aptpos-admin-api.onrender.com';
+  let endpoint: URL;
+  try {
+    endpoint = new URL(
+      '/api/registration/version-control',
+      configuredUrl.endsWith('/') ? configuredUrl : `${configuredUrl}/`
+    );
+  } catch {
+    throw new Error('DEMO_PORTAL_API_URL must be a valid HTTP or HTTPS URL.');
+  }
+  if (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(endpoint.hostname))) {
+    throw new Error('Version-control updates require HTTPS except for local development.');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method,
+      headers: {
+        'X-Version-Control-Key': apiKey,
+        ...(method === 'PUT' ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(method === 'PUT' ? { body: JSON.stringify({ allowedModules }) } : {}),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    throw new Error(
+      error instanceof Error && error.name === 'AbortError'
+        ? 'The Auth API did not respond in time while syncing version policies.'
+        : 'Could not reach the Auth API to sync version policies.'
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message =
+      typeof payload === 'object' &&
+      payload !== null &&
+      'error' in payload &&
+      typeof payload.error === 'string'
+        ? payload.error
+        : `The Auth API rejected the version-policy request (HTTP ${response.status}).`;
+    throw new Error(message);
+  }
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload) || !('allowedModules' in payload)) {
+    throw new Error('The Auth API returned an invalid version policy.');
+  }
+  const versionComponentPolicies = parseVersionComponentPolicies(payload.allowedModules);
+  if (!versionComponentPolicies || APP_VERSIONS.some((version) => !Array.isArray(versionComponentPolicies[version]))) {
+    throw new Error('The Auth API returned an incomplete version policy.');
+  }
+  return {
+    versionComponentPolicies,
+    updatedAt: 'updatedAt' in payload && typeof payload.updatedAt === 'string'
+      ? payload.updatedAt
+      : null,
+  };
+}
+
+async function postToRegistrationPortal(
+  pathname: string,
+  body: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const apiKey = (process.env.VERSION_CONTROL_API_KEY || '').trim();
+  if (!apiKey) {
+    throw new Error('Set VERSION_CONTROL_API_KEY on both the POS server and Auth API.');
+  }
+  const configuredUrl = process.env.DEMO_PORTAL_API_URL || 'https://aptpos-admin-api.onrender.com';
+  let endpoint: URL;
+  try {
+    endpoint = new URL(pathname, configuredUrl.endsWith('/') ? configuredUrl : `${configuredUrl}/`);
+  } catch {
+    throw new Error('DEMO_PORTAL_API_URL must be a valid HTTP or HTTPS URL.');
+  }
+  if (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(endpoint.hostname))) {
+    throw new Error('Registered-system activation requires HTTPS except for local development.');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Version-Control-Key': apiKey,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    throw new Error(
+      error instanceof Error && error.name === 'AbortError'
+        ? 'The Auth API did not respond in time while activating registration.'
+        : 'Could not reach the Auth API to activate registration.'
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message =
+      typeof payload === 'object' &&
+      payload !== null &&
+      'error' in payload &&
+      typeof payload.error === 'string'
+        ? payload.error
+        : `The Auth API rejected registration (HTTP ${response.status}).`;
+    const error = new Error(message);
+    Object.assign(error, { status: response.status });
+    throw error;
+  }
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    throw new Error('The Auth API returned an invalid registration response.');
+  }
+  return payload as Record<string, unknown>;
+}
+
+function decryptRegistrationCredentials(value: unknown): { username: string; password: string } {
+  const apiKey = (process.env.VERSION_CONTROL_API_KEY || '').trim();
+  if (!apiKey) throw new Error('Set VERSION_CONTROL_API_KEY on both the POS server and Auth API.');
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('version' in value) ||
+    value.version !== 1 ||
+    !('iv' in value) ||
+    typeof value.iv !== 'string' ||
+    !('tag' in value) ||
+    typeof value.tag !== 'string' ||
+    !('data' in value) ||
+    typeof value.data !== 'string'
+  ) {
+    throw new Error('The Auth API returned invalid encrypted registration credentials.');
+  }
+
+  const encryptionKey = createHash('sha256')
+    .update('aptpos-registration-credentials:v1:')
+    .update(apiKey)
+    .digest();
+  const decipher = createDecipheriv('aes-256-gcm', encryptionKey, Buffer.from(value.iv, 'base64'));
+  decipher.setAuthTag(Buffer.from(value.tag, 'base64'));
+  const plaintext = Buffer.concat([
+    decipher.update(Buffer.from(value.data, 'base64')),
+    decipher.final(),
+  ]).toString('utf8');
+  const credentials: unknown = JSON.parse(plaintext);
+  if (
+    typeof credentials !== 'object' ||
+    credentials === null ||
+    !('username' in credentials) ||
+    typeof credentials.username !== 'string' ||
+    !('password' in credentials) ||
+    typeof credentials.password !== 'string'
+  ) {
+    throw new Error('The Auth API returned invalid registration credentials.');
+  }
+  return { username: credentials.username, password: credentials.password };
+}
+
 const DEMO_OFFLINE_GRACE_MS = 60 * 60 * 1000;
 const DEMO_OFFLINE_GRACE_EXPIRED_MESSAGE =
   'Demo access requires an internet connection after one hour offline.';
@@ -399,6 +575,96 @@ async function startServer(): Promise<Server> {
       res.json({ systemCode: await getRegistrationSystemCode() });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.post('/api/registration/activate', async (req, res) => {
+    try {
+      const registrationKey = typeof req.body?.registrationKey === 'string'
+        ? req.body.registrationKey.trim()
+        : '';
+      if (registrationKey.length < 24 || registrationKey.length > 128) {
+        res.status(400).json({ error: 'Enter the registration key provided by aptadmin.' });
+        return;
+      }
+
+      const systemCode = await getRegistrationSystemCode();
+      const prepared = await postToRegistrationPortal('/api/registration/key/prepare', {
+        systemCode,
+        registrationKey,
+      });
+      const appVersion = APP_VERSIONS.find((version) => version === prepared.appVersion);
+      if (!appVersion) throw new Error('The Auth API returned an invalid registered version.');
+
+      if (prepared.active === true) {
+        const access = await getCurrentDemoAccess();
+        if (access.status !== 'registered') {
+          throw new Error('The registration is active, but this POS installation could not sync its access. Retry after checking the connection.');
+        }
+        res.json({
+          registered: true,
+          username: typeof prepared.username === 'string' ? prepared.username : '',
+          appVersion,
+          settings: await getSettings(),
+        });
+        return;
+      }
+
+      const credentials = decryptRegistrationCredentials(prepared.credentials);
+      if (prepared.username !== credentials.username) {
+        throw new Error('The Auth API returned mismatched registration credentials.');
+      }
+
+      const existingUsers = await listUsers();
+      const existingUser = existingUsers.find((user) => user.username === credentials.username);
+      if (existingUser) {
+        const authenticated = await authenticateUser(credentials.username, credentials.password);
+        if (!authenticated || authenticated.id !== existingUser.id || authenticated.role !== 'admin') {
+          res.status(409).json({
+            error: `The POS username "${credentials.username}" already exists with different credentials.`,
+          });
+          return;
+        }
+      } else {
+        await createUser({
+          username: credentials.username,
+          password: credentials.password,
+          role: 'admin',
+          displayName: credentials.username,
+        });
+      }
+
+      const activated = await postToRegistrationPortal('/api/registration/key/activate', {
+        systemCode,
+        registrationKey,
+      });
+      if (activated.registered !== true || activated.appVersion !== appVersion) {
+        throw new Error('The Auth API did not confirm the requested system registration.');
+      }
+
+      const access = await getCurrentDemoAccess();
+      if (access.status !== 'registered' || access.appVersion !== appVersion) {
+        throw new Error('The system was activated but its registered access could not be synchronized. Retry registration.');
+      }
+      res.json({
+        registered: true,
+        username: credentials.username,
+        appVersion,
+        settings: await getSettings(),
+      });
+    } catch (error) {
+      const status =
+        typeof error === 'object' &&
+        error !== null &&
+        'status' in error &&
+        typeof error.status === 'number' &&
+        error.status >= 400 &&
+        error.status < 500
+          ? error.status
+          : 502;
+      res.status(status).json({
+        error: error instanceof Error ? error.message : 'Could not activate this registration.',
+      });
     }
   });
 
@@ -1021,11 +1287,45 @@ async function startServer(): Promise<Server> {
     }
   });
 
+  app.get('/api/version-control', async (_req, res) => {
+    try {
+      const versionControl = await requestVersionControlPortal('GET');
+      res.json(versionControl);
+    } catch (error) {
+      res.status(502).json({ error: (error as Error).message });
+    }
+  });
+
+  app.put('/api/version-control', async (req, res) => {
+    try {
+      const input = req.body || {};
+      if (!await isValidAppAdminPassword(input.password)) {
+        res.status(401).json({ error: 'Enter the valid aptadmin password to update Firebase version policies.' });
+        return;
+      }
+
+      const versionComponentPolicies = parseVersionComponentPolicies(input.versionComponentPolicies);
+      if (
+        !versionComponentPolicies ||
+        APP_VERSIONS.some((version) => !Array.isArray(versionComponentPolicies[version]))
+      ) {
+        res.status(400).json({ error: 'Choose allowed components for Soft, Silver, and Standard.' });
+        return;
+      }
+
+      const saved = await requestVersionControlPortal('PUT', versionComponentPolicies);
+      res.json(saved);
+    } catch (error) {
+      res.status(502).json({ error: (error as Error).message });
+    }
+  });
+
   app.put('/api/settings', async (req, res) => {
     try {
       const settingsInput = { ...(req.body || {}) };
       delete settingsInput.appVersion;
       delete settingsInput.disabledAppComponents;
+      delete settingsInput.versionComponentPolicies;
       delete settingsInput.registeredSystem;
       const settings = await updateSettings(settingsInput);
       res.json(settings);
@@ -1057,23 +1357,22 @@ async function startServer(): Promise<Server> {
       }
 
       const appVersion = APP_VERSIONS.find((version) => version === input.appVersion);
-      if (!appVersion || !Array.isArray(input.disabledAppComponents)) {
-        res.status(400).json({ error: 'A valid app version and component list are required.' });
+      if (!appVersion) {
+        res.status(400).json({ error: 'Choose a valid app version.' });
         return;
       }
-      const disabledAppComponents = input.disabledAppComponents.filter(
-        (component: unknown): component is AppComponentId =>
-          typeof component === 'string' &&
-          APP_COMPONENTS.some((knownComponent) => knownComponent.id === component)
-      );
-      if (disabledAppComponents.length !== input.disabledAppComponents.length) {
-        res.status(400).json({ error: 'The component list contains an invalid component.' });
-        return;
+      const versionControl = await requestVersionControlPortal('GET');
+      const activePolicy = versionControl.versionComponentPolicies[appVersion];
+      if (!activePolicy) {
+        throw new Error(`The Auth API has no component policy for ${appVersion}.`);
       }
-
+      const activeDisabledComponents = APP_COMPONENTS
+        .map((component) => component.id)
+        .filter((component) => !activePolicy.includes(component));
       const settings = await updateSettings({
         appVersion,
-        disabledAppComponents: Array.from(new Set(disabledAppComponents)),
+        disabledAppComponents: activeDisabledComponents,
+        versionComponentPolicies: versionControl.versionComponentPolicies,
       });
       res.json(settings);
     } catch (err) {

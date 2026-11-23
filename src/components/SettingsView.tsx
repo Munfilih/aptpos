@@ -38,12 +38,16 @@ import type {
   TaxType,
   ThemeMode,
   UserAccount,
+  VersionComponentPolicies,
 } from '../types/pos';
 import { APP_COMPONENTS, APP_VERSIONS } from '../types/pos';
+import {
+  getAllVersionComponentPolicies,
+  getAllowedComponentsForVersion,
+} from '../utils/versionComponentPolicies';
 import { useLanguage } from '../i18n/LanguageContext';
 import { BUILT_IN_PAYMENT_METHODS, getPaymentMethods } from '../utils/paymentMethods';
 import { MINIMUM_INVOICE_MARGIN_MM, resolveInvoiceMarginsMm } from '../utils/thermalPrinting';
-import { RegistrationRequestsPanel } from './RegistrationRequestsPanel';
 import type { UpdateStatus } from '../../electron/updateStatus';
 
 interface SettingsViewProps {
@@ -61,9 +65,17 @@ interface SettingsViewProps {
   onSaveSettings: (updated: StoreSettings) => Promise<void>;
   onActivateVersion: (input: {
     appVersion: AppVersion;
-    disabledAppComponents: AppComponentId[];
     password: string;
   }) => Promise<void>;
+  onActivateRegistrationKey: (registrationKey: string) => Promise<{
+    username: string;
+    appVersion: AppVersion;
+  }>;
+  onLoadVersionComponentPolicies: () => Promise<VersionComponentPolicies>;
+  onSaveVersionComponentPolicies: (
+    policies: VersionComponentPolicies,
+    password: string
+  ) => Promise<VersionComponentPolicies>;
   onFlushPrintQueue: () => Promise<void>;
   onResetDatabase?: () => Promise<void>;
   onRestoreDatabase?: (buffer: ArrayBuffer) => Promise<void>;
@@ -95,13 +107,14 @@ export const SettingsSectionTabs: React.FC<SettingsSectionTabsProps> = ({
     { id: 'printer', label: isRtl ? t.secPrintTemplate : 'Print' },
     { id: 'users', label: isRtl ? t.secUsersPerms : 'Users' },
     { id: 'database', label: isRtl ? t.secDatabase : 'Database' },
+    { id: 'registration', label: isRtl ? 'التسجيل' : 'Registration' },
     { id: 'version', label: isRtl ? 'الإصدار' : 'Version' },
     { id: 'updates', label: isRtl ? 'التحديثات' : 'Update' },
   ];
   const sections = themeOnly
     ? allSections.filter((section) => section.id === 'screen')
     : allSections.filter(
-      (section) => isAppAdmin || !['users', 'database', 'version'].includes(section.id)
+      (section) => isAppAdmin || !['users', 'database', 'registration', 'version'].includes(section.id)
       );
 
   return (
@@ -140,6 +153,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onIconOnlyLauncherChange,
   onSaveSettings,
   onActivateVersion,
+  onActivateRegistrationKey,
+  onLoadVersionComponentPolicies,
+  onSaveVersionComponentPolicies,
   onFlushPrintQueue,
   onResetDatabase,
   onRestoreDatabase,
@@ -156,11 +172,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const settingsViewRef = useRef<HTMLDivElement>(null);
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
+  const [settingsSaveError, setSettingsSaveError] = useState<string | null>(null);
   const [versionActivationOpen, setVersionActivationOpen] = useState(false);
+  const [policyVersion, setPolicyVersion] = useState<AppVersion>(settings.appVersion || 'Standard');
+  const [versionPolicyAdminPassword, setVersionPolicyAdminPassword] = useState('');
+  const [versionPolicyLoading, setVersionPolicyLoading] = useState(false);
+  const [versionPoliciesLoaded, setVersionPoliciesLoaded] = useState(false);
+  const [versionPolicySaving, setVersionPolicySaving] = useState(false);
+  const [versionPolicyError, setVersionPolicyError] = useState<string | null>(null);
+  const versionPolicySaveQueue = useRef<Promise<void>>(Promise.resolve());
+  const pendingVersionPolicySaves = useRef(0);
   const [versionAdminPassword, setVersionAdminPassword] = useState('');
   const [versionActivationBusy, setVersionActivationBusy] = useState(false);
   const [versionActivationError, setVersionActivationError] = useState<string | null>(null);
   const [versionActivationNotice, setVersionActivationNotice] = useState(false);
+  const [registrationKey, setRegistrationKey] = useState('');
+  const [registrationKeyBusy, setRegistrationKeyBusy] = useState(false);
+  const [registrationKeyError, setRegistrationKeyError] = useState<string | null>(null);
+  const [registrationKeySuccess, setRegistrationKeySuccess] = useState<string | null>(null);
   const [newPaymentMethod, setNewPaymentMethod] = useState('');
   const [editingPaymentMethod, setEditingPaymentMethod] = useState<string | null>(null);
   const [paymentMethodError, setPaymentMethodError] = useState<string | null>(null);
@@ -453,6 +482,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       !isAppAdmin &&
       (activeSettingsSection === 'users' ||
         activeSettingsSection === 'database' ||
+        activeSettingsSection === 'registration' ||
         activeSettingsSection === 'version')
     ) {
       onActiveSectionChange('sales');
@@ -642,6 +672,41 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setSelectedTemplate(settings.paperWidth || '80mm');
   }, [settings]);
 
+  useEffect(() => {
+    setPolicyVersion(settings.appVersion || 'Standard');
+  }, [settings.appVersion]);
+
+  useEffect(() => {
+    if (activeSettingsSection !== 'version') {
+      setVersionPoliciesLoaded(false);
+      return;
+    }
+
+    let active = true;
+    setVersionPolicyLoading(true);
+    setVersionPoliciesLoaded(false);
+    setVersionPolicyError(null);
+    void onLoadVersionComponentPolicies()
+      .then((policies) => {
+        if (!active) return;
+        setForm((current) => ({ ...current, versionComponentPolicies: policies }));
+        setVersionPoliciesLoaded(true);
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setVersionPolicyError(
+            error instanceof Error ? error.message : 'Could not load Firebase version policies.'
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setVersionPolicyLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeSettingsSection, settings.registeredSystem, onLoadVersionComponentPolicies]);
+
   useLayoutEffect(() => {
     settingsViewRef.current?.querySelectorAll<HTMLElement>('.settings-content-scroll').forEach((pane) => {
       pane.scrollTop = 0;
@@ -684,13 +749,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (activeSettingsSection === 'version') return;
     setSaving(true);
     setSavedNotice(false);
+    setSettingsSaveError(null);
     try {
-      await onSaveSettings(form);
+      const settingsToSave = { ...form };
+      delete settingsToSave.versionComponentPolicies;
+      await onSaveSettings(settingsToSave);
       setSavedNotice(true);
       setTimeout(() => setSavedNotice(false), 3000);
+    } catch (error) {
+      setSettingsSaveError(
+        error instanceof Error ? error.message : 'Could not save version component policies.'
+      );
     } finally {
       setSaving(false);
     }
@@ -701,11 +772,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setVersionActivationBusy(true);
     setVersionActivationError(null);
     try {
-      await onActivateVersion({
-        appVersion: form.appVersion || 'Standard',
-        disabledAppComponents: form.disabledAppComponents || [],
-        password: versionAdminPassword,
-      });
+      const appVersion = form.appVersion || 'Standard';
+      await onActivateVersion({ appVersion, password: versionAdminPassword });
       setVersionActivationOpen(false);
       setVersionAdminPassword('');
       setVersionActivationNotice(true);
@@ -717,6 +785,74 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     } finally {
       setVersionActivationBusy(false);
     }
+  };
+
+  const handleRegistrationKeyActivation = async () => {
+    setRegistrationKeyBusy(true);
+    setRegistrationKeyError(null);
+    setRegistrationKeySuccess(null);
+    try {
+      const result = await onActivateRegistrationKey(registrationKey.trim());
+      setRegistrationKey('');
+      setRegistrationKeySuccess(
+        `Registered as ${result.appVersion}. The owner account "${result.username}" is ready; sign out and use it to continue.`
+      );
+    } catch (error) {
+      setRegistrationKeyError(
+        error instanceof Error ? error.message : 'Could not activate this registration key.'
+      );
+    } finally {
+      setRegistrationKeyBusy(false);
+    }
+  };
+
+  const queueVersionPolicySave = (policies: VersionComponentPolicies) => {
+    const password = versionPolicyAdminPassword.trim();
+    if (!versionPoliciesLoaded || !password) return;
+
+    pendingVersionPolicySaves.current += 1;
+    setVersionPolicySaving(true);
+    setVersionPolicyError(null);
+    const save = versionPolicySaveQueue.current.then(() =>
+      onSaveVersionComponentPolicies(policies, password)
+    );
+    versionPolicySaveQueue.current = save.then(() => undefined, () => undefined);
+    void save
+      .then((savedPolicies) => {
+        if (JSON.stringify(savedPolicies) !== JSON.stringify(policies)) {
+          throw new Error('Firebase returned different version policies than the ones saved.');
+        }
+        setVersionPolicyError(null);
+      })
+      .catch((error: unknown) => {
+        setVersionPolicyError(
+          error instanceof Error ? error.message : 'Could not save Firebase version policies.'
+        );
+      })
+      .finally(() => {
+        pendingVersionPolicySaves.current -= 1;
+        if (pendingVersionPolicySaves.current === 0) setVersionPolicySaving(false);
+      });
+  };
+
+  const saveAllVersionPolicies = () => {
+    queueVersionPolicySave(getAllVersionComponentPolicies(form));
+  };
+
+  const updateAllowedComponent = (component: AppComponentId, allowed: boolean) => {
+    const policies = getAllVersionComponentPolicies(form);
+    const allowedComponents = new Set(policies[policyVersion]);
+    if (allowed) allowedComponents.add(component);
+    else allowedComponents.delete(component);
+    const updatedPolicies = {
+      ...policies,
+      [policyVersion]: Array.from(allowedComponents),
+    };
+    setForm((current) => ({
+      ...current,
+      versionComponentPolicies: updatedPolicies,
+    }));
+    queueVersionPolicySave(updatedPolicies);
   };
 
   const paymentMethods = getPaymentMethods(form.paymentMethods);
@@ -927,21 +1063,75 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             onSubmit={handleSubmit}
             className="space-y-5 text-xs"
           >
+            {settingsSaveError && (
+              <p className="text-xs text-red-600" role="alert">{settingsSaveError}</p>
+            )}
+            {isAppAdmin && activeSettingsSection === 'registration' && (
+              <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+                <h2 className="text-sm font-semibold text-slate-900">
+                  {isRtl ? 'تسجيل النظام' : 'Register this system'}
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  {isRtl
+                    ? 'أدخل مفتاح التسجيل المقدم من تطبيق المصادقة لتفعيل هذا النظام.'
+                    : 'Enter the registration key provided by the Auth app to activate this system.'}
+                </p>
+                {settings.registeredSystem ? (
+                  <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                    <p className="text-sm font-semibold text-emerald-900">
+                      {isRtl ? 'هذا النظام مسجل' : 'This system is registered'}
+                    </p>
+                    <p className="mt-1 text-xs text-emerald-800">
+                      {isRtl ? 'الإصدار:' : 'Version:'} {settings.appVersion || 'Standard'}
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <label className="mt-4 block max-w-sm text-xs font-medium text-slate-700">
+                      {isRtl ? 'مفتاح التسجيل' : 'Registration key'}
+                      <input
+                        value={registrationKey}
+                        onChange={(event) => setRegistrationKey(event.target.value)}
+                        autoComplete="off"
+                        disabled={registrationKeyBusy}
+                        className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => void handleRegistrationKeyActivation()}
+                      disabled={registrationKeyBusy || !registrationKey.trim()}
+                      className="mt-4 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {registrationKeyBusy
+                        ? (isRtl ? 'جارٍ التفعيل...' : 'Activating...')
+                        : (isRtl ? 'تفعيل التسجيل' : 'Activate Registration')}
+                    </button>
+                  </>
+                )}
+                {registrationKeyError && (
+                  <p className="mt-3 text-xs text-red-600" role="alert">{registrationKeyError}</p>
+                )}
+                {registrationKeySuccess && (
+                  <p className="mt-3 text-xs text-emerald-700" role="status">{registrationKeySuccess}</p>
+                )}
+              </section>
+            )}
             {isAppAdmin && activeSettingsSection === 'version' && (
               <div className="space-y-4">
-                {settings.registeredSystem ? (
+                {settings.registeredSystem && (
                   <section className="rounded-xl border border-blue-200 bg-blue-50 p-4 shadow-xs">
                     <h2 className="text-sm font-semibold text-slate-900">
-                      {isRtl ? 'الإصدار المُدار مركزياً' : 'Version managed by Auth'}
+                      {isRtl ? 'الإصدار المُدار مركزياً' : 'Registered version'}
                     </h2>
                     <p className="mt-1 text-xs leading-5 text-slate-600">
                       {isRtl
-                        ? `هذا النظام مسجل بإصدار ${settings.appVersion || 'Standard'}؛ يتم التحكم في الوحدات المتاحة من تطبيق المصادقة.`
-                        : `This system is registered on ${settings.appVersion || 'Standard'}. Its allowed modules are managed in the Auth app.`}
+                        ? `هذا النظام مسجل بإصدار ${settings.appVersion || 'Standard'}؛ يتم التحكم في المكونات المتاحة مركزياً وتُزامن عند فحص حالة الترخيص.`
+                        : `This system is registered on ${settings.appVersion || 'Standard'}. Its component access is managed centrally and syncs during license checks.`}
                     </p>
                   </section>
-                ) : (
-                  <>
+                )}
+                {!settings.registeredSystem && (
                 <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
                   <h2 className="text-sm font-semibold text-slate-900">
                     {isRtl ? 'إصدار التطبيق' : 'Application Version'}
@@ -982,15 +1172,68 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       : `Currently active: ${settings.appVersion || 'Standard'}. Changes take effect only after activation.`}
                   </p>
                 </section>
+                )}
 
                 <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
                   <h2 className="text-sm font-semibold text-slate-900">
-                    {isRtl ? 'المكونات المتاحة' : 'Available Components'}
+                    {isRtl ? 'إعدادات المكونات لكل إصدار' : 'Component access by version'}
                   </h2>
                   <p className="mt-1 text-xs text-slate-500">
                     {isRtl
-                      ? 'المكونات المحددة ستكون غير متاحة للمستخدمين الآخرين. يبقى aptadmin قادراً على الوصول إليها.'
-                      : 'Checked components are unavailable to other users. aptadmin retains access to every component.'}
+                      ? 'حدد المكونات المسموح بها لكل إصدار. تُحفظ التغييرات مباشرة في Firebase وتُطبق عند اختيار الإصدار.'
+                      : 'Choose allowed components independently for each version. Changes sync to Firebase immediately and apply when a version is selected.'}
+                  </p>
+                  <label className="mt-4 block max-w-sm text-xs font-medium text-slate-700">
+                    {isRtl ? 'كلمة مرور مسؤول aptadmin للمزامنة' : 'aptadmin password for Firebase updates'}
+                    <input
+                      type="password"
+                      autoComplete="current-password"
+                      value={versionPolicyAdminPassword}
+                      onChange={(event) => setVersionPolicyAdminPassword(event.target.value)}
+                      className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                    />
+                  </label>
+                  {versionPolicyLoading && (
+                    <p className="mt-3 text-xs text-slate-500" role="status">
+                      {isRtl ? 'جارٍ تحميل سياسات Firebase...' : 'Loading Firebase version policies...'}
+                    </p>
+                  )}
+                  {versionPolicySaving && (
+                    <p className="mt-3 text-xs text-slate-500" role="status">
+                      {isRtl ? 'جارٍ الحفظ في Firebase...' : 'Saving changes to Firebase...'}
+                    </p>
+                  )}
+                  {versionPolicyError && (
+                    <p className="mt-3 text-xs text-red-600" role="alert">{versionPolicyError}</p>
+                  )}
+                  <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label={isRtl ? 'إصدارات التطبيق' : 'App versions'}>
+                    {APP_VERSIONS.map((version) => {
+                      const allowedCount = getAllowedComponentsForVersion(form, version).length;
+                      return (
+                        <button
+                          key={version}
+                          type="button"
+                          role="tab"
+                          aria-selected={policyVersion === version}
+                          onClick={() => setPolicyVersion(version)}
+                          className={`rounded-md border px-3 py-2 text-xs font-semibold ${
+                            policyVersion === version
+                              ? 'border-blue-700 bg-blue-50 text-blue-800'
+                              : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                          }`}
+                        >
+                          {version} · {allowedCount}/{APP_COMPONENTS.length}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <h3 className="mt-4 text-xs font-semibold text-slate-700">
+                    {policyVersion} {isRtl ? 'المكونات المسموح بها' : 'allowed components'}
+                  </h3>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    {isRtl
+                      ? 'المكونات المحددة متاحة للمستخدمين. يبقى aptadmin قادراً على الوصول إلى جميع المكونات في الأنظمة غير المسجلة.'
+                      : 'Checked components are available to users. aptadmin retains full access on non-registered systems.'}
                   </p>
                   <div className="settings-item-list mt-3">
                     {APP_COMPONENTS.map((component) => (
@@ -1003,32 +1246,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         </span>
                         <input
                           type="checkbox"
-                          checked={form.disabledAppComponents?.includes(component.id) ?? false}
-                          onChange={(event) =>
-                            setForm((current) => {
-                              const disabledComponents = new Set(
-                                current.disabledAppComponents || []
-                              );
-                              if (event.target.checked) {
-                                disabledComponents.add(component.id);
-                              } else {
-                                disabledComponents.delete(component.id);
-                              }
-                              return {
-                                ...current,
-                                disabledAppComponents: Array.from(disabledComponents),
-                              };
-                            })
-                          }
+                          checked={getAllowedComponentsForVersion(form, policyVersion).includes(component.id)}
+                          disabled={!versionPoliciesLoaded || versionPolicyLoading || !versionPolicyAdminPassword.trim()}
+                          onChange={(event) => updateAllowedComponent(component.id, event.target.checked)}
                           className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                         />
                       </label>
                     ))}
                   </div>
                 </section>
-                  </>
-                )}
-                <RegistrationRequestsPanel />
               </div>
             )}
 
@@ -3069,19 +3295,33 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {isRtl ? 'تم تفعيل الإصدار' : 'Version activated'}
             </span>
           )}
-          {activeSettingsSection === 'version' ? (
-            <button
-              type="button"
-              disabled={versionActivationBusy}
-              onClick={() => {
-                setVersionActivationError(null);
-                setVersionAdminPassword('');
-                setVersionActivationOpen(true);
-              }}
-              className="settings-save-button"
-            >
-              {isRtl ? 'تفعيل الإصدار' : `Activate ${form.appVersion || 'Standard'}`}
-            </button>
+          {activeSettingsSection === 'registration' ? null : activeSettingsSection === 'version' ? (
+            <>
+              <button
+                type="button"
+                onClick={saveAllVersionPolicies}
+                disabled={versionPolicySaving || versionPolicyLoading || !versionPoliciesLoaded || !versionPolicyAdminPassword.trim()}
+                className="settings-save-button"
+              >
+                {versionPolicySaving
+                  ? isRtl ? 'جارٍ الحفظ...' : 'Saving...'
+                  : isRtl ? 'حفظ الإصدارات' : 'Save Versions'}
+              </button>
+              {!settings.registeredSystem && (form.appVersion === 'Soft' || form.appVersion === 'Silver') && (
+                <button
+                  type="button"
+                  disabled={versionActivationBusy || versionPolicySaving || !versionPoliciesLoaded}
+                  onClick={() => {
+                    setVersionActivationError(null);
+                    setVersionAdminPassword('');
+                    setVersionActivationOpen(true);
+                  }}
+                  className="settings-save-button"
+                >
+                  {isRtl ? 'تفعيل الإصدار' : `Activate ${form.appVersion}`}
+                </button>
+              )}
+            </>
           ) : (
             <button
               type="submit"

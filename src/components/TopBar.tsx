@@ -144,6 +144,7 @@ export const TopBar: React.FC<TopBarProps> = ({
     printer: t.secPrintTemplate,
     users: t.secUsersPerms,
     database: t.secDatabase,
+    registration: language === 'ar' ? 'التسجيل' : 'Registration',
     version: language === 'ar' ? 'الإصدار' : 'Version',
     updates: language === 'ar' ? 'التحديثات' : 'Software Updates',
   };

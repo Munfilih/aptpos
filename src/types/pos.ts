@@ -12,6 +12,7 @@ export type SettingsSectionId =
   | 'printer'
   | 'users'
   | 'database'
+  | 'registration'
   | 'version'
   | 'updates';
 
@@ -34,6 +35,7 @@ export const APP_COMPONENTS = [
 ] as const;
 
 export type AppComponentId = (typeof APP_COMPONENTS)[number]['id'];
+export type VersionComponentPolicies = Partial<Record<AppVersion, AppComponentId[]>>;
 
 export type InventoryOptionType = 'category' | 'brand' | 'taxRate' | 'unit';
 
@@ -451,6 +453,7 @@ export interface StoreSettings {
   invoiceTemplates?: Partial<Record<PaperWidth, InvoiceTemplateSettings>>;
   appVersion?: AppVersion;
   disabledAppComponents?: AppComponentId[];
+  versionComponentPolicies?: VersionComponentPolicies;
   registeredSystem?: boolean;
 }
 

@@ -41,8 +41,10 @@ import type {
   ThemeMode,
   UserSession,
   Vendor,
+  VersionComponentPolicies,
 } from './types/pos';
 import { APP_COMPONENTS, APP_VERSIONS } from './types/pos';
+import { parseVersionComponentPolicies } from './utils/versionComponentPolicies';
 
 const RPOS_TICKET_WIDTH_KEY = 'counterline_rpos_ticket_width';
 const DEFAULT_RPOS_TICKET_WIDTH = 320;
@@ -891,14 +893,96 @@ export function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updated),
     });
-    if (res.ok) {
-      setSettings(await res.json());
+    const data: unknown = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(
+        typeof data === 'object' &&
+        data !== null &&
+        'error' in data &&
+        typeof data.error === 'string'
+          ? data.error
+          : 'Could not save settings.'
+      );
     }
+    if (typeof data !== 'object' || data === null) {
+      throw new Error('The settings service returned an invalid response.');
+    }
+    if (updated.versionComponentPolicies !== undefined) {
+      const savedPolicies =
+        'versionComponentPolicies' in data
+          ? parseVersionComponentPolicies(data.versionComponentPolicies)
+          : null;
+      if (
+        !savedPolicies ||
+        JSON.stringify(savedPolicies) !== JSON.stringify(updated.versionComponentPolicies)
+      ) {
+        throw new Error('Version component policies were not saved correctly. Please retry.');
+      }
+    }
+    setSettings(data as StoreSettings);
   };
+
+  const loadVersionComponentPolicies = useCallback(async () => {
+    const response = await fetch('/api/version-control', { cache: 'no-store' });
+    const payload: unknown = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(
+        typeof payload === 'object' &&
+        payload !== null &&
+        'error' in payload &&
+        typeof payload.error === 'string'
+          ? payload.error
+          : 'Could not load Firebase version policies.'
+      );
+    }
+    if (typeof payload !== 'object' || payload === null || !('versionComponentPolicies' in payload)) {
+      const contentType = response.headers.get('content-type') || 'an unknown content type';
+      throw new Error(
+        `The POS server returned ${contentType} instead of version policy data. Restart the POS app/server to load the updated API, then reopen Version settings.`
+      );
+    }
+    const policies = parseVersionComponentPolicies(payload.versionComponentPolicies);
+    if (!policies || APP_VERSIONS.some((version) => !Array.isArray(policies[version]))) {
+      throw new Error('The version policy service returned an incomplete policy.');
+    }
+    return policies;
+  }, []);
+
+  const saveVersionComponentPolicies = useCallback(async (
+    policies: VersionComponentPolicies,
+    password: string
+  ) => {
+    const response = await fetch('/api/version-control', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ versionComponentPolicies: policies, password }),
+    });
+    const payload: unknown = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(
+        typeof payload === 'object' &&
+        payload !== null &&
+        'error' in payload &&
+        typeof payload.error === 'string'
+          ? payload.error
+          : 'Could not save Firebase version policies.'
+      );
+    }
+    if (typeof payload !== 'object' || payload === null || !('versionComponentPolicies' in payload)) {
+      const contentType = response.headers.get('content-type') || 'an unknown content type';
+      throw new Error(
+        `The POS server returned ${contentType} instead of a version policy save response. Restart the POS app/server to load the updated API, then retry.`
+      );
+    }
+    const savedPolicies = parseVersionComponentPolicies(payload.versionComponentPolicies);
+    if (!savedPolicies || APP_VERSIONS.some((version) => !Array.isArray(savedPolicies[version]))) {
+      throw new Error('The version policy service returned an incomplete save response.');
+    }
+    return savedPolicies;
+  }, []);
 
   const handleActivateVersion = async (input: {
     appVersion: AppVersion;
-    disabledAppComponents: AppComponentId[];
     password: string;
   }) => {
     const res = await fetch('/api/settings/activate-version', {
@@ -913,6 +997,46 @@ export function App() {
       );
     }
     setSettings(data as StoreSettings);
+  };
+
+  const handleActivateRegistrationKey = async (registrationKey: string) => {
+    const response = await fetch('/api/registration/activate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ registrationKey }),
+    });
+    const payload: unknown = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(
+        typeof payload === 'object' &&
+        payload !== null &&
+        'error' in payload &&
+        typeof payload.error === 'string'
+          ? payload.error
+          : `Could not activate this registration (HTTP ${response.status}).`
+      );
+    }
+    if (
+      typeof payload !== 'object' ||
+      payload === null ||
+      !('settings' in payload) ||
+      !('username' in payload) ||
+      typeof payload.username !== 'string' ||
+      !('appVersion' in payload) ||
+      typeof payload.appVersion !== 'string' ||
+      typeof payload.settings !== 'object' ||
+      payload.settings === null ||
+      !('registeredSystem' in payload.settings) ||
+      payload.settings.registeredSystem !== true ||
+      !APP_VERSIONS.some((version) => version === payload.appVersion)
+    ) {
+      throw new Error('The registration service returned an invalid activation response.');
+    }
+    setSettings(payload.settings as StoreSettings);
+    return {
+      username: payload.username,
+      appVersion: payload.appVersion as AppVersion,
+    };
   };
 
   const handleFlushPrintQueue = async () => {
@@ -1001,6 +1125,9 @@ export function App() {
       onIconOnlyLauncherChange={setIconOnlyLauncher}
       onSaveSettings={handleSaveSettings}
       onActivateVersion={handleActivateVersion}
+      onActivateRegistrationKey={handleActivateRegistrationKey}
+      onLoadVersionComponentPolicies={loadVersionComponentPolicies}
+      onSaveVersionComponentPolicies={saveVersionComponentPolicies}
       onFlushPrintQueue={handleFlushPrintQueue}
       onResetDatabase={handleResetDatabase}
       onRestoreDatabase={handleRestoreDatabase}

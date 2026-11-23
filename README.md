@@ -32,6 +32,10 @@ An active demo account has access to the regular POS feature set, including sale
 
 The POS server forwards demo requests, activation, and status checks to the hosted aptPOS User Management API at `https://aptpos-admin-api.onrender.com` by default. Firebase is authoritative for demo status. If the status service cannot be reached, an already verified active demo can continue offline for up to one hour from the first failed check; the POS automatically logs out after that grace period. A successful online check resets the offline grace period. Set `DEMO_PORTAL_API_URL` in the POS server environment to use a different API (for local development, for example, `http://127.0.0.1:3002`). The portal API must be running and configured with Firebase Admin credentials to save requests to the Demo Key Requests queue; a GitHub repository or GitHub Pages site alone does not run its Node service. License-key requests continue to use the local aptadmin review inbox.
 
+The Registration settings page accepts the one-time key created when aptadmin converts an approved demo system in the Auth app. The key is bound to this installation's system code. Activation creates the owner admin account using the username and password entered during conversion; sign out of aptadmin and use that account afterward.
+
+The aptadmin Version settings page loads and saves Soft, Silver, and Standard component policies through the User Management API, which stores them in Firebase. For registration and version policy sync, set the same server-only `VERSION_CONTROL_API_KEY` in the POS and Auth API environments; do not expose it in browser configuration. Version policy updates also require the aptadmin password. Registered systems receive updated access on the next license status check. `DEMO_PORTAL_API_URL` selects the Auth API endpoint.
+
 ## Build the Windows installer
 
 ```bash

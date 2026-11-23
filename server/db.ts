@@ -37,6 +37,7 @@ import type {
   Vendor,
 } from '../src/types/pos';
 import { APP_COMPONENTS, APP_VERSIONS } from '../src/types/pos';
+import { parseVersionComponentPolicies } from '../src/utils/versionComponentPolicies';
 import { calculateSaleReturnRefund } from '../src/utils/saleReturns';
 import { calculateSalesTax } from '../src/utils/salesTax';
 import { getKotNumberFromInvoice } from '../src/utils/documentNumbers';
@@ -1586,6 +1587,11 @@ export async function getSettings(): Promise<StoreSettings> {
         APP_COMPONENTS.some((knownComponent) => knownComponent.id === component)
       )
     : [];
+  const parsedVersionComponentPolicies: unknown = map.versionComponentPolicies
+    ? JSON.parse(map.versionComponentPolicies)
+    : {};
+  const versionComponentPolicies =
+    parseVersionComponentPolicies(parsedVersionComponentPolicies) || {};
   const appVersion =
       APP_VERSIONS.find((version) => version === map.appVersion) || 'Standard';
   const paymentMethods: string[] = [];
@@ -1648,6 +1654,7 @@ export async function getSettings(): Promise<StoreSettings> {
     invoiceTemplates: map.invoiceTemplates ? JSON.parse(map.invoiceTemplates) : undefined,
     appVersion,
     disabledAppComponents,
+    versionComponentPolicies,
     registeredSystem: map.registeredSystem === 'true',
   };
 }
