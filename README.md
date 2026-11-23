@@ -24,6 +24,14 @@ npm run electron:dev
 
 The desktop development command starts the Express/Vite server and Electron. To run only the web application, use `npm run dev` and open `http://localhost:3000`.
 
+## Demo and license registration
+
+Signing in with the `demo` account checks the current license status with aptPOS User Management before entry. Only an active, unexpired demo can enter; missing, rejected, revoked, or expired access stays logged out and opens registration. **Request Demo Key** sends the installation's system code to the aptPOS User Management portal. After aptadmin approves the request and shares its generated key, enter that key in the same window and select **Activate Demo**. Activation starts a two-day period; the top bar shows the remaining time by the second and returns to registration when it expires. An expired demo can submit an extension request and redeem a newly approved key for another two days. Active sessions recheck status every minute and when the app regains focus, and log out when access is revoked or expires.
+
+An active demo account has access to the regular POS feature set, including sales, inventory, purchases, reports, and standard settings. Aptadmin-only controls such as user management, database maintenance, and app version configuration remain restricted to `aptadmin`. Demo access remains subject to Firebase status checks, expiration, and the offline grace period. The 10-digit numeric system code is derived from a SHA-256 hash of the Windows computer's SMBIOS hardware UUID; the raw UUID is not stored or sent. The code is stable for the same hardware and changes if the hardware UUID changes.
+
+The POS server forwards demo requests, activation, and status checks to the hosted aptPOS User Management API at `https://aptpos-admin-api.onrender.com` by default. Firebase is authoritative for demo status. If the status service cannot be reached, an already verified active demo can continue offline for up to one hour from the first failed check; the POS automatically logs out after that grace period. A successful online check resets the offline grace period. Set `DEMO_PORTAL_API_URL` in the POS server environment to use a different API (for local development, for example, `http://127.0.0.1:3002`). The portal API must be running and configured with Firebase Admin credentials to save requests to the Demo Key Requests queue; a GitHub repository or GitHub Pages site alone does not run its Node service. License-key requests continue to use the local aptadmin review inbox.
+
 ## Build the Windows installer
 
 ```bash

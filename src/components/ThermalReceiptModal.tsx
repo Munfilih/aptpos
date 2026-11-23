@@ -315,7 +315,6 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
             </div>
             <div className="mt-2 text-xs text-slate-300">
               {sale.receiptNumber} · {formattedDate}
-              {sale.kotNumber && ` · KOT: ${sale.kotNumber}`}
             </div>
           </div>
 
@@ -458,11 +457,6 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                   <div className="font-mono text-xs font-bold text-slate-900 pt-0.5">
                     #{sale.receiptNumber}
                   </div>
-                  {sale.kotNumber && (
-                    <div className="text-[10px] text-slate-600 font-mono">
-                      KOT No. / رقم سند المطبخ: {sale.kotNumber}
-                    </div>
-                  )}
                   <div className="text-[10px] text-slate-500 font-mono">
                     Date / التاريخ: {formattedDate}
                   </div>
@@ -763,12 +757,6 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                   <span className="text-slate-600">Receipt:</span>
                   <span className="font-semibold">{sale.receiptNumber}</span>
                 </div>
-                {sale.kotNumber && (
-                  <div className="flex justify-between">
-                    <span className="text-slate-600">KOT No.:</span>
-                    <span className="font-semibold">{sale.kotNumber}</span>
-                  </div>
-                )}
                 <div className="flex justify-between">
                   <span className="text-slate-600">Date:</span>
                   <span>{formattedDate}</span>

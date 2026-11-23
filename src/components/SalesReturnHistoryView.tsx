@@ -128,15 +128,7 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
     );
   }, [vouchers, search, dateBounds]);
 
-  const totalRefund = filteredVouchers.reduce((sum, voucher) => sum + voucher.refundAmount, 0);
-  const totalTaxRefund = filteredVouchers.reduce(
-    (sum, voucher) => sum + voucher.taxRefundAmount,
-    0
-  );
-  const totalItems = filteredVouchers.reduce(
-    (sum, voucher) => sum + voucher.items.reduce((quantity, item) => quantity + item.quantity, 0),
-    0
-  );
+  const hasActiveFilter = search.trim() !== '' || dateFilter !== 'ALL';
 
   const formatDate = (date: string) =>
     new Date(date).toLocaleString(isRtl ? 'ar-SA' : 'en-US', {
@@ -176,9 +168,9 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
             {printError}
           </p>
         )}
-        <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <header className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-violet-700 text-white shadow-sm">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-700 text-white shadow-sm shadow-blue-900/15 lg:h-12 lg:w-12 lg:rounded-2xl">
               <RotateCcw className="h-5 w-5" />
             </div>
             <div>
@@ -190,120 +182,86 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
               </p>
             </div>
           </div>
-          <div className="inline-flex w-fit items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs shadow-sm">
-            <span className="text-slate-500">{isRtl ? 'السندات' : 'Vouchers'}</span>
-            <span className="font-mono font-bold tabular-nums text-slate-900">
-              {filteredVouchers.length}
-            </span>
+          <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center lg:justify-end">
+            <div className="relative w-full sm:flex-1 sm:min-w-[220px] sm:max-w-sm xl:flex-none">
+              <Search className={`pointer-events-none absolute top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 ${isRtl ? 'right-3' : 'left-3'}`} />
+              <input
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder={isRtl ? 'بحث برقم السند أو الفاتورة أو الصنف...' : 'Search voucher, invoice, or item...'}
+                className={`w-full rounded-xl border border-slate-200 bg-slate-50 py-2 text-sm text-slate-900 placeholder:text-slate-400 transition-colors focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-blue-100 ${isRtl ? 'pr-10 pl-3' : 'pl-10 pr-3'}`}
+              />
+            </div>
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:flex-none">
+              <label className="sr-only" htmlFor="return-history-date-filter">
+                {isRtl ? 'تصفية حسب التاريخ' : 'Filter by date'}
+              </label>
+              <select
+                id="return-history-date-filter"
+                value={dateFilter}
+                onChange={(event) => setDateFilter(event.target.value as DateFilter)}
+                className="min-w-[130px] flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-100 sm:flex-none"
+              >
+                {(['ALL', 'RANGE', 'TODAY', 'YESTERDAY', 'THIS_WEEK', 'THIS_MONTH'] as const).map(
+                  (filter) => (
+                    <option key={filter} value={filter}>
+                      {dateFilterLabel(filter)}
+                    </option>
+                  )
+                )}
+              </select>
+              {dateFilter === 'RANGE' && (
+                <div className="flex min-w-0 flex-1 gap-2 sm:flex-none">
+                  <label className="sr-only" htmlFor="return-history-date-from">
+                    {isRtl ? 'من تاريخ' : 'From date'}
+                  </label>
+                  <input
+                    id="return-history-date-from"
+                    type="date"
+                    value={dateFrom}
+                    onChange={(event) => {
+                      setDateFrom(event.target.value);
+                      if (dateTo && event.target.value && dateTo < event.target.value) {
+                        setDateTo('');
+                      }
+                    }}
+                    aria-label={isRtl ? 'من تاريخ' : 'From date'}
+                    className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-2 py-2 text-sm text-slate-700 focus:border-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-100 sm:w-36 sm:flex-none"
+                  />
+                  <label className="sr-only" htmlFor="return-history-date-to">
+                    {isRtl ? 'إلى تاريخ' : 'To date'}
+                  </label>
+                  <input
+                    id="return-history-date-to"
+                    type="date"
+                    min={dateFrom || undefined}
+                    value={dateTo}
+                    onChange={(event) => setDateTo(event.target.value)}
+                    aria-label={isRtl ? 'إلى تاريخ' : 'To date'}
+                    className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-2 py-2 text-sm text-slate-700 focus:border-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-100 sm:w-36 sm:flex-none"
+                  />
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
-        <section
-          aria-label={isRtl ? 'ملخص المرتجعات' : 'Return summary'}
-          className="grid grid-cols-2 gap-2 xl:grid-cols-3 lg:gap-3"
-        >
-          {[
-            {
-              label: isRtl ? 'إجمالي المبالغ المستردة' : 'Total refunds',
-              value: `${currency}${totalRefund.toFixed(2)}`,
-            },
-            {
-              label: isRtl ? 'الأصناف المرتجعة' : 'Items returned',
-              value: String(totalItems),
-            },
-            {
-              label: isRtl ? 'ضريبة مستردة' : 'Tax refunded',
-              value: `${currency}${totalTaxRefund.toFixed(2)}`,
-            },
-          ].map((metric) => (
-            <article
-              key={metric.label}
-              className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm lg:rounded-2xl lg:p-4"
-            >
-              <p className="truncate text-[10px] font-medium text-slate-500 lg:text-xs">
-                {metric.label}
-              </p>
-              <p className="mt-1 truncate font-mono text-base font-bold tabular-nums text-slate-900 lg:text-xl">
-                {metric.value}
-              </p>
-            </article>
-          ))}
-        </section>
-
         <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="space-y-3 border-b border-slate-200 p-3 lg:p-5">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-base font-bold text-slate-900">
-                  {isRtl ? 'سندات المرتجع' : 'Return vouchers'}
-                </h2>
-                <p className="mt-0.5 text-xs text-slate-500">
-                  {isRtl ? 'ابحث بالسند أو الفاتورة أو الصنف.' : 'Search by voucher, invoice, or item.'}
-                </p>
-              </div>
-              <div className="inline-flex w-fit items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-xs text-slate-600">
-                <span>{isRtl ? 'المعروض' : 'Showing'}</span>
-                <strong className="font-mono tabular-nums text-slate-900">{filteredVouchers.length}</strong>
-                <span>{isRtl ? 'من' : 'of'}</span>
-                <span className="font-mono tabular-nums">{vouchers.length}</span>
-              </div>
+          <div className="flex items-center justify-between gap-3 border-b border-slate-200 p-3 lg:p-5">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">
+                {isRtl ? 'سندات المرتجع' : 'Return vouchers'}
+              </h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                {isRtl ? 'سندات المرتجع والفواتير المرتبطة بها.' : 'Return vouchers and their source invoices.'}
+              </p>
             </div>
-            <div className="grid gap-2 xl:grid-cols-[minmax(240px,1fr)_auto] xl:items-center">
-              <div className="relative">
-                <Search className={`pointer-events-none absolute top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 ${isRtl ? 'right-3' : 'left-3'}`} />
-                <input
-                  type="search"
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder={isRtl ? 'بحث برقم السند أو الفاتورة أو الصنف...' : 'Search voucher, invoice, or item...'}
-                  className={`w-full rounded-xl border border-slate-200 bg-slate-50 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-violet-100 ${isRtl ? 'pr-10 pl-3' : 'pl-10 pr-3'}`}
-                />
-              </div>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <label className="sr-only" htmlFor="return-history-date-filter">
-                  {isRtl ? 'تصفية حسب التاريخ' : 'Filter by date'}
-                </label>
-                <select
-                  id="return-history-date-filter"
-                  value={dateFilter}
-                  onChange={(event) => setDateFilter(event.target.value as DateFilter)}
-                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-violet-500 focus:outline-none focus:ring-4 focus:ring-violet-100"
-                >
-                  {(['ALL', 'RANGE', 'TODAY', 'YESTERDAY', 'THIS_WEEK', 'THIS_MONTH'] as const).map(
-                    (filter) => (
-                      <option key={filter} value={filter}>
-                        {dateFilterLabel(filter)}
-                      </option>
-                    )
-                  )}
-                </select>
-                {dateFilter === 'RANGE' && (
-                  <>
-                    <label className="sr-only" htmlFor="return-history-date-from">From date</label>
-                    <input
-                      id="return-history-date-from"
-                      type="date"
-                      value={dateFrom}
-                      onChange={(event) => {
-                        setDateFrom(event.target.value);
-                        if (dateTo && event.target.value && dateTo < event.target.value) {
-                          setDateTo('');
-                        }
-                      }}
-                      className="min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
-                    />
-                    <label className="sr-only" htmlFor="return-history-date-to">To date</label>
-                    <input
-                      id="return-history-date-to"
-                      type="date"
-                      min={dateFrom || undefined}
-                      value={dateTo}
-                      onChange={(event) => setDateTo(event.target.value)}
-                      className="min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
-                    />
-                  </>
-                )}
-              </div>
+            <div className="inline-flex shrink-0 items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-xs text-slate-600">
+              <span>{isRtl ? 'المعروض' : 'Showing'}</span>
+              <strong className="font-mono tabular-nums text-slate-900">{filteredVouchers.length}</strong>
+              <span>{isRtl ? 'من' : 'of'}</span>
+              <span className="font-mono tabular-nums">{vouchers.length}</span>
             </div>
           </div>
 
@@ -311,117 +269,157 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
             <div className="flex flex-col items-center px-6 py-14 text-center">
               <CalendarRange className="h-8 w-8 text-slate-300" />
               <p className="mt-3 text-sm font-semibold text-slate-700">
-                {isRtl ? 'لا توجد سندات مرتجع' : 'No return vouchers found'}
+                {hasActiveFilter
+                  ? (isRtl ? 'لا توجد سندات مطابقة' : 'No matching return vouchers')
+                  : (isRtl ? 'لا توجد سندات مرتجع' : 'No return vouchers found')}
               </p>
+              {hasActiveFilter && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearch('');
+                    setDateFilter('ALL');
+                    setDateFrom('');
+                    setDateTo('');
+                  }}
+                  className="mt-4 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  {isRtl ? 'مسح عوامل التصفية' : 'Clear filters'}
+                </button>
+              )}
             </div>
           ) : (
             <>
-              <div className="space-y-2 bg-slate-50 p-2 lg:hidden">
-                {filteredVouchers.map((voucher) => (
-                  <article
-                    key={voucher.id}
-                    className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate font-mono text-xs font-bold text-slate-900">
-                          {voucher.voucherNumber}
-                        </p>
-                        <p className="mt-0.5 text-[10px] text-slate-500">
-                          {formatDate(voucher.createdAt)} · {voucher.cashierName}
-                        </p>
-                      </div>
-                      <p className="shrink-0 font-mono text-sm font-bold tabular-nums text-violet-800">
-                        {currency}{voucher.refundAmount.toFixed(2)}
-                      </p>
-                    </div>
-                    <p className="mt-2 truncate text-xs text-slate-700" title={voucher.sourceInvoices.join(', ')}>
-                      {isRtl ? 'الفواتير:' : 'Invoices:'} {voucher.sourceInvoices.join(', ')}
-                    </p>
-                    <div className="mt-2 flex items-center justify-between gap-2">
-                      <span className="text-[10px] font-medium text-slate-500">
-                        {voucher.items.reduce((sum, item) => sum + item.quantity, 0)} {isRtl ? 'أصناف' : 'items'} · {voucher.paymentMethod}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setExpandedVoucherId((current) =>
-                            current === voucher.id ? null : voucher.id
-                          )
-                        }
-                        className="rounded-lg px-2.5 py-1.5 text-[10px] font-semibold text-violet-700 hover:bg-violet-50"
-                      >
-                        {expandedVoucherId === voucher.id
-                          ? (isRtl ? 'إخفاء التفاصيل' : 'Hide details')
-                          : (isRtl ? 'التفاصيل' : 'Details')}
-                      </button>
-                    </div>
-                    {expandedVoucherId === voucher.id && (
-                      <div className="mt-2 space-y-1 border-t border-slate-100 pt-2">
-                        {voucher.items.map((item, index) => (
-                          <div key={`${item.saleItemId}-${index}`} className="flex justify-between gap-2 text-[10px]">
-                            <span className="min-w-0 truncate text-slate-600">
-                              {item.productName} · {item.receiptNumber} × {item.quantity}
-                            </span>
-                            <span className="shrink-0 font-mono tabular-nums text-slate-700">
-                              {currency}{item.refundAmount.toFixed(2)}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {hasActions && (
-                      <div className="mt-3 flex justify-end gap-2 border-t border-slate-100 pt-2">
-                        <button
-                          type="button"
-                          disabled={isPrinting}
-                          onClick={() => void handlePrintVoucher(voucher)}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-2.5 py-1.5 text-[10px] font-semibold text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          <Printer className="h-3 w-3" />
-                          {isRtl ? 'طباعة' : 'Print'}
-                        </button>
-                        {onEditVoucher && (
-                          <button
-                            type="button"
-                            onClick={() => onEditVoucher(voucher)}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-50"
-                          >
-                            <Pencil className="h-3 w-3" />
-                            {isRtl ? 'تعديل' : 'Edit'}
-                          </button>
-                        )}
-                        {onDeleteVoucher && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setDeleteError(null);
-                              setDeletingVoucher(voucher);
-                            }}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 px-2.5 py-1.5 text-[10px] font-semibold text-rose-700 hover:bg-rose-50"
-                          >
-                            <Trash2 className="h-3 w-3" />
-                            {isRtl ? 'حذف' : 'Delete'}
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </article>
-                ))}
+              <div className="xl:hidden">
+                <table className={`w-full table-fixed border-collapse ${isRtl ? 'text-right' : 'text-left'}`}>
+                  <thead className="bg-slate-50 text-[10px] font-semibold text-slate-500">
+                    <tr className="border-b border-slate-200">
+                      <th className="w-[17%] border-e border-slate-200 px-1.5 py-2">{isRtl ? 'السند' : 'Voucher'}</th>
+                      <th className="w-[27%] border-e border-slate-200 px-1.5 py-2">{isRtl ? 'التاريخ / الفواتير' : 'Date / invoices'}</th>
+                      <th className="w-[26%] border-e border-slate-200 px-1.5 py-2">{isRtl ? 'الأصناف / الكاشير' : 'Items / cashier'}</th>
+                      <th className="w-[15%] border-e border-slate-200 px-1 py-2">{isRtl ? 'المبلغ' : 'Refund'}</th>
+                      <th className="w-[15%] px-1 py-2 text-center">{isRtl ? 'إجراءات' : 'Actions'}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredVouchers.map((voucher) => {
+                      const itemCount = voucher.items.reduce((sum, item) => sum + item.quantity, 0);
+                      return (
+                        <React.Fragment key={voucher.id}>
+                          <tr className="transition-colors hover:bg-blue-50/40">
+                            <td className="min-w-0 break-all border-e border-slate-200 px-2 py-2 align-top font-mono text-[10px] font-bold text-slate-900">
+                              {voucher.voucherNumber}
+                            </td>
+                            <td className="min-w-0 break-words border-e border-slate-200 px-1.5 py-2 align-top text-[10px]">
+                              <p className="text-slate-500">{formatDate(voucher.createdAt)}</p>
+                              <p className="mt-0.5 break-words text-slate-700">
+                                <span className="font-medium text-slate-500">{isRtl ? 'الفواتير: ' : 'Invoices: '}</span>
+                                {voucher.sourceInvoices.join(', ')}
+                              </p>
+                            </td>
+                            <td className="min-w-0 break-words border-e border-slate-200 px-1.5 py-2 align-top text-[10px]">
+                              <p className="mt-0.5 break-words text-slate-600">
+                                {itemCount} {isRtl ? 'أصناف' : itemCount === 1 ? 'item' : 'items'} · {voucher.paymentMethod}
+                              </p>
+                              <p className="break-words text-slate-500">
+                                {isRtl ? 'الكاشير: ' : 'Cashier: '}{voucher.cashierName}
+                              </p>
+                              <button
+                                type="button"
+                                aria-expanded={expandedVoucherId === voucher.id}
+                                onClick={() =>
+                                  setExpandedVoucherId((current) =>
+                                    current === voucher.id ? null : voucher.id
+                                  )
+                                }
+                                className="mt-1 rounded px-1 py-0.5 text-[9px] font-semibold text-violet-700 hover:bg-violet-50"
+                              >
+                                {expandedVoucherId === voucher.id
+                                  ? (isRtl ? 'إخفاء التفاصيل' : 'Hide items')
+                                  : (isRtl ? 'عرض الأصناف' : 'View items')}
+                              </button>
+                            </td>
+                            <td className="min-w-0 break-all border-e border-slate-200 px-1 py-2 align-top font-mono text-[10px] font-bold tabular-nums text-violet-800">
+                              {currency}{voucher.refundAmount.toFixed(2)}
+                            </td>
+                            <td className="px-1 py-2 align-top">
+                              {hasActions && (
+                                <div className="flex flex-wrap justify-center gap-1">
+                                  <button
+                                    type="button"
+                                    disabled={isPrinting}
+                                    onClick={() => void handlePrintVoucher(voucher)}
+                                    title={isRtl ? 'طباعة' : 'Print'}
+                                    aria-label={isRtl ? 'طباعة' : 'Print'}
+                                    className="inline-flex h-6 w-6 items-center justify-center rounded border border-violet-200 text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    <Printer className="h-3 w-3" />
+                                  </button>
+                                  {onEditVoucher && (
+                                    <button
+                                      type="button"
+                                      onClick={() => onEditVoucher(voucher)}
+                                      title={isRtl ? 'تعديل' : 'Edit'}
+                                      aria-label={isRtl ? 'تعديل' : 'Edit'}
+                                      className="inline-flex h-6 w-6 items-center justify-center rounded border border-slate-200 text-slate-700 hover:bg-slate-50"
+                                    >
+                                      <Pencil className="h-3 w-3" />
+                                    </button>
+                                  )}
+                                  {onDeleteVoucher && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setDeleteError(null);
+                                        setDeletingVoucher(voucher);
+                                      }}
+                                      title={isRtl ? 'حذف' : 'Delete'}
+                                      aria-label={isRtl ? 'حذف' : 'Delete'}
+                                      className="inline-flex h-6 w-6 items-center justify-center rounded border border-rose-200 text-rose-700 hover:bg-rose-50"
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                          {expandedVoucherId === voucher.id && (
+                            <tr>
+                              <td colSpan={5} className="bg-slate-50 px-3 py-2">
+                                <div className="space-y-1">
+                                  {voucher.items.map((item, index) => (
+                                    <div key={`${item.saleItemId}-${index}`} className="flex min-w-0 justify-between gap-2 text-[10px]">
+                                      <span className="min-w-0 break-words text-slate-700">
+                                        {item.productName} · {item.receiptNumber} × {item.quantity}
+                                      </span>
+                                      <span className="shrink-0 font-mono tabular-nums text-slate-900">
+                                        {currency}{item.refundAmount.toFixed(2)}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
-
-              <div className="hidden overflow-x-auto lg:block">
-                <table className="w-full min-w-[900px] table-fixed border-collapse text-left">
+              <div className="hidden xl:block">
+                <table className={`w-full table-fixed border-collapse ${isRtl ? 'text-right' : 'text-left'}`}>
                   <thead className="bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                     <tr className="border-b border-slate-200">
-                      <th className="w-[170px] px-4 py-3">{isRtl ? 'سند المرتجع' : 'Voucher'}</th>
-                      <th className="w-[165px] px-4 py-3">{isRtl ? 'التاريخ' : 'Date'}</th>
-                      <th className="px-4 py-3">{isRtl ? 'فواتير المصدر' : 'Source invoices'}</th>
-                      <th className="w-[110px] px-3 py-3">{isRtl ? 'الأصناف' : 'Items'}</th>
-                      <th className="w-[110px] px-3 py-3">{isRtl ? 'طريقة الرد' : 'Refund method'}</th>
-                      <th className="w-[140px] px-4 py-3 text-right">{isRtl ? 'المبلغ' : 'Refund'}</th>
-                      <th className="w-[150px] px-4 py-3">{isRtl ? 'الكاشير' : 'Cashier'}</th>
-                      <th className="w-[95px] px-3 py-3">{isRtl ? 'تفاصيل' : 'Details'}</th>
+                      <th className="w-[170px] border-e border-slate-200 px-4 py-3">{isRtl ? 'سند المرتجع' : 'Voucher'}</th>
+                      <th className="w-[165px] border-e border-slate-200 px-4 py-3">{isRtl ? 'التاريخ' : 'Date'}</th>
+                      <th className="border-e border-slate-200 px-4 py-3">{isRtl ? 'فواتير المصدر' : 'Source invoices'}</th>
+                      <th className="w-[110px] border-e border-slate-200 px-3 py-3">{isRtl ? 'الأصناف' : 'Items'}</th>
+                      <th className="w-[130px] border-e border-slate-200 px-3 py-3">{isRtl ? 'طريقة الرد' : 'Refund method'}</th>
+                      <th className={`w-[140px] border-e border-slate-200 px-4 py-3 ${isRtl ? 'text-left' : 'text-right'}`}>{isRtl ? 'المبلغ' : 'Refund'}</th>
+                      <th className="w-[150px] border-e border-slate-200 px-4 py-3">{isRtl ? 'الكاشير' : 'Cashier'}</th>
+                      <th className="w-[95px] border-e border-slate-200 px-3 py-3">{isRtl ? 'تفاصيل' : 'Details'}</th>
                       {hasActions && (
                         <th className="w-[150px] px-3 py-3 text-center">
                           {isRtl ? 'إجراءات' : 'Actions'}
@@ -432,25 +430,35 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
                   <tbody className="divide-y divide-slate-100">
                     {filteredVouchers.map((voucher) => (
                       <React.Fragment key={voucher.id}>
-                        <tr className="hover:bg-violet-50/30">
-                          <td className="px-4 py-3 font-mono text-xs font-bold text-slate-900">
-                            {voucher.voucherNumber}
+                        <tr className="transition-colors hover:bg-blue-50/40">
+                          <td className="border-e border-slate-200 px-4 py-3">
+                            <span className="whitespace-nowrap font-mono text-xs font-bold text-slate-900">
+                              {voucher.voucherNumber}
+                            </span>
                           </td>
-                          <td className="px-4 py-3 text-xs text-slate-600">
+                          <td className="whitespace-nowrap border-e border-slate-200 px-4 py-3 text-xs text-slate-600">
                             {formatDate(voucher.createdAt)}
                           </td>
-                          <td className="truncate px-4 py-3 text-xs text-slate-700" title={voucher.sourceInvoices.join(', ')}>
-                            {voucher.sourceInvoices.join(', ')}
+                          <td className="border-e border-slate-200 px-4 py-3 text-xs text-slate-700">
+                            <p className="truncate" title={voucher.sourceInvoices.join(', ')}>
+                              {voucher.sourceInvoices.join(', ')}
+                            </p>
                           </td>
-                          <td className="px-3 py-3 text-xs text-slate-700">
+                          <td className="border-e border-slate-200 px-3 py-3 text-xs text-slate-700">
                             {voucher.items.reduce((sum, item) => sum + item.quantity, 0)}
                           </td>
-                          <td className="px-3 py-3 text-xs text-slate-700">{voucher.paymentMethod}</td>
-                          <td className="px-4 py-3 text-right font-mono text-sm font-bold tabular-nums text-violet-800">
+                          <td className="break-words border-e border-slate-200 px-3 py-3 text-xs text-slate-700">
+                            {voucher.paymentMethod}
+                          </td>
+                          <td className={`whitespace-nowrap border-e border-slate-200 px-4 py-3 font-mono text-sm font-bold tabular-nums text-violet-800 ${isRtl ? 'text-left' : 'text-right'}`}>
                             {currency}{voucher.refundAmount.toFixed(2)}
                           </td>
-                          <td className="truncate px-4 py-3 text-xs text-slate-600">{voucher.cashierName}</td>
-                          <td className="px-3 py-3">
+                          <td className="border-e border-slate-200 px-4 py-3">
+                            <p className="truncate text-xs text-slate-600" title={voucher.cashierName}>
+                              {voucher.cashierName}
+                            </p>
+                          </td>
+                          <td className="border-e border-slate-200 px-3 py-3">
                             <button
                               type="button"
                               onClick={() =>

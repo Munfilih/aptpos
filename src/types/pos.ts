@@ -1,5 +1,40 @@
 export type ProductCategory = string;
 
+export type ThemeMode = 'light' | 'medium' | 'dark';
+
+export const APP_VERSIONS = ['Soft', 'Silver', 'Standard'] as const;
+export type AppVersion = (typeof APP_VERSIONS)[number];
+
+export type SettingsSectionId =
+  | 'sales'
+  | 'screen'
+  | 'store'
+  | 'printer'
+  | 'users'
+  | 'database'
+  | 'version'
+  | 'updates';
+
+export const APP_COMPONENTS = [
+  { id: 'register', label: 'Counter', labelAr: 'نقطة البيع' },
+  { id: 'inventory', label: 'Inventory', labelAr: 'المخزون' },
+  { id: 'purchases', label: 'Purchases', labelAr: 'المشتريات' },
+  { id: 'purchase-history', label: 'Purchase History', labelAr: 'سجل المشتريات' },
+  { id: 'purchase-return-register', label: 'Purchase Returns', labelAr: 'مرتجعات المشتريات' },
+  { id: 'purchase-return-history', label: 'Purchase Return History', labelAr: 'سجل مرتجعات المشتريات' },
+  { id: 'customers', label: 'Customers', labelAr: 'العملاء' },
+  { id: 'vendors', label: 'Vendors', labelAr: 'الموردون' },
+  { id: 'sales', label: 'Sales History', labelAr: 'سجل المبيعات' },
+  { id: 'return-register', label: 'Sales Returns', labelAr: 'مرتجعات المبيعات' },
+  { id: 'return-history', label: 'Sales Return History', labelAr: 'سجل مرتجعات المبيعات' },
+  { id: 'accounts', label: 'Accounts & Cash Book', labelAr: 'الحسابات ودفتر النقدية' },
+  { id: 'reports', label: 'Reports', labelAr: 'التقارير' },
+  { id: 'shift', label: 'Shift', labelAr: 'الوردية' },
+  { id: 'files', label: 'Files', labelAr: 'الملفات' },
+] as const;
+
+export type AppComponentId = (typeof APP_COMPONENTS)[number]['id'];
+
 export type InventoryOptionType = 'category' | 'brand' | 'taxRate' | 'unit';
 
 export interface InventoryOption {
@@ -35,6 +70,10 @@ export interface UserSession {
   role: UserRole;
   displayName: string;
   permissions?: string[];
+  demoMode?: boolean;
+  demoExpiresAt?: string;
+  registeredSystem?: boolean;
+  appVersion?: AppVersion;
 }
 
 export interface UserAccount {
@@ -43,6 +82,22 @@ export interface UserAccount {
   role: UserRole;
   displayName: string;
   permissions: string[];
+}
+
+export type RegistrationRequestType = 'demo' | 'license';
+export type RegistrationRequestStatus = 'pending' | 'approved' | 'rejected';
+export type DemoAccessStatus = 'never' | 'active' | 'expired' | 'registered';
+
+export interface RegistrationRequest {
+  id: number;
+  requestType: RegistrationRequestType;
+  systemCode: string;
+  submittedKey: string;
+  requestedBy: string;
+  status: RegistrationRequestStatus;
+  createdAt: string;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
 }
 
 export interface Customer {
@@ -233,9 +288,46 @@ export interface PurchaseEntry {
   taxAmount: number;
   shippingCost: number;
   total: number;
+  paidAmount: number;
   paymentStatus: 'PAID' | 'PENDING' | 'PARTIAL';
   notes: string;
   items: PurchaseItem[];
+}
+
+export interface PurchaseReturnItem {
+  id: number;
+  voucherId: number;
+  purchaseItemId: number;
+  productId: number;
+  sku: string;
+  productName: string;
+  quantity: number;
+  unitCost: number;
+  lineTotal: number;
+}
+
+export interface PurchaseReturnVoucher {
+  id: number;
+  voucherNumber: string;
+  purchaseId: number;
+  invoiceNumber: string;
+  vendorId: number;
+  vendorName: string;
+  createdAt: string;
+  subtotal: number;
+  taxAmount: number;
+  total: number;
+  notes: string;
+  items: PurchaseReturnItem[];
+}
+
+export interface CreatePurchaseReturnInput {
+  purchaseId: number;
+  items: Array<{
+    purchaseItemId: number;
+    quantity: number;
+  }>;
+  notes?: string;
 }
 
 export interface CashbookEntry {
@@ -243,6 +335,8 @@ export interface CashbookEntry {
   entryDate: string;
   direction: 'IN' | 'OUT';
   category: string;
+  paymentType?: 'CASH' | 'BANK';
+  accountName?: string;
   description: string;
   amount: number;
   reference: string;
@@ -255,10 +349,22 @@ export interface CashbookOpeningBalance {
   amount: number;
 }
 
+export interface CashierShift {
+  id: number;
+  cashierUsername: string;
+  cashierName: string;
+  openedAt: string;
+  openingCash: number;
+  closedAt: string | null;
+  closingCash: number | null;
+}
+
 export interface CreateCashbookEntryInput {
   entryDate: string;
   direction: 'IN' | 'OUT';
   category: string;
+  paymentType?: 'CASH' | 'BANK';
+  accountName?: string;
   description: string;
   amount: number;
   reference?: string;
@@ -343,6 +449,9 @@ export interface StoreSettings {
   invoiceShowFooter?: boolean;
   invoiceShowQrCode?: boolean;
   invoiceTemplates?: Partial<Record<PaperWidth, InvoiceTemplateSettings>>;
+  appVersion?: AppVersion;
+  disabledAppComponents?: AppComponentId[];
+  registeredSystem?: boolean;
 }
 
 export interface PrintJob {

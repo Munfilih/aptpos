@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Download,
   Edit2,
@@ -14,6 +15,7 @@ import {
   Languages,
   Loader2,
   Sparkles,
+  Barcode,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import type {
@@ -24,6 +26,7 @@ import type {
   ProductCategory,
   ProductMultiUnit,
   StoreSettings,
+  ThemeMode,
 } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
 import { ProductImage } from './ProductImage';
@@ -31,8 +34,17 @@ import { ProductImage } from './ProductImage';
 interface InventoryViewProps {
   products: Product[];
   settings: StoreSettings;
+  theme: ThemeMode;
   onRefreshProducts: () => Promise<void>;
   createProductRequest?: number;
+  createProductBarcode?: string;
+  onCreateProductRequestHandled?: () => void;
+  returnToSourceAfterCreate?: boolean;
+  onProductCreated?: () => void;
+  onProductCreateCancelled?: () => void;
+  editProductRequest?: { product: Product; requestId: number } | null;
+  editProductOnly?: boolean;
+  onProductEditorClosed?: (requestId: number) => void;
 }
 
 const DEFAULT_UNITS = ['ea', 'pcs', 'box', 'pack', 'btl', 'kg', 'g', 'L', 'ml'];
@@ -215,8 +227,17 @@ async function translateEnglishToArabic(text: string): Promise<string> {
 export const InventoryView: React.FC<InventoryViewProps> = ({
   products,
   settings,
+  theme,
   onRefreshProducts,
   createProductRequest = 0,
+  createProductBarcode = '',
+  onCreateProductRequestHandled,
+  returnToSourceAfterCreate = false,
+  onProductCreated,
+  onProductCreateCancelled,
+  editProductRequest,
+  editProductOnly = false,
+  onProductEditorClosed,
 }) => {
   const { t, isRtl } = useLanguage();
   const isRposMode = settings.posScreenLayout === 'rpos';
@@ -266,6 +287,21 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const productImageInputRef = useRef<HTMLInputElement>(null);
   const productNameInputRef = useRef<HTMLInputElement>(null);
   const productLookupInputRef = useRef<HTMLInputElement>(null);
+  const handledEditRequestIdRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!modalOpen) return;
+    const frame = window.requestAnimationFrame(() => productNameInputRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [modalOpen, editingProduct]);
+
+  const closeProductEditor = () => {
+    setModalOpen(false);
+    if (!editingProduct) onProductCreateCancelled?.();
+    if (editProductOnly && editProductRequest) {
+      onProductEditorClosed?.(editProductRequest.requestId);
+    }
+  };
 
   // Excel & Spreadsheet Import States
   const [importModalOpen, setImportModalOpen] = useState(false);
@@ -275,12 +311,6 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const [importError, setImportError] = useState<string | null>(null);
   const [importSuccessMsg, setImportSuccessMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (!modalOpen) return;
-    const timer = window.setTimeout(() => productNameInputRef.current?.focus(), 0);
-    return () => window.clearTimeout(timer);
-  }, [modalOpen, editingProduct]);
 
   useEffect(() => {
     let active = true;
@@ -371,6 +401,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     () => [...new Set([...inventoryOptions.filter((option) => option.type === 'unit').map((option) => option.value), ...products.map((product) => product.unit)])].sort(),
     [inventoryOptions, products]
   );
+  const defaultUnit =
+    inventoryOptions.find((option) => option.type === 'unit' && option.isDefault)?.value ??
+    units[0] ??
+    EMPTY_FORM.unit;
 
   const generateNextSku = (baseSku?: string) => {
     const numericSkus = [
@@ -384,6 +418,35 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       nextSku = String(Number(nextSku) + 1).padStart(width, '0');
     }
     return nextSku;
+  };
+
+  const generateNextBarcode = () => {
+    const knownCodes = new Set(
+      [
+        ...products.flatMap((product) => [
+          product.sku,
+          product.barcode,
+          ...(product.multiUnits || []).map((unit) => unit.barcode),
+          ...(product.additionalBarcodes || []).map((entry) => entry.barcode),
+        ]),
+        form.sku,
+        ...multiUnitDrafts.map((unit) => unit.barcode),
+        ...additionalBarcodeDrafts.map((entry) => entry.barcode),
+      ]
+        .map((code) => code.trim().toLowerCase())
+        .filter(Boolean)
+    );
+    const numericCodes = [...knownCodes].filter((code) => /^\d+$/.test(code));
+    const maxNumericCode = numericCodes.reduce(
+      (max, code) => Math.max(max, Number(code)),
+      890000000
+    );
+    const width = numericCodes.reduce((max, code) => Math.max(max, code.length), 9);
+    let nextBarcode = String(maxNumericCode + 1).padStart(width, '0');
+    while (knownCodes.has(nextBarcode.toLowerCase())) {
+      nextBarcode = String(Number(nextBarcode) + 1).padStart(width, '0');
+    }
+    return nextBarcode;
   };
 
   const filteredProducts = useMemo(() => {
@@ -603,7 +666,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     }
   };
 
-  const setDefaultTaxRate = async (option: InventoryOption) => {
+  const setDefaultInventoryOption = async (option: InventoryOption) => {
     setOptionsError(null);
     try {
       const response = await fetch(`/api/inventory-options/${option.id}`, {
@@ -617,27 +680,29 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           typeof payload === 'object' && payload !== null && 'error' in payload &&
           typeof payload.error === 'string'
             ? payload.error
-            : 'Could not set the default tax rate.';
+            : `Could not set the default ${option.type === 'taxRate' ? 'tax rate' : 'unit'}.`;
         throw new Error(message);
       }
-      setInventoryOptions((current) => current.map((entry) => ({
-        ...entry,
-        isDefault: entry.type === 'taxRate' && entry.id === payload.id,
-      })));
+      setInventoryOptions((current) =>
+        current.map((entry) => entry.type === payload.type
+          ? { ...entry, isDefault: entry.id === payload.id }
+          : entry)
+      );
     } catch (error) {
       setOptionsError((error as Error).message);
     }
   };
 
-  const openCreateModal = () => {
+  const openCreateModal = (initialBarcode = '') => {
     setEditingProduct(null);
     setForm({
       ...EMPTY_FORM,
       sku: generateNextSku(),
+      barcode: initialBarcode,
       category: categories[0] || EMPTY_FORM.category,
       brand: '',
       taxRate: String(defaultTaxRate),
-      unit: units[0] || EMPTY_FORM.unit,
+      unit: defaultUnit,
     });
     setProductLookupCode('');
     setProductLookupMessage(null);
@@ -651,8 +716,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   };
 
   useEffect(() => {
-    if (createProductRequest > 0 && !optionsLoading) openCreateModal();
-  }, [createProductRequest, optionsLoading]);
+    if (createProductRequest > 0 && !optionsLoading) {
+      openCreateModal(createProductBarcode);
+      onCreateProductRequestHandled?.();
+    }
+  }, [createProductRequest, createProductBarcode, optionsLoading, onCreateProductRequestHandled]);
 
   const openEditModal = (product: Product) => {
     setEditingProduct(product);
@@ -691,6 +759,22 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     setModalOpen(true);
   };
 
+  useEffect(() => {
+    if (
+      !editProductOnly ||
+      !editProductRequest ||
+      optionsLoading ||
+      handledEditRequestIdRef.current === editProductRequest.requestId
+    ) {
+      return;
+    }
+    const product =
+      products.find((entry) => entry.id === editProductRequest.product.id) ||
+      editProductRequest.product;
+    openEditModal(product);
+    handledEditRequestIdRef.current = editProductRequest.requestId;
+  }, [editProductOnly, editProductRequest, optionsLoading, products]);
+
   const handleProductCodeLookup = () => {
     const code = productLookupCode.trim();
     if (!code) {
@@ -727,13 +811,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       barcode: code,
       category: categories[0] || EMPTY_FORM.category,
       taxRate: String(defaultTaxRate),
-      unit: units[0] || EMPTY_FORM.unit,
+      unit: defaultUnit,
     });
     setProductImagePath('');
     setProductImageData('');
     setFormError(null);
     setFormSuccess(null);
-    window.setTimeout(() => productNameInputRef.current?.focus(), 0);
     setProductLookupMessage({
       type: 'status',
       message: isRtl
@@ -865,15 +948,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         barcode: barcode.barcode.trim(),
         unitId: barcode.unitId || null,
       }));
-    let barcode = form.barcode.trim() || editingProduct?.barcode || sku;
-    if (!form.barcode.trim() && existingBarcodes.has(barcode.toLocaleLowerCase())) {
-      let nextBarcode = Math.max(
-        Number(sku) || 0,
-        ...products.map((product) => Number(product.barcode) || 0)
-      ) + 1;
-      while (existingBarcodes.has(String(nextBarcode).toLocaleLowerCase())) nextBarcode++;
-      barcode = String(nextBarcode);
-    }
+    const barcode = form.barcode.trim();
     const submittedBarcodes = [
       barcode,
       ...multiUnits.map((unit) => unit.barcode),
@@ -914,7 +989,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           : 15,
         ...(editingProduct ? {} : { stock: Math.max(0, parseInt(form.stock, 10) || 0) }),
         reorderLevel: Math.max(0, parseInt(form.reorderLevel, 10) || 0),
-        unit: form.unit.trim() || 'ea',
+        unit: form.unit.trim() || defaultUnit,
         multiUnits,
         additionalBarcodes,
         imagePath: productImagePath.trim(),
@@ -939,15 +1014,17 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
       await onRefreshProducts();
       if (editingProduct) {
+        closeProductEditor();
+      } else if (returnToSourceAfterCreate) {
         setModalOpen(false);
+        onProductCreated?.();
       } else {
-        setForm({ ...EMPTY_FORM, sku: generateNextSku(form.sku) });
+        setForm({ ...EMPTY_FORM, sku: generateNextSku(form.sku), unit: defaultUnit });
         setMultiUnitDrafts([]);
         setAdditionalBarcodeDrafts([]);
         setProductImagePath('');
         setProductImageData('');
         setFormSuccess('Product created. You can add another product.');
-        window.setTimeout(() => productNameInputRef.current?.focus(), 0);
       }
     } catch (err) {
       setFormError((err as Error).message);
@@ -975,7 +1052,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       await onRefreshProducts();
       setProductPendingDelete(null);
       if (editingProduct?.id === productToDelete.id) {
-        setModalOpen(false);
+        closeProductEditor();
         setEditingProduct(null);
       }
     } catch (error) {
@@ -1259,7 +1336,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         if (!rawName) continue; // Skip nameless rows
 
         const sku = rawSku || (rawBarcode ? rawBarcode : `ITEM-${i}`);
-        const barcode = rawBarcode || sku;
+        const barcode = rawBarcode;
         const name = rawName;
         const nameAr = rawNameAr || undefined;
 
@@ -1279,7 +1356,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         }
         const stock = stockIdx !== -1 ? Math.max(0, parseInt(String(row[stockIdx]), 10) || 0) : 0;
         const reorderLevel = reorderIdx !== -1 ? Math.max(0, parseInt(String(row[reorderIdx]), 10) || 5) : 5;
-        const unit = unitIdx !== -1 && row[unitIdx] !== undefined ? String(row[unitIdx]).trim() : 'ea';
+        const unit = unitIdx !== -1 && row[unitIdx] !== undefined
+          ? String(row[unitIdx]).trim() || defaultUnit
+          : defaultUnit;
 
         const isExisting = Boolean(
           skuMap.get(sku.toLowerCase()) || (barcode ? barcodeMap.get(barcode.toLowerCase()) : false)
@@ -1383,7 +1462,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   };
 
   return (
-    <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 bg-slate-50">
+    <div className={editProductOnly ? 'hidden' : 'flex-1 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 bg-slate-50'}>
       {/* Import Notification Banner */}
       {importSuccessMsg && (
         <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs flex items-center justify-between shadow-xs">
@@ -1510,7 +1589,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             </button>
             <button
               type="button"
-              onClick={openCreateModal}
+              onClick={() => openCreateModal()}
               disabled={optionsLoading}
               title={isRtl ? 'إضافة منتج (F8)' : 'Add Product (F8)'}
               className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors whitespace-nowrap shrink-0 disabled:cursor-not-allowed disabled:opacity-50"
@@ -1854,7 +1933,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                       {managementType === 'taxRate' ? `${option.value}%` : option.value}
                     </h3>
                     <p className="mt-1 text-[11px] text-slate-500">
-                      {managementType === 'taxRate' && option.isDefault
+                      {(managementType === 'taxRate' || managementType === 'unit') && option.isDefault
                         ? (isRtl ? 'الافتراضي' : 'Default')
                         : managementType === 'brand'
                           ? (isRtl ? 'علامة تجارية' : 'Brand')
@@ -1864,10 +1943,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
-                    {managementType === 'taxRate' && !option.isDefault && (
+                    {(managementType === 'taxRate' || managementType === 'unit') && !option.isDefault && (
                       <button
                         type="button"
-                        onClick={() => void setDefaultTaxRate(option)}
+                        onClick={() => void setDefaultInventoryOption(option)}
                         className="rounded-lg px-2 py-1 text-[10px] font-semibold text-blue-700 hover:bg-blue-50"
                       >
                         {isRtl ? 'تعيين كافتراضي' : 'Set default'}
@@ -1902,16 +1981,17 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         </section>
       )}
 
-      {optionDialogOpen && (
+      {optionDialogOpen && createPortal(
         <div
-          className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/60 p-3 sm:p-4"
+          className={`fixed inset-0 ${editProductOnly ? 'z-[110]' : 'z-[70]'} flex items-center justify-center bg-slate-900/60 p-3 sm:p-4`}
           role="dialog"
           aria-modal="true"
           aria-labelledby="inventory-option-title"
         >
           <form
             onSubmit={saveManagedOption}
-            className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+            data-theme={theme}
+            className="pos-app-shell w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
           >
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
               <h2 id="inventory-option-title" className="text-base font-bold text-slate-900">
@@ -1938,7 +2018,6 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 </label>
                 <input
                   id="inventory-option-value"
-                  autoFocus
                   required
                   type={managementType === 'taxRate' ? 'number' : 'text'}
                   min={managementType === 'taxRate' ? 0 : undefined}
@@ -2011,7 +2090,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               </button>
             </div>
           </form>
-        </div>
+        </div>,
+        document.body
       )}
 
       {productPendingDelete && (
@@ -2099,7 +2179,6 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             <footer className="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3.5">
               <button
                 type="button"
-                autoFocus
                 onClick={() => {
                   setProductPendingDelete(null);
                   setDeleteProductError(null);
@@ -2129,20 +2208,33 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       )}
 
       {/* Add / Edit Product Modal */}
-      {modalOpen && (
+      {modalOpen && createPortal(
         <div
-          className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-2 sm:p-4"
+          className={`fixed inset-0 ${editProductOnly ? 'z-[100]' : 'z-50'} bg-slate-900/60 flex items-center justify-center p-2 sm:p-4`}
           role="dialog"
           aria-modal="true"
           aria-labelledby="product-modal-title"
           onKeyDown={(e) => {
+            if (e.altKey && e.key.toLowerCase() === 's') {
+              e.preventDefault();
+              e.stopPropagation();
+              if (!saving && !optionDialogOpen) {
+                e.currentTarget
+                  .querySelector<HTMLFormElement>('#product-form')
+                  ?.requestSubmit();
+              }
+              return;
+            }
             if (e.key === 'Escape') {
               e.preventDefault();
-              if (!saving) setModalOpen(false);
+              if (!saving) closeProductEditor();
             }
           }}
         >
-          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-3xl max-h-[calc(100dvh-1rem)] overflow-hidden flex flex-col">
+          <div
+            data-theme={theme}
+            className="pos-app-shell bg-white border border-slate-200 rounded-xl w-full max-w-3xl max-h-[calc(100dvh-1rem)] overflow-hidden flex flex-col"
+          >
             <div className="shrink-0 border-b border-slate-200 px-3 py-2.5 sm:px-5 sm:py-3">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 id="product-modal-title" className="shrink-0 text-sm font-semibold text-slate-900 sm:text-base">
@@ -2184,12 +2276,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 <div className="ml-auto flex items-center gap-1.5">
                 <button
                   type="button"
-                  onClick={() => setModalOpen(false)}
-                  className="px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg"
+                  onClick={closeProductEditor}
+                  className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-700 transition-colors hover:bg-red-100"
                 >
                   {isRtl ? 'إلغاء (Esc)' : 'Cancel (Esc)'}
                 </button>
-                {editingProduct && (
+                {editingProduct && !editProductOnly && (
                   <button
                     type="button"
                     onClick={() => handleDeleteProduct(editingProduct)}
@@ -2204,6 +2296,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   type="submit"
                   form="product-form"
                   disabled={saving}
+                  title={isRtl ? 'حفظ المنتج (Alt+S)' : 'Save product (Alt+S)'}
+                  aria-keyshortcuts="Alt+S"
                   className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg disabled:opacity-50"
                 >
                   {saving
@@ -2367,16 +2461,80 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   <p className="mt-1 text-[10px] text-slate-400">Generated from the latest SKU; editable.</p>
                 </div>
                 <div>
-                  <label className="block font-medium text-slate-700 mb-1">{isRtl ? 'الباركود' : 'Barcode'}</label>
+                  <div className="mb-1 flex items-center justify-between">
+                    <label className="block font-medium text-slate-700">
+                      {isRtl ? 'الباركود (اختياري)' : 'Barcode (optional)'}
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setForm((current) => ({ ...current, barcode: generateNextBarcode() }))}
+                      aria-label={isRtl ? 'إنشاء باركود متسلسل' : 'Generate sequential barcode'}
+                      title={isRtl ? 'إنشاء باركود متسلسل' : 'Generate sequential barcode'}
+                      className="rounded-md p-1 text-blue-700 hover:bg-blue-50"
+                    >
+                      <Barcode className="h-4 w-4" />
+                    </button>
+                  </div>
                   <input
                     type="text"
                     data-product-field="barcode"
                     onKeyDown={handleProductFieldEnter}
                     value={form.barcode}
                     onChange={(e) => setForm({ ...form, barcode: e.target.value })}
-                    placeholder="890101005"
+                    placeholder={isRtl ? 'أدخل أو أنشئ باركود' : 'Enter or generate a barcode'}
                     className="w-full px-2.5 py-1.5 font-mono border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
                   />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3">
+                <div>
+                  <label className="mb-1 block font-medium text-slate-700">
+                    {isRtl ? `سعر التكلفة (${c})` : `Cost Price (${c})`}
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    data-product-field="costPrice"
+                    onFocus={(event) => event.currentTarget.select()}
+                    onClick={(event) => event.currentTarget.select()}
+                    onKeyDown={handleProductFieldEnter}
+                    value={form.costPrice}
+                    onChange={(e) => setForm({ ...form, costPrice: e.target.value })}
+                    className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 font-mono tabular-nums text-slate-900 focus:border-blue-700 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block font-medium text-slate-700">
+                    {isRtl ? `سعر البيع (${c})` : `Selling Price (${c})`}
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    data-product-field="retailPrice"
+                    onFocus={(event) => event.currentTarget.select()}
+                    onClick={(event) => event.currentTarget.select()}
+                    onKeyDown={handleProductFieldEnter}
+                    value={form.retailPrice}
+                    onChange={(e) => setForm({ ...form, retailPrice: e.target.value })}
+                    className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 font-mono tabular-nums text-slate-900 focus:border-blue-700 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block font-medium text-slate-700">
+                    {isRtl ? 'نسبة الضريبة (%)' : 'Tax Rate (%)'}
+                  </label>
+                  <select
+                    data-product-field="taxRate"
+                    onKeyDown={handleProductFieldEnter}
+                    value={form.taxRate}
+                    onChange={(e) => setForm({ ...form, taxRate: e.target.value })}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono tabular-nums text-slate-900 focus:border-blue-700 focus:outline-none"
+                  >
+                    {taxRates.map((rate) => <option key={rate} value={rate}>{rate}%</option>)}
+                  </select>
                 </div>
               </div>
 
@@ -2623,57 +2781,6 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 </select>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3">
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">
-                    {isRtl ? `سعر التكلفة (${c})` : `Cost Price (${c})`}
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    data-product-field="costPrice"
-                    onFocus={(event) => event.currentTarget.select()}
-                    onClick={(event) => event.currentTarget.select()}
-                    onKeyDown={handleProductFieldEnter}
-                    value={form.costPrice}
-                    onChange={(e) => setForm({ ...form, costPrice: e.target.value })}
-                    className="w-full px-2.5 py-1.5 font-mono border border-slate-200 rounded-lg text-slate-900 tabular-nums focus:outline-none focus:border-blue-700"
-                  />
-                </div>
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">
-                    {isRtl ? 'نسبة الضريبة (%)' : 'Tax Rate (%)'}
-                  </label>
-                  <select
-                    data-product-field="taxRate"
-                    onKeyDown={handleProductFieldEnter}
-                    value={form.taxRate}
-                    onChange={(e) => setForm({ ...form, taxRate: e.target.value })}
-                    className="w-full px-2.5 py-1.5 font-mono border border-slate-200 rounded-lg text-slate-900 tabular-nums bg-white focus:outline-none focus:border-blue-700"
-                  >
-                    {taxRates.map((rate) => <option key={rate} value={rate}>{rate}%</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">
-                    {isRtl ? `سعر البيع (${c})` : `Selling Price (${c})`}
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    data-product-field="retailPrice"
-                    onFocus={(event) => event.currentTarget.select()}
-                    onClick={(event) => event.currentTarget.select()}
-                    onKeyDown={handleProductFieldEnter}
-                    value={form.retailPrice}
-                    onChange={(e) => setForm({ ...form, retailPrice: e.target.value })}
-                    className="w-full px-2.5 py-1.5 font-mono border border-slate-200 rounded-lg text-slate-900 tabular-nums focus:outline-none focus:border-blue-700"
-                  />
-                </div>
-              </div>
-
               <div className={`grid ${editingProduct ? 'grid-cols-1' : 'grid-cols-2'} gap-2 sm:gap-3`}>
                 {!editingProduct && (
                   <div>
@@ -2713,7 +2820,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {selectedProductDetails && (

@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
     return () => closeRequestListeners.delete(listener);
   },
+  openExternal: (url: string) => ipcRenderer.invoke('pos:open-external', url),
   onUpdateStatus: (listener: (status: UpdateStatus) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => listener(status);
     ipcRenderer.on('pos:updates:status', handler);

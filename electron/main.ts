@@ -1111,6 +1111,11 @@ ipcMain.handle('pos:drive:disconnect', async (event) => {
   };
 });
 
+ipcMain.handle('pos:open-external', (event, url: unknown) => {
+  assertTrustedSender(event);
+  if (typeof url === 'string') openExternalUrl(url);
+});
+
 ipcMain.handle('pos:app:resolve-close', (event, shouldClose: unknown) => {
   assertTrustedSender(event);
   if (typeof shouldClose !== 'boolean') {

@@ -4,21 +4,23 @@ import {
   Plus,
   Search,
   Trash2,
-  Barcode,
   CheckCircle2,
   AlertCircle,
   AlertTriangle,
   ShoppingBag,
+  Edit2,
   ArrowRight,
   ArrowLeft,
   X,
   Layers,
   LayoutGrid,
+  List,
   Sparkles,
   PackageCheck,
   CreditCard,
   Banknote,
   Printer,
+  History as HistoryIcon,
 } from 'lucide-react';
 import type {
   CartItem,
@@ -75,10 +77,17 @@ interface RegisterViewProps {
   products: Product[];
   customers?: Customer[];
   settings: StoreSettings;
+  rposTicketWidth: number;
+  onRposTicketWidthChange: (width: number) => void;
   onSaleCompleted: (sale: Sale, queuedOffline: boolean) => void;
   restoredSale?: Sale | null;
   onClearRestoredSale?: () => void;
   receiptModalOpen?: boolean;
+  onOpenSalesHistory?: () => void;
+  onEditProduct?: (product: Product) => void;
+  onAddProduct?: (barcode: string) => void;
+  productEditorOpen?: boolean;
+  productCreateModalOpen?: boolean;
 }
 
 function isInventoryOption(value: unknown): value is InventoryOption {
@@ -96,8 +105,7 @@ function isInventoryOption(value: unknown): value is InventoryOption {
 }
 
 const REGISTER_STATE_KEY = 'counterline_register_state';
-const RPOS_TICKET_WIDTH_KEY = 'counterline_rpos_ticket_width';
-const DEFAULT_RPOS_TICKET_WIDTH = 320;
+const RPOS_RESIZE_HANDLE_WIDTH = 8;
 
 function getCartItemLineId(item: CartItem): string {
   return item.lineId || `${item.product.id}:${item.unitId || 'base'}`;
@@ -107,16 +115,52 @@ function getCartItemUnitsPerBase(item: CartItem): number {
   return item.unitsPerBase || 1;
 }
 
-function loadRposTicketWidth(): number {
-  try {
-    const stored = Number(localStorage.getItem(RPOS_TICKET_WIDTH_KEY));
-    return Number.isFinite(stored) && stored >= 150 && stored <= 800
-      ? stored
-      : DEFAULT_RPOS_TICKET_WIDTH;
-  } catch (error) {
-    console.error('Failed to restore RPOS ticket width:', error);
-    return DEFAULT_RPOS_TICKET_WIDTH;
-  }
+function getDefaultProductUnitPrice(product: Product, unitId?: string): number | undefined {
+  if (!unitId) return product.retailPrice;
+  const unit = product.multiUnits?.find((entry) => entry.id === unitId);
+  return unit ? unit.price ?? product.retailPrice * unit.unitsPerBase : undefined;
+}
+
+function normalizeCatalogSearch(value: string): string {
+  return value
+    .normalize('NFKD')
+    .toLocaleLowerCase()
+    .replace(/\p{M}/gu, '')
+    .trim();
+}
+
+function refreshCartItemProduct(
+  item: CartItem,
+  product: Product,
+  previousProduct: Product | undefined,
+  extraStock: number
+): CartItem {
+  const previousDefaultPrice = previousProduct
+    ? getDefaultProductUnitPrice(previousProduct, item.unitId)
+    : undefined;
+  const nextDefaultPrice = getDefaultProductUnitPrice(product, item.unitId);
+  const useDefaultPrice =
+    previousDefaultPrice !== undefined &&
+    item.product.retailPrice === previousDefaultPrice &&
+    nextDefaultPrice !== undefined;
+  const unit = item.unitId
+    ? product.multiUnits?.find((entry) => entry.id === item.unitId)
+    : undefined;
+  const unitName = item.unitId
+    ? unit?.name || item.unitName || item.product.unit
+    : product.unit;
+
+  return {
+    ...item,
+    unitName,
+    unitsPerBase: item.unitId ? unit?.unitsPerBase || item.unitsPerBase || 1 : 1,
+    product: {
+      ...product,
+      retailPrice: useDefaultPrice ? nextDefaultPrice : item.product.retailPrice,
+      stock: product.stock + extraStock,
+      unit: unitName,
+    },
+  };
 }
 
 function isInvoiceTab(value: unknown): value is InvoiceTab {
@@ -145,6 +189,17 @@ function isInvoiceTab(value: unknown): value is InvoiceTab {
     typeof tab.isHeld === 'boolean' &&
     typeof tab.createdAt === 'string'
   );
+}
+
+function renumberTicketTabs(tabs: InvoiceTab[]): InvoiceTab[] {
+  return tabs.map((tab, index) => {
+    const tabNumber = index + 1;
+    return {
+      ...tab,
+      tabNumber,
+      label: /^Ticket #\d+$/.test(tab.label) ? `Ticket #${tabNumber}` : tab.label,
+    };
+  });
 }
 
 function loadRegisterState(): RegisterState | null {
@@ -225,10 +280,17 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   products,
   customers = [],
   settings,
+  rposTicketWidth,
+  onRposTicketWidthChange,
   onSaleCompleted,
   restoredSale,
   onClearRestoredSale,
   receiptModalOpen,
+  onOpenSalesHistory,
+  onEditProduct,
+  onAddProduct,
+  productEditorOpen = false,
+  productCreateModalOpen = false,
 }) => {
   const { t, isRtl } = useLanguage();
   const isRpos = settings.posScreenLayout === 'rpos';
@@ -242,11 +304,12 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           ? (isRtl ? 'مجزأ' : 'Split')
           : method;
   const [mobileTab, setMobileTab] = useState<'table' | 'checkout'>('table');
-  const [rposTicketWidth, setRposTicketWidth] = useState(loadRposTicketWidth);
   const [barcodeInput, setBarcodeInput] = useState('');
   const [isCatalogOpen, setIsCatalogOpen] = useState(false);
   const [isBrowsingCategories, setIsBrowsingCategories] = useState(false);
   const [catalogSearch, setCatalogSearch] = useState('');
+  const [catalogView, setCatalogView] = useState<'grid' | 'list'>('grid');
+  const [highlightedCatalogProductId, setHighlightedCatalogProductId] = useState<number | null>(null);
   const [catalogSort, setCatalogSort] = useState<'featured' | 'name' | 'price-low' | 'price-high'>('featured');
   const [catalogCategory, setCatalogCategory] = useState<string>('All');
   const [rposCategories, setRposCategories] = useState<Array<{ value: string; imageData: string }>>([]);
@@ -297,14 +360,6 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     };
   }, []);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(RPOS_TICKET_WIDTH_KEY, String(rposTicketWidth));
-    } catch (error) {
-      console.error('Failed to save RPOS ticket width:', error);
-    }
-  }, [rposTicketWidth]);
-
   // Wrong Barcode Alert Dialog state - when active, scanning next product is locked
   const [wrongBarcodeModal, setWrongBarcodeModal] = useState<{
     isOpen: boolean;
@@ -313,23 +368,27 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 
   // Multi-tab / Held Invoices State
   const [initialRegisterState] = useState(loadRegisterState);
+  const previousProductsRef = useRef(products);
+  const wasProductEditorOpenRef = useRef(productEditorOpen);
   const [tabs, setTabs] = useState<InvoiceTab[]>(
     () =>
-      initialRegisterState?.tabs || [
-        {
-          id: 'tab-1',
-          tabNumber: 1,
-          label: 'Ticket #1',
-          cart: [],
-          customerName: settings.defaultCustomer || 'Walk-in Customer / عميل نقدي',
-          discountType: 'fixed',
-          discountValue: '',
-          paymentMethod: 'Cash',
-          cashTendered: '',
-          isHeld: false,
-          createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        },
-      ]
+      initialRegisterState?.tabs
+        ? renumberTicketTabs(initialRegisterState.tabs)
+        : [
+            {
+              id: 'tab-1',
+              tabNumber: 1,
+              label: 'Ticket #1',
+              cart: [],
+              customerName: settings.defaultCustomer || 'Walk-in Customer / عميل نقدي',
+              discountType: 'fixed',
+              discountValue: '',
+              paymentMethod: 'Cash',
+              cashTendered: '',
+              isHeld: false,
+              createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            },
+          ]
   );
   const [activeTabId, setActiveTabId] = useState<string>(
     () => initialRegisterState?.activeTabId || 'tab-1'
@@ -388,6 +447,106 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   const paymentMethod = activeTab.paymentMethod;
   const cashTendered = activeTab.cashTendered;
   const cardTendered = activeTab.cardTendered ?? '';
+
+  useEffect(() => {
+    const wasOpen = wasProductEditorOpenRef.current;
+    wasProductEditorOpenRef.current = productEditorOpen;
+    if (
+      wasOpen &&
+      !productEditorOpen &&
+      pendingPriceItem &&
+      editingTicketItemId === null
+    ) {
+      setEditingTicketItemId(getCartItemLineId(pendingPriceItem));
+    }
+  }, [editingTicketItemId, pendingPriceItem, productEditorOpen]);
+
+  useEffect(() => {
+    const previousProducts = previousProductsRef.current;
+    if (previousProducts === products) return;
+
+    const previousProductsById = new Map(previousProducts.map((product) => [product.id, product]));
+    const productsById = new Map(products.map((product) => [product.id, product]));
+
+    const editedItem =
+      activeTab.cart.find((item) => getCartItemLineId(item) === editingTicketItemId) ??
+      (pendingPriceItem && getCartItemLineId(pendingPriceItem) === editingTicketItemId
+        ? pendingPriceItem
+        : undefined);
+    if (editedItem) {
+      const previousProduct = previousProductsById.get(editedItem.product.id);
+      const nextProduct = productsById.get(editedItem.product.id);
+      const previousDefaultPrice = previousProduct
+        ? getDefaultProductUnitPrice(previousProduct, editedItem.unitId)
+        : undefined;
+      const nextDefaultPrice = nextProduct
+        ? getDefaultProductUnitPrice(nextProduct, editedItem.unitId)
+        : undefined;
+      if (
+        previousDefaultPrice !== undefined &&
+        nextDefaultPrice !== undefined &&
+        editedItem.product.retailPrice === previousDefaultPrice &&
+        Number(ticketEditPrice) === previousDefaultPrice
+      ) {
+        setTicketEditPrice(String(nextDefaultPrice));
+      }
+    }
+
+    setTabs((previousTabs) => {
+      let changed = false;
+      const nextTabs = previousTabs.map((tab) => {
+        if (tab.cart.length === 0) return tab;
+        const originalUnitsByProduct = new Map<number, number>();
+        for (const originalItem of tab.editingOriginalItems || []) {
+          originalUnitsByProduct.set(
+            originalItem.productId,
+            (originalUnitsByProduct.get(originalItem.productId) || 0) +
+              originalItem.quantity * (originalItem.unitsPerBase || 1)
+          );
+        }
+        const cart = tab.cart.map((item) => {
+          const nextProduct = productsById.get(item.product.id);
+          if (!nextProduct) return item;
+          changed = true;
+          return refreshCartItemProduct(
+            item,
+            nextProduct,
+            previousProductsById.get(item.product.id),
+            originalUnitsByProduct.get(item.product.id) || 0
+          );
+        });
+        return { ...tab, cart };
+      });
+      return changed ? nextTabs : previousTabs;
+    });
+
+    setPendingPriceItem((item) => {
+      if (!item) return item;
+      const nextProduct = productsById.get(item.product.id);
+      if (!nextProduct) return item;
+      const originalUnits = activeTab.editingOriginalItems
+        ?.filter((originalItem) => originalItem.productId === item.product.id)
+        .reduce(
+          (sum, originalItem) =>
+            sum + originalItem.quantity * (originalItem.unitsPerBase || 1),
+          0
+        ) || 0;
+      return refreshCartItemProduct(
+        item,
+        nextProduct,
+        previousProductsById.get(item.product.id),
+        originalUnits
+      );
+    });
+
+    previousProductsRef.current = products;
+  }, [
+    activeTab,
+    editingTicketItemId,
+    pendingPriceItem,
+    products,
+    ticketEditPrice,
+  ]);
 
   const setCart = (action: React.SetStateAction<CartItem[]>) => {
     setTabs((prev) =>
@@ -448,6 +607,8 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   const completeSaleRef = useRef<((confirmed?: boolean) => Promise<void>) | null>(null);
   const [isSaleConfirmationOpen, setIsSaleConfirmationOpen] = useState(false);
   const [isCancelConfirmationOpen, setIsCancelConfirmationOpen] = useState(false);
+  const keepTicketButtonRef = useRef<HTMLButtonElement>(null);
+  const cancelTicketButtonRef = useRef<HTMLButtonElement>(null);
   const [isTenderModalOpen, setIsTenderModalOpen] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'error' | 'info'; text: string } | null>(null);
   const [isPrintingKot, setIsPrintingKot] = useState(false);
@@ -537,6 +698,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   };
 
   const barcodeInputRef = useRef<HTMLInputElement>(null);
+  const catalogSearchInputRef = useRef<HTMLInputElement>(null);
   const cashTenderedInputRef = useRef<HTMLInputElement>(null);
   const dismissButtonRef = useRef<HTMLButtonElement>(null);
   const ticketEditPriceInputRef = useRef<HTMLInputElement>(null);
@@ -544,39 +706,49 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 
   // Robust auto-focus barcode input across all render states and device widths
   const focusBarcodeInput = useCallback(() => {
-    if (wrongBarcodeModal || editingTicketItemId !== null) return;
+    if (
+      wrongBarcodeModal ||
+      editingTicketItemId !== null ||
+      productEditorOpen ||
+      productCreateModalOpen
+    ) {
+      return;
+    }
     setMobileTab('table');
 
-    const focusTarget = () => {
-      if (ticketEditPriceInputRef.current) return;
+    const focusTarget = (initial = false) => {
+      if (
+        ticketEditPriceInputRef.current ||
+        productEditorOpen ||
+        productCreateModalOpen ||
+        document.querySelector('[aria-labelledby="product-modal-title"]')
+      ) {
+        return;
+      }
       const el =
         barcodeInputRef.current ||
         (document.getElementById('pos-barcode-scanner-input') as HTMLInputElement | null);
       if (el && !el.disabled) {
+        if (!initial && document.activeElement !== document.body && document.activeElement !== el) {
+          return;
+        }
         el.focus();
         el.select();
       }
     };
 
-    focusTarget();
-    requestAnimationFrame(focusTarget);
-    setTimeout(focusTarget, 30);
-    setTimeout(focusTarget, 100);
-    setTimeout(focusTarget, 250);
-  }, [editingTicketItemId, wrongBarcodeModal]);
+    focusTarget(true);
+    requestAnimationFrame(() => focusTarget());
+    setTimeout(() => focusTarget(), 30);
+    setTimeout(() => focusTarget(), 100);
+    setTimeout(() => focusTarget(), 250);
+  }, [editingTicketItemId, productCreateModalOpen, productEditorOpen, wrongBarcodeModal]);
 
   useEffect(() => {
-    focusBarcodeInput();
-  }, [activeTabId, isCatalogOpen, wrongBarcodeModal, focusBarcodeInput]);
-
-  useEffect(() => {
-    if (editingTicketItemId === null) return;
-    const frame = requestAnimationFrame(() => {
-      ticketEditPriceInputRef.current?.focus();
-      ticketEditPriceInputRef.current?.select();
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [editingTicketItemId]);
+    if (!isCatalogOpen && !wrongBarcodeModal && !receiptModalOpen) {
+      focusBarcodeInput();
+    }
+  }, [activeTabId, isCatalogOpen, wrongBarcodeModal, receiptModalOpen, focusBarcodeInput]);
 
   // Whenever the receipt preview modal closes, automatically re-focus the barcode scanner
   const prevReceiptOpenRef = useRef(receiptModalOpen);
@@ -591,6 +763,17 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   useEffect(() => {
     const handleWindowFocus = () => {
       if (!wrongBarcodeModal && !isCatalogOpen && !receiptModalOpen) {
+        const activeElement = document.activeElement;
+        if (
+          activeElement instanceof HTMLElement &&
+          activeElement !== document.body &&
+          activeElement !== document.documentElement &&
+          activeElement !== barcodeInputRef.current &&
+          activeElement.isConnected &&
+          activeElement.getClientRects().length > 0
+        ) {
+          return;
+        }
         focusBarcodeInput();
       }
     };
@@ -681,9 +864,9 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     setTabs((prev) => {
       const current = prev.find((t) => t.id === activeTabId);
       if (current && current.cart.length === 0 && prev.length === 1) {
-        return [restoredTab];
+        return renumberTicketTabs([restoredTab]);
       }
-      return [...prev, restoredTab];
+      return renumberTicketTabs([...prev, restoredTab]);
     });
 
     setActiveTabId(newTabId);
@@ -736,8 +919,21 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 
   const cancelCurrentTicket = useCallback(() => {
     setIsCancelConfirmationOpen(false);
+    if (tabs.length > 1) {
+      const remainingTabs = tabs.filter((tab) => tab.id !== activeTabId);
+      if (remainingTabs.length > 0) {
+        setSelectedTicketItemId(null);
+        setEditingTicketItemId(null);
+        setPendingPriceItem(null);
+        setTabs(renumberTicketTabs(remainingTabs));
+        setActiveTabId(remainingTabs[0].id);
+        setFeedback(null);
+        focusBarcodeInput();
+        return;
+      }
+    }
     clearCart();
-  }, [clearCart]);
+  }, [activeTabId, clearCart, focusBarcodeInput, tabs]);
 
   // Global Keyboard shortcuts & scanning lock trap
   useEffect(() => {
@@ -748,6 +944,12 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           e.preventDefault();
           e.stopPropagation();
           dismissWrongBarcode();
+          return;
+        }
+        if ((e.key === '+' || e.code === 'NumpadAdd') && onAddProduct) {
+          e.preventDefault();
+          e.stopPropagation();
+          addProductFromWrongBarcode();
           return;
         }
         e.preventDefault();
@@ -761,7 +963,32 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           setIsCancelConfirmationOpen(false);
         } else if (e.key === 'Enter') {
           e.preventDefault();
-          cancelCurrentTicket();
+          if (document.activeElement === cancelTicketButtonRef.current) {
+            cancelCurrentTicket();
+          } else {
+            setIsCancelConfirmationOpen(false);
+          }
+        } else if (
+          e.key === 'ArrowLeft' ||
+          e.key === 'ArrowRight' ||
+          e.key === 'ArrowUp' ||
+          e.key === 'ArrowDown'
+        ) {
+          e.preventDefault();
+          const buttons = [keepTicketButtonRef.current, cancelTicketButtonRef.current].filter(
+            (button): button is HTMLButtonElement => button !== null
+          );
+          const currentIndex = buttons.findIndex((button) => button === document.activeElement);
+          const moveForward =
+            e.key === 'ArrowDown' ||
+            (e.key === 'ArrowRight' && !isRtl) ||
+            (e.key === 'ArrowLeft' && isRtl);
+          const step = moveForward ? 1 : -1;
+          const nextIndex =
+            currentIndex < 0
+              ? (moveForward ? 0 : buttons.length - 1)
+              : (currentIndex + step + buttons.length) % buttons.length;
+          buttons[nextIndex]?.focus();
         }
         return;
       }
@@ -849,6 +1076,14 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     setTimeout(() => {
       focusBarcodeInput();
     }, 50);
+  };
+
+  const addProductFromWrongBarcode = () => {
+    if (!wrongBarcodeModal || !onAddProduct) return;
+    const barcode = wrongBarcodeModal.barcode;
+    setWrongBarcodeModal(null);
+    setBarcodeInput('');
+    onAddProduct(barcode);
   };
 
   const getOriginalBaseUnits = (productId: number) =>
@@ -980,6 +1215,15 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     setPendingPriceItem(null);
   };
 
+  const openProductEditor = (product: Product) => {
+    const preservePendingPriceItem =
+      pendingPriceItem !== null &&
+      getCartItemLineId(pendingPriceItem) === editingTicketItemId;
+    setEditingTicketItemId(null);
+    if (!preservePendingPriceItem) setPendingPriceItem(null);
+    onEditProduct?.(product);
+  };
+
   const saveTicketItemEdits = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const item = cart.find((cartItem) => getCartItemLineId(cartItem) === editingTicketItemId) ??
@@ -1102,7 +1346,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 
   // Multi-tab Management
   const handleNewTab = () => {
-    const nextNum = (tabs.length > 0 ? Math.max(...tabs.map((t) => t.tabNumber)) : 0) + 1;
+    const nextNum = tabs.length + 1;
     const newTabId = `tab-${Date.now()}`;
     const newTab: InvoiceTab = {
       id: newTabId,
@@ -1118,7 +1362,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       isHeld: false,
       createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
-    setTabs((prev) => [...prev, newTab]);
+    setTabs((prev) => renumberTicketTabs([...prev, newTab]));
     setActiveTabId(newTabId);
     setFeedback(null);
     focusBarcodeInput();
@@ -1134,7 +1378,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       prev.map((tab) => (tab.id === activeTabId ? { ...tab, isHeld: true } : tab))
     );
 
-    const nextNum = Math.max(...tabs.map((t) => t.tabNumber)) + 1;
+    const nextNum = tabs.length + 1;
     const newTabId = `tab-${Date.now()}`;
     const newTab: InvoiceTab = {
       id: newTabId,
@@ -1151,7 +1395,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
-    setTabs((prev) => [...prev, newTab]);
+    setTabs((prev) => renumberTicketTabs([...prev, newTab]));
     setActiveTabId(newTabId);
     setFeedback({
       type: 'info',
@@ -1189,7 +1433,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       return;
     }
 
-    const remaining = tabs.filter((t) => t.id !== tabId);
+    const remaining = renumberTicketTabs(tabs.filter((t) => t.id !== tabId));
     setTabs(remaining);
     if (activeTabId === tabId) {
       setActiveTabId(remaining[remaining.length - 1].id);
@@ -1262,16 +1506,21 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 
   // Catalog filtered products
   const catalogFilteredProducts = useMemo(() => {
+    const searchTokens = normalizeCatalogSearch(catalogSearch)
+      .split(/\s+/)
+      .filter(Boolean);
     const filtered = products.filter((p) => {
       if (catalogCategory !== 'All' && p.category !== catalogCategory) return false;
-      if (catalogSearch.trim() !== '') {
-        const q = catalogSearch.trim().toLowerCase();
-        return (
-          p.name.toLowerCase().includes(q) ||
-          (p.nameAr && p.nameAr.toLowerCase().includes(q)) ||
-          p.sku.toLowerCase().includes(q) ||
-          p.barcode.toLowerCase().includes(q)
-        );
+      if (searchTokens.length > 0) {
+        const searchableText = normalizeCatalogSearch([
+          p.name,
+          p.nameAr || '',
+          p.sku,
+          p.barcode,
+          ...(p.multiUnits || []).flatMap((unit) => [unit.name, unit.barcode]),
+          ...(p.additionalBarcodes || []).map((entry) => entry.barcode),
+        ].join(' '));
+        return searchTokens.every((token) => searchableText.includes(token));
       }
       return true;
     });
@@ -1294,6 +1543,14 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     const start = (catalogPage - 1) * CATALOG_PAGE_SIZE;
     return catalogFilteredProducts.slice(start, start + CATALOG_PAGE_SIZE);
   }, [catalogFilteredProducts, catalogPage]);
+  const highlightedCatalogId =
+    paginatedCatalogProducts.find((product) => product.id === highlightedCatalogProductId)?.id ??
+    paginatedCatalogProducts[0]?.id ??
+    null;
+
+  useEffect(() => {
+    setHighlightedCatalogProductId(paginatedCatalogProducts[0]?.id ?? null);
+  }, [catalogPage, catalogCategory, catalogSearch, catalogSort, paginatedCatalogProducts]);
 
   // Screen model check: POS (standard retail scanning) vs RPOS (restaurant touch catalogue)
   // Available product groups for restaurant catalogue
@@ -1479,7 +1736,6 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       setIsTenderModalOpen(true);
     } else {
       setMobileTab('checkout');
-      requestAnimationFrame(() => cashTenderedInputRef.current?.focus());
     }
   };
 
@@ -1505,7 +1761,6 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       (cashTendered.trim() === '' || cardTendered.trim() === '' || !splitAmountsMatchTotal)
     ) {
       setMobileTab('checkout');
-      requestAnimationFrame(() => cashTenderedInputRef.current?.focus());
       setFeedback({
         type: 'error',
         text: isRtl
@@ -1517,7 +1772,6 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 
     if (paymentMethod === 'Cash' && tenderedNum < total) {
       setMobileTab('checkout');
-      requestAnimationFrame(() => cashTenderedInputRef.current?.focus());
       playErrorBeep();
       setFeedback({
         type: 'error',
@@ -1591,7 +1845,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 
       if (tabs.length > 1) {
         const remaining = tabs.filter((t) => t.id !== activeTabId);
-        const nextNum = Math.max(...tabs.map((tab) => tab.tabNumber)) + 1;
+        const nextNum = remaining.length + 1;
         const newTabId = `tab-${Date.now()}`;
         const newTab: InvoiceTab = {
           id: newTabId,
@@ -1607,7 +1861,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           isHeld: false,
           createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         };
-        setTabs([...remaining, newTab]);
+        setTabs(renumberTicketTabs([...remaining, newTab]));
         setActiveTabId(newTabId);
       } else {
         clearCart();
@@ -1651,32 +1905,33 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     focusBarcodeInput();
   };
 
-  const resizeRposTicket = (clientX: number, container: HTMLElement) => {
-    const bounds = container.getBoundingClientRect();
-    const maxWidth = Math.max(150, Math.min(800, bounds.width - 120));
-    const nextWidth = Math.min(maxWidth, Math.max(150, bounds.right - clientX));
-    setRposTicketWidth(nextWidth);
+  const resizeRposTicket = (clientX: number) => {
+    const viewportWidth = document.documentElement.clientWidth;
+    const maxWidth = Math.max(150, Math.min(800, viewportWidth - 120));
+    const nextWidth = Math.min(
+      maxWidth,
+      Math.max(150, viewportWidth - clientX - RPOS_RESIZE_HANDLE_WIDTH / 2)
+    );
+    onRposTicketWidthChange(nextWidth);
   };
 
   const handleRposResizePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
-    if (e.currentTarget.parentElement) {
-      resizeRposTicket(e.clientX, e.currentTarget.parentElement);
-    }
+    resizeRposTicket(e.clientX);
   };
 
   const handleRposResizePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!e.currentTarget.hasPointerCapture(e.pointerId) || !e.currentTarget.parentElement) return;
-    resizeRposTicket(e.clientX, e.currentTarget.parentElement);
+    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+    resizeRposTicket(e.clientX);
   };
 
   const handleRposResizeKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     e.preventDefault();
     const delta = e.key === 'ArrowLeft' ? 16 : -16;
-    setRposTicketWidth((width) => Math.min(800, Math.max(150, width + delta)));
+    onRposTicketWidthChange(Math.min(800, Math.max(150, rposTicketWidth + delta)));
   };
 
   const editingCartItem = cart.find(
@@ -1839,13 +2094,15 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       )}
 
       {/* 2. MAIN LAYOUT: SCANNED TABLE (TAKES MOST SPACE) + DOCKED CHECKOUT PANEL */}
-      <div className={`flex-1 flex min-h-0 overflow-hidden ${isRpos ? 'flex-row' : 'flex-col min-[900px]:flex-row'}`}>
+      <div className={`flex-1 flex min-h-0 overflow-hidden ${
+        isRpos ? (isRtl ? 'flex-row-reverse' : 'flex-row') : 'flex-col min-[900px]:flex-row'
+      }`}>
         {/* ======================================================== */}
         {/* LEFT / CENTER: EITHER RPOS (RESTAURANT) OR POS (RETAIL)   */}
         {/* ======================================================== */}
         {isRpos ? (
           <main
-            className={`order-1 flex-1 flex flex-col min-h-0 min-w-0 bg-slate-50 border-r border-slate-200 overflow-hidden ${
+            className={`order-1 flex-1 flex flex-col min-h-0 min-w-0 border-r border-slate-200 bg-slate-50 overflow-hidden ${
               mobileTab === 'table' ? 'flex' : 'hidden lg:flex'
             }`}
           >
@@ -1949,7 +2206,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                               : 'border-slate-200 hover:-translate-y-0.5 hover:border-blue-400 hover:shadow-lg'
                           }`}
                         >
-                          <div className="relative mb-1.5 flex aspect-square w-full items-center justify-center overflow-hidden rounded-xl border border-slate-100 bg-gradient-to-br from-slate-50 via-white to-blue-50">
+                          <div className="product-image-surface relative mb-1.5 flex aspect-square w-full items-center justify-center overflow-hidden rounded-xl border border-slate-100 bg-white">
                             {imageData ? (
                               <img
                                 src={imageData}
@@ -2036,7 +2293,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                             : 'border-slate-200 hover:-translate-y-0.5 hover:border-blue-400 hover:shadow-lg'
                         }`}
                       >
-                        <div className="relative mb-1.5 flex aspect-square w-full items-center justify-center overflow-hidden rounded-xl border border-slate-100 bg-gradient-to-br from-slate-50 via-white to-blue-50">
+                        <div className="product-image-surface relative mb-1.5 flex aspect-square w-full items-center justify-center overflow-hidden rounded-xl border border-slate-100 bg-white">
                           {!prod.imagePath && !prod.imageData && (
                             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-slate-300">
                               <PackageCheck className="h-10 w-10" />
@@ -2149,42 +2406,54 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           </main>
         ) : (
           <main
-            className={`flex-1 flex flex-col min-h-0 min-w-0 bg-white border-r border-slate-200 overflow-hidden ${
+            className={`flex-1 flex flex-col min-h-0 min-w-0 bg-white ${
+              isRtl ? 'border-l' : 'border-r'
+            } border-slate-200 overflow-hidden ${
               mobileTab === 'table' ? 'flex' : 'hidden min-[900px]:flex'
             }`}
           >
           {/* BARCODE SCANNING & QUICK ACTION BAR */}
           <div className="p-2 sm:p-3 bg-slate-50 border-b border-slate-200 space-y-1.5 shrink-0">
             <form onSubmit={handleBarcodeSubmit} className="flex flex-col gap-1.5">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-              <div className="relative min-w-0">
-                <Barcode className={`w-4 h-4 text-blue-700 absolute ${isRtl ? 'right-3' : 'left-3'} top-1/2 -translate-y-1/2 pointer-events-none`} />
-                <input
-                  ref={barcodeInputRef}
-                  id="pos-barcode-scanner-input"
-                  disabled={Boolean(wrongBarcodeModal)}
-                  autoFocus
-                  type="text"
-                  value={barcodeInput}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      handleBarcodeSubmit(e);
-                    }
-                  }}
-                  onChange={(e) => setBarcodeInput(e.target.value)}
-                  placeholder={t.scanOrSearch}
-                  className={`w-full ${isRtl ? 'pr-9 pl-3' : 'pl-9 pr-3'} py-1.5 text-xs sm:text-sm bg-white border-2 border-slate-300 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 rounded-lg text-slate-900 placeholder:text-slate-400 font-mono transition-all disabled:bg-slate-100 disabled:opacity-50`}
-                />
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsCatalogOpen(true)}
-                className="inline-flex min-w-0 items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:border-blue-500 hover:bg-blue-50 hover:text-blue-700"
-              >
-                <LayoutGrid className="h-4 w-4" />
-                {isRtl ? 'الكتالوج' : 'Catalogue'}
-              </button>
+              <div className="flex flex-col gap-1.5 sm:flex-row">
+                <div className="relative min-w-0 flex-1">
+                  <input
+                    ref={barcodeInputRef}
+                    id="pos-barcode-scanner-input"
+                    disabled={Boolean(wrongBarcodeModal)}
+                    type="text"
+                    value={barcodeInput}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleBarcodeSubmit(e);
+                      }
+                    }}
+                    onChange={(e) => setBarcodeInput(e.target.value)}
+                    placeholder={t.scanOrSearch}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 font-mono text-xs text-slate-900 placeholder:text-slate-400 transition-colors focus:outline-none disabled:bg-slate-100 disabled:opacity-50 sm:text-sm"
+                  />
+                </div>
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setIsCatalogOpen(true)}
+                    className="inline-flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:border-blue-500 hover:bg-blue-50 hover:text-blue-700 sm:flex-none"
+                  >
+                    <LayoutGrid className="h-4 w-4" />
+                    {isRtl ? 'الكتالوج' : 'Catalogue'}
+                  </button>
+                  {onOpenSalesHistory && (
+                    <button
+                      type="button"
+                      onClick={onOpenSalesHistory}
+                      className="inline-flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:border-blue-500 hover:bg-blue-50 hover:text-blue-700 sm:flex-none"
+                    >
+                      <HistoryIcon className="h-4 w-4" />
+                      {isRtl ? 'سجل المبيعات' : 'Sales History'}
+                    </button>
+                  )}
+                </div>
               </div>
 
             </form>
@@ -2194,19 +2463,20 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           {/* THE ENTERPRISE SCANNED PRODUCTS TABLE */}
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             {cart.length === 0 ? (
-              <div className="h-full min-h-[360px] flex flex-col items-center justify-center p-8 text-center bg-slate-50/50">
-                <div className="w-20 h-20 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 mb-4 shadow-xs">
-                  <Barcode className="w-10 h-10" />
+              <div className="pos-welcome-screen flex h-full min-h-[360px] items-center justify-center p-6 text-center">
+                <div>
+                  <div className="text-xl font-bold text-white">
+                    {settings.storeName}
+                  </div>
+                  {settings.storeNameAr && (
+                    <div className="mt-1 font-arabic text-lg font-semibold text-white/75" dir="rtl">
+                      {settings.storeNameAr}
+                    </div>
+                  )}
                 </div>
-                <h3 className="text-base font-bold text-slate-900">
-                  Ready to Scan / بانتظار مسح الباركود
-                </h3>
-                <p className="text-xs text-slate-500 mt-1.5 max-w-md leading-relaxed">
-                  Scan a barcode using the scanner gun to add items directly to this invoice. If a product has no barcode, click <strong>Browse Catalog (F4)</strong> to pick it manually.
-                </p>
               </div>
             ) : (
-              <div className="space-y-2 bg-slate-50 p-3 sm:p-4">
+              <div className="space-y-2 bg-white p-3 sm:p-4">
                 {cart.map((item) => {
                   const lineSubtotal = item.product.retailPrice * item.quantity;
                   const taxRate = item.product.taxRate ?? 0;
@@ -2234,7 +2504,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                       className={`grid cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-xl border p-2.5 transition-colors ${
                         selectedTicketItemId === lineId
                           ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-200'
-                          : 'border-slate-200 bg-slate-50 hover:bg-blue-50/40'
+                          : 'border-slate-200 bg-white hover:bg-blue-50/40'
                       }`}
                     >
                       <div className="col-span-2 flex min-w-0 items-center gap-2">
@@ -2338,12 +2608,19 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           </div>
         )}
         <aside
+          data-pos-checkout-panel
           style={isRpos ? { width: `min(${rposTicketWidth}px, calc(100vw - 120px))` } : undefined}
-          className={`${isRpos ? 'order-3' : 'order-2'} z-0 shrink-0 ${
+          className={`${isRpos ? 'fixed inset-y-0 right-0 z-30' : 'order-2 z-0 h-full'} shrink-0 ${
             isRpos
               ? 'min-w-[150px] max-w-[800px]'
-              : 'w-full min-[900px]:fixed min-[900px]:inset-y-0 min-[900px]:right-0 min-[900px]:z-30 min-[900px]:w-1/3 min-[900px]:h-[100dvh]'
-          } bg-white flex flex-col min-h-0 border-l border-slate-200 ${
+              : `w-full min-[900px]:fixed min-[900px]:inset-y-0 ${
+                  isRtl
+                    ? 'min-[900px]:left-0 min-[900px]:right-auto'
+                    : 'min-[900px]:right-0 min-[900px]:left-auto'
+                } min-[900px]:z-30 min-[900px]:w-1/3 min-[900px]:h-[100dvh]`
+          } bg-white flex flex-col min-h-0 ${
+            isRpos || !isRtl ? 'border-l border-r-0' : 'border-r border-l-0'
+          } border-slate-200 ${
             isRpos ? 'xl:flex-none' : 'lg:flex-none'
           } ${
             isRpos ? 'flex' : mobileTab === 'checkout' ? 'flex flex-1 min-[900px]:flex-none' : 'hidden min-[900px]:flex'
@@ -2361,21 +2638,6 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                 </p>
               )}
             </div>
-            {isRpos && (
-              <div className="ml-2 flex shrink-0 items-center gap-1.5">
-                <button
-                  type="button"
-                  disabled={isSubmitting || cart.length === 0}
-                  onClick={handleOpenSettlement}
-                  aria-label={isRtl ? 'إتمام التذكرة' : 'Complete ticket'}
-                  title={isRtl ? 'إتمام التذكرة' : 'Complete ticket'}
-                  className="flex h-10 w-24 shrink-0 flex-col items-center justify-center gap-0.5 rounded-lg bg-emerald-500 text-[10px] font-bold leading-tight text-white shadow-sm transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300"
-                >
-                  <CheckCircle2 className="h-4 w-4" />
-                  <span>{isRtl ? 'إتمام' : 'Complete'}</span>
-                </button>
-              </div>
-            )}
           </div>
 
           <div className="flex-1 min-h-0 flex flex-col overflow-y-auto px-3 pt-3 pb-3 space-y-3">
@@ -2429,7 +2691,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                           className={`grid cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-xl border p-2.5 transition-colors ${
                             selectedTicketItemId === lineId
                               ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-200'
-                              : 'border-slate-200 bg-slate-50 hover:bg-blue-50/40'
+                              : 'border-slate-200 bg-white hover:bg-blue-50/40'
                           }`}
                         >
                           <div className="col-span-2 flex min-w-0 items-center gap-2">
@@ -2738,26 +3000,6 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   </section>
                 )}
 
-                <section className="space-y-1.5 border-t border-slate-200 pt-3 text-xs">
-                  <div className="flex justify-between text-slate-600">
-                    <span>{isRtl ? 'المجموع الفرعي' : 'Subtotal'}</span>
-                    <span className="font-mono">{c} {subtotal.toFixed(settings.decimalPoints ?? 2)}</span>
-                  </div>
-                  {discountAmount > 0 && (
-                    <div className="flex justify-between text-red-700">
-                      <span>{isRtl ? 'الخصم' : 'Discount'}</span>
-                      <span className="font-mono">−{c} {discountAmount.toFixed(2)}</span>
-                    </div>
-                  )}
-                  <div className="flex justify-between text-slate-600">
-                    <span>{isRtl ? 'ضريبة القيمة المضافة' : 'VAT'}</span>
-                    <span className="font-mono">{c} {taxAmount.toFixed(2)}</span>
-                  </div>
-                  <div className="flex items-baseline justify-between border-t border-blue-200 pt-2">
-                    <span className="font-bold text-slate-900">{isRtl ? 'الإجمالي المستحق' : 'Amount Due'}</span>
-                    <strong className="font-mono text-xl font-black text-blue-800">{c} {total.toFixed(2)}</strong>
-                  </div>
-                </section>
               </div>
             )}
 
@@ -2765,11 +3007,31 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 
           {!isRpos && (
             <footer className="shrink-0 border-t border-slate-200 bg-white p-4">
+              <section className="mb-3 space-y-1.5 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
+                <div className="flex justify-between text-slate-600">
+                  <span>{isRtl ? 'المجموع الفرعي' : 'Subtotal'}</span>
+                  <span className="font-mono">{c} {subtotal.toFixed(settings.decimalPoints ?? 2)}</span>
+                </div>
+                {discountAmount > 0 && (
+                  <div className="flex justify-between text-red-700">
+                    <span>{isRtl ? 'الخصم' : 'Discount'}</span>
+                    <span className="font-mono">−{c} {discountAmount.toFixed(2)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between text-slate-600">
+                  <span>{isRtl ? 'ضريبة القيمة المضافة' : 'VAT'}</span>
+                  <span className="font-mono">{c} {taxAmount.toFixed(2)}</span>
+                </div>
+                <div className="flex items-baseline justify-between border-t border-blue-200 pt-2">
+                  <span className="font-bold text-slate-900">{isRtl ? 'الإجمالي المستحق' : 'Amount Due'}</span>
+                  <strong className="checkout-total-value font-mono text-xl font-black text-blue-800">{c} {total.toFixed(2)}</strong>
+                </div>
+              </section>
               <div className="grid grid-cols-2 gap-3">
                 <button
                   type="button"
                   onClick={confirmCancelCart}
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || cart.length === 0}
                   className="flex h-14 items-center justify-center gap-2 rounded-lg border border-red-700 bg-red-700 px-4 text-sm font-bold text-white transition-colors hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {isRtl ? 'إلغاء' : 'Cancel'}
@@ -2809,8 +3071,28 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                 </div>
                 <div className="flex items-baseline justify-between border-t border-slate-200 pt-2">
                   <span className="font-bold text-slate-900">{isRtl ? 'الإجمالي' : 'Total'}</span>
-                  <strong className="font-mono text-xl font-black text-red-600">{c} {total.toFixed(2)}</strong>
+                  <strong className="checkout-total-value font-mono text-xl font-black text-red-600">{c} {total.toFixed(2)}</strong>
                 </div>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={confirmCancelCart}
+                  disabled={isSubmitting || cart.length === 0}
+                  className="flex h-16 min-w-0 items-center justify-center gap-2 rounded-lg border border-red-700 bg-red-700 px-2 text-sm font-bold text-white transition-colors hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <X className="h-5 w-5 shrink-0" />
+                  <span>{isRtl ? 'إلغاء' : 'Cancel'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOpenSettlement}
+                  disabled={isSubmitting || cart.length === 0}
+                  className="flex h-16 min-w-0 items-center justify-center gap-2 rounded-lg bg-emerald-700 px-2 text-sm font-bold text-white transition-colors hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                >
+                  <CheckCircle2 className="h-5 w-5 shrink-0" />
+                  <span>{isRtl ? 'إتمام' : 'Complete'}</span>
+                </button>
               </div>
             </div>
           )}
@@ -2876,7 +3158,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             <footer className="flex justify-end gap-2 border-t border-slate-200 bg-white px-5 py-3">
               <button
                 type="button"
-                autoFocus
+                ref={keepTicketButtonRef}
                 onClick={() => setIsCancelConfirmationOpen(false)}
                 className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
               >
@@ -2884,6 +3166,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
               </button>
               <button
                 type="button"
+                ref={cancelTicketButtonRef}
                 onClick={cancelCurrentTicket}
                 className="rounded-lg bg-red-700 px-4 py-2 text-xs font-bold text-white hover:bg-red-800"
               >
@@ -2985,14 +3268,26 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
               <h2 id="edit-ticket-item-title" className="text-sm font-bold text-slate-900">
                 {isRtl ? 'تعديل الصنف' : 'Edit ticket item'}
               </h2>
-              <button
-                type="button"
-                onClick={closeTicketItemEditor}
-                className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-                aria-label={isRtl ? 'إغلاق' : 'Close'}
-              >
-                <X className="h-4 w-4" />
-              </button>
+              <div className="flex items-center gap-1">
+                {editingCartItem && onEditProduct && (
+                  <button
+                    type="button"
+                    onClick={() => openProductEditor(editingCartItem.product)}
+                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+                  >
+                    <Edit2 className="h-3.5 w-3.5" />
+                    {isRtl ? 'تعديل المنتج' : 'Edit Product'}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={closeTicketItemEditor}
+                  className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                  aria-label={isRtl ? 'إغلاق' : 'Close'}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
             </div>
             {(editingCartItem?.product.multiUnits?.length || 0) > 0 && (
               <label className="mt-3 block text-xs font-semibold text-slate-600">
@@ -3136,22 +3431,22 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
               }
             }}
           >
-            <header className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-slate-50 px-5 py-4">
-              <div>
-                <h2 id="tender-modal-title" className="text-base font-bold text-slate-900">
+            <header className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-3 py-2 sm:px-4">
+              <div className="flex min-w-0 items-center gap-2">
+                <h2 id="tender-modal-title" className="shrink-0 text-sm font-bold text-slate-900">
                   {isRtl ? 'تسوية الدفع' : 'Settle Tender'}
                 </h2>
-                <p className="mt-1 text-xs text-slate-500">
+                <p className="min-w-0 truncate text-xs text-slate-500">
                   {activeTab.label} · {cart.length} {isRtl ? 'أصناف' : 'lines'}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setIsTenderModalOpen(false)}
-                className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-900"
+                className="shrink-0 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-900"
                 aria-label={isRtl ? 'إغلاق نافذة الدفع' : 'Close tender window'}
               >
-                <X className="h-5 w-5" />
+                <X className="h-4 w-4" />
               </button>
             </header>
 
@@ -3161,113 +3456,115 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   {feedback.text}
                 </div>
               )}
-              <div>
-                <label className="mb-1 block text-xs font-semibold text-slate-700">
-                  {isRtl ? 'العميل' : 'Customer'}
-                </label>
-                <div className="relative" data-customer-picker>
-                  <input
-                    type="text"
-                    role="combobox"
-                    aria-autocomplete="list"
-                    aria-expanded={isCustomerPickerOpen}
-                    aria-controls="customer-options"
-                    value={isCustomerPickerOpen ? customerSearch : customerName}
-                    onFocus={() => {
-                      setCustomerSearch('');
-                      setIsCustomerPickerOpen(true);
-                    }}
-                    onClick={() => {
-                      if (!isCustomerPickerOpen) {
+              <div className="grid grid-cols-2 gap-3">
+                <div className="min-w-0">
+                  <label className="mb-1 block text-xs font-semibold text-slate-700">
+                    {isRtl ? 'العميل' : 'Customer'}
+                  </label>
+                  <div className="relative" data-customer-picker>
+                    <input
+                      type="text"
+                      role="combobox"
+                      aria-autocomplete="list"
+                      aria-expanded={isCustomerPickerOpen}
+                      aria-controls="customer-options"
+                      value={isCustomerPickerOpen ? customerSearch : customerName}
+                      onFocus={() => {
                         setCustomerSearch('');
                         setIsCustomerPickerOpen(true);
-                      }
-                    }}
-                    onChange={(event) => {
-                      setCustomerSearch(event.target.value);
-                      setIsCustomerPickerOpen(true);
-                    }}
-                    placeholder={isRtl ? 'ابحث عن عميل بالاسم أو الهاتف' : 'Click to search customers by name or phone'}
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-100"
-                  />
-                  {isCustomerPickerOpen && (
-                    <div
-                      id="customer-options"
-                      role="listbox"
-                      className="absolute z-30 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white p-1 shadow-xl"
-                    >
-                      {showDefaultCustomerOption && (
-                        <button
-                          type="button"
-                          role="option"
-                          aria-selected={customerName === defaultCustomerName}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => {
-                            setCustomerName(defaultCustomerName);
-                            setCustomerSearch('');
-                            setIsCustomerPickerOpen(false);
-                          }}
-                          className="w-full rounded-md px-3 py-2 text-left text-sm text-slate-800 hover:bg-blue-50"
-                        >
-                          {defaultCustomerName}
-                        </button>
-                      )}
-                      {matchingCustomers.map((cust) => (
-                        <button
-                          key={cust.id}
-                          type="button"
-                          role="option"
-                          aria-selected={customerName === cust.name}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => {
-                            setCustomerName(cust.name);
-                            setCustomerSearch('');
-                            setIsCustomerPickerOpen(false);
-                          }}
-                          className="flex w-full flex-col items-start rounded-md px-3 py-2 text-left text-sm text-slate-800 hover:bg-blue-50"
-                        >
-                          <span>{cust.name}</span>
-                          {(cust.nameAr || cust.phone) && (
-                            <span className="text-xs text-slate-500">
-                              {[cust.nameAr, cust.phone].filter(Boolean).join(' · ')}
-                            </span>
-                          )}
-                        </button>
-                      ))}
-                      {matchingCustomers.length === 0 && !showDefaultCustomerOption && (
-                        <p className="px-3 py-2 text-sm text-slate-500">
-                          {isRtl ? 'لا يوجد عملاء مطابقون' : 'No matching customers'}
-                        </p>
-                      )}
-                    </div>
-                  )}
+                      }}
+                      onClick={() => {
+                        if (!isCustomerPickerOpen) {
+                          setCustomerSearch('');
+                          setIsCustomerPickerOpen(true);
+                        }
+                      }}
+                      onChange={(event) => {
+                        setCustomerSearch(event.target.value);
+                        setIsCustomerPickerOpen(true);
+                      }}
+                      placeholder={isRtl ? 'بحث عن عميل' : 'Search customers'}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-2 py-2.5 text-xs text-slate-900 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                    />
+                    {isCustomerPickerOpen && (
+                      <div
+                        id="customer-options"
+                        role="listbox"
+                        className="absolute z-30 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white p-1 shadow-xl"
+                      >
+                        {showDefaultCustomerOption && (
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={customerName === defaultCustomerName}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => {
+                              setCustomerName(defaultCustomerName);
+                              setCustomerSearch('');
+                              setIsCustomerPickerOpen(false);
+                            }}
+                            className="w-full rounded-md px-3 py-2 text-left text-sm text-slate-800 hover:bg-blue-50"
+                          >
+                            {defaultCustomerName}
+                          </button>
+                        )}
+                        {matchingCustomers.map((cust) => (
+                          <button
+                            key={cust.id}
+                            type="button"
+                            role="option"
+                            aria-selected={customerName === cust.name}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => {
+                              setCustomerName(cust.name);
+                              setCustomerSearch('');
+                              setIsCustomerPickerOpen(false);
+                            }}
+                            className="flex w-full flex-col items-start rounded-md px-3 py-2 text-left text-sm text-slate-800 hover:bg-blue-50"
+                          >
+                            <span>{cust.name}</span>
+                            {(cust.nameAr || cust.phone) && (
+                              <span className="text-xs text-slate-500">
+                                {[cust.nameAr, cust.phone].filter(Boolean).join(' · ')}
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                        {matchingCustomers.length === 0 && !showDefaultCustomerOption && (
+                          <p className="px-3 py-2 text-sm text-slate-500">
+                            {isRtl ? 'لا يوجد عملاء مطابقون' : 'No matching customers'}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
 
-              <div>
-                <label className="mb-1 block text-xs font-semibold text-slate-700">
-                  {isRtl ? 'خصم الفاتورة' : 'Invoice Discount'}
-                </label>
-                <div className="flex">
-                  <input
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    value={discountValue}
-                    onFocus={(event) => event.currentTarget.select()}
-                    onClick={(event) => event.currentTarget.select()}
-                    onChange={(e) => setDiscountValue(e.target.value)}
-                    placeholder="0.00"
-                    className={`w-full border border-slate-300 bg-white px-3 py-2.5 text-sm font-mono text-slate-900 tabular-nums focus:border-blue-700 focus:outline-none ${isRtl ? 'rounded-r-lg border-l-0' : 'rounded-l-lg border-r-0'}`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setDiscountType((prev) => (prev === 'fixed' ? 'percent' : 'fixed'))}
-                    className={`border border-slate-300 bg-slate-100 px-4 py-2.5 text-sm font-mono font-bold text-slate-700 hover:bg-slate-200 ${isRtl ? 'rounded-l-lg border-r-0' : 'rounded-r-lg border-l-0'}`}
-                    title="Toggle currency or percentage discount"
-                  >
-                    {discountType === 'fixed' ? c : '%'}
-                  </button>
+                <div className="min-w-0">
+                  <label className="mb-1 block text-xs font-semibold text-slate-700">
+                    {isRtl ? 'خصم الفاتورة' : 'Invoice Discount'}
+                  </label>
+                  <div className="flex">
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={discountValue}
+                      onFocus={(event) => event.currentTarget.select()}
+                      onClick={(event) => event.currentTarget.select()}
+                      onChange={(e) => setDiscountValue(e.target.value)}
+                      placeholder="0.00"
+                      className={`w-full min-w-0 border border-slate-300 bg-white px-2 py-2.5 text-xs font-mono text-slate-900 tabular-nums focus:border-blue-700 focus:outline-none ${isRtl ? 'rounded-r-lg border-l-0' : 'rounded-l-lg border-r-0'}`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setDiscountType((prev) => (prev === 'fixed' ? 'percent' : 'fixed'))}
+                      className={`shrink-0 border border-slate-300 bg-slate-100 px-3 py-2.5 text-xs font-mono font-bold text-slate-700 hover:bg-slate-200 ${isRtl ? 'rounded-l-lg border-r-0' : 'rounded-r-lg border-l-0'}`}
+                      title="Toggle currency or percentage discount"
+                    >
+                      {discountType === 'fixed' ? c : '%'}
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -3313,7 +3610,6 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                       onChange={(e) => setCashTendered(e.target.value, true)}
                       placeholder={total.toFixed(2)}
                       className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-right text-base font-mono font-bold text-slate-900 tabular-nums focus:border-blue-700 focus:outline-none"
-                      autoFocus
                     />
                   </div>
                   <div className="grid grid-cols-5 gap-1.5">
@@ -3346,9 +3642,9 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
               )}
 
               {paymentMethod === 'Split' && (
-                <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <div className="grid grid-cols-2 gap-3">
-                    <label className="text-xs font-semibold text-slate-700">
+                <section className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="text-[11px] font-semibold text-slate-700">
                       {isRtl ? 'المبلغ النقدي' : 'Cash Amount'}
                       <input
                         type="number"
@@ -3359,10 +3655,10 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                         onClick={(event) => event.currentTarget.select()}
                         onChange={(event) => setCashTendered(event.target.value, true)}
                         placeholder="0.00"
-                        className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-right text-sm font-mono font-bold text-slate-900 tabular-nums focus:border-blue-700 focus:outline-none"
+                        className="mt-1 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 py-2 text-right text-sm font-mono font-bold text-slate-900 tabular-nums focus:border-blue-700 focus:outline-none"
                       />
                     </label>
-                    <label className="text-xs font-semibold text-slate-700">
+                    <label className="text-[11px] font-semibold text-slate-700">
                       {isRtl ? 'مبلغ البطاقة' : 'Card Amount'}
                       <input
                         type="number"
@@ -3373,21 +3669,21 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                         onClick={(event) => event.currentTarget.select()}
                         onChange={(event) => setCardTendered(event.target.value)}
                         placeholder="0.00"
-                        className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-right text-sm font-mono font-bold text-slate-900 tabular-nums focus:border-blue-700 focus:outline-none"
+                        className="mt-1 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 py-2 text-right text-sm font-mono font-bold text-slate-900 tabular-nums focus:border-blue-700 focus:outline-none"
                       />
                     </label>
                   </div>
-                  <div className="flex items-center justify-between border-t border-slate-200 pt-2 text-sm">
+                  <div className="flex items-center justify-between border-t border-slate-200 pt-2 text-xs">
                     <span className="font-medium text-slate-600">
                       {isRtl ? 'المتبقي' : 'Remaining'}
                     </span>
                     <strong className={`font-mono ${splitAmountsMatchTotal ? 'text-emerald-700' : 'text-red-600'}`}>
                       {splitAmountsMatchTotal
                         ? (isRtl ? 'مكتمل' : 'Balanced')
-                        : `${c} ${Math.abs(total - tenderedNum).toFixed(2)} ${tenderedNum > total ? (isRtl ? 'زيادة' : 'over') : ''}`}
+                        : `${c} ${Math.abs(total - tenderedNum).toFixed(2)}`}
                     </strong>
                   </div>
-                </div>
+                </section>
               )}
 
               <div className="space-y-2 rounded-xl border border-blue-100 bg-blue-50/60 p-4">
@@ -3493,77 +3789,42 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           aria-modal="true"
           aria-labelledby="wrong-barcode-title"
         >
-          <div className="bg-white border-2 border-red-500 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-150">
-            {/* Header Alert Banner with Close Icon */}
-            <div className="bg-red-600 text-white px-5 py-4 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center shrink-0">
-                  <AlertTriangle className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <h3 id="wrong-barcode-title" className="text-base font-bold">
-                    {isRtl ? 'الصنف غير متوفر' : 'Product Not Available'}
-                  </h3>
-                  <p className="text-xs text-red-100 mt-0.5">
-                    {isRtl ? 'رمز الباركود غير مسجل في المخزون' : 'Barcode Not Found in System Inventory'}
-                  </p>
-                </div>
-              </div>
-
-              {/* Close Icon Button */}
-              <button
-                type="button"
-                onClick={dismissWrongBarcode}
-                className="p-1.5 text-white/80 hover:text-white hover:bg-white/20 rounded-lg transition-colors cursor-pointer"
-                title="Close dialogue"
-                aria-label="Close dialogue"
-              >
-                <X className="w-6 h-6" />
-              </button>
+          <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+            <div className="flex items-center gap-2.5 bg-red-600 px-4 py-3 text-white">
+              <AlertTriangle className="h-5 w-5 shrink-0" />
+              <h3 id="wrong-barcode-title" className="text-sm font-bold">
+                {isRtl ? 'الصنف غير متوفر' : 'Product Not Available'}
+              </h3>
             </div>
-
-            {/* Body */}
-            <div className="p-6 space-y-4">
-              <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-center space-y-1">
-                <div className="text-xs font-semibold text-red-700 uppercase tracking-wider">
-                  {isRtl ? 'الرمز الممسوح' : 'Scanned Barcode'}
+            <div className="space-y-3 p-4">
+              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-center">
+                <div className="text-[10px] font-semibold text-red-700">
+                  {isRtl ? 'الباركود' : 'Barcode'}
                 </div>
-                <div className="font-mono text-lg font-bold text-red-950 tracking-wider">
+                <div className="font-mono text-base font-bold text-red-950">
                   {wrongBarcodeModal.barcode}
                 </div>
               </div>
-
-              <div className="text-xs text-slate-700 space-y-2 leading-relaxed">
-                {isRtl ? (
-                  <p className="font-medium text-slate-800" dir="rtl">
-                    رمز الباركود المدخل غير مسجل في المخزون أو غير متوفر حالياً. يرجى التحقق من صحة الرقم أو إضافة الصنف إلى قاعدة البيانات أولاً.
-                  </p>
-                ) : (
-                  <p className="font-medium">
-                    The scanned product code is not registered in the system inventory. Please check the barcode or register it in Inventory first.
-                  </p>
+              <div className="flex justify-end gap-2">
+                {onAddProduct && (
+                  <button
+                    type="button"
+                    onClick={addProductFromWrongBarcode}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-800"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    {isRtl ? 'إضافة منتج' : 'Add Product'}
+                  </button>
                 )}
-                <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-[11px] font-semibold flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping shrink-0" />
-                  <span>
-                    {isRtl ? 'الماسح معلق مؤقتاً. اضغط زر الإغلاق أو مفتاح الهروب (Esc) للمتابعة.' : 'Scanner is locked. Click close or press Escape (Esc) to resume.'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Action Close Button */}
-              <div className="pt-2">
                 <button
                   type="button"
                   onClick={dismissWrongBarcode}
-                  className="w-full py-3 px-4 rounded-xl font-bold text-sm text-white bg-red-600 hover:bg-red-700 active:bg-red-800 transition-colors shadow-md flex items-center justify-center gap-2 cursor-pointer"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 transition-colors hover:bg-red-50"
+                  aria-label={isRtl ? 'إغلاق' : 'Close'}
                 >
-                  <X className="w-4 h-4" />
-                  <span>{isRtl ? 'إغلاق النافذة (Esc)' : 'Close Dialog (Esc)'}</span>
+                  <X className="h-3.5 w-3.5" />
+                  {isRtl ? 'إغلاق' : 'Close'}
                 </button>
-                <p className="text-[11px] text-center text-slate-400 mt-2 font-medium">
-                  {isRtl ? 'ملاحظة: يمكنك الضغط على مفتاح الهروب (Esc) في لوحة المفاتيح لإغلاق التنبيه مباشرة.' : 'Note: Press Escape (Esc) on your keyboard anytime to close this alert.'}
-                </p>
               </div>
             </div>
           </div>
@@ -3616,16 +3877,45 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                 <Search className={`w-4 h-4 text-slate-400 absolute ${isRtl ? 'right-3.5' : 'left-3.5'} top-1/2 -translate-y-1/2`} />
                 <input
                   type="text"
-                  autoFocus
+                  ref={catalogSearchInputRef}
                   value={catalogSearch}
                   onChange={(e) => setCatalogSearch(e.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        const selected = paginatedCatalogProducts.find(
+                          (product) => product.id === highlightedCatalogProductId
+                        ) || paginatedCatalogProducts[0];
+                        if (selected && (settings.allowNegativeStock || selected.stock > 0)) {
+                          addToCart(selected);
+                        }
+                      }
+                      return;
+                    }
+
+                    if (paginatedCatalogProducts.length === 0) return;
+                    event.preventDefault();
+                    const selectedIndex = paginatedCatalogProducts.findIndex(
+                      (product) => product.id === highlightedCatalogProductId
+                    );
+                    const nextIndex = Math.max(
+                      0,
+                      Math.min(
+                        paginatedCatalogProducts.length - 1,
+                        (selectedIndex < 0 ? 0 : selectedIndex) + (event.key === 'ArrowDown' ? 1 : -1)
+                      )
+                    );
+                    setHighlightedCatalogProductId(paginatedCatalogProducts[nextIndex].id);
+                  }}
                   placeholder={isRtl ? 'البحث بالاسم العربي أو الإنجليزي، الرمز أو الباركود...' : 'Search products by English or Arabic name, SKU, or Barcode...'}
                   className={`w-full ${isRtl ? 'pr-10 pl-4' : 'pl-10 pr-4'} py-2.5 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:bg-white focus:border-blue-700`}
                 />
               </div>
 
-              <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-                {catalogCategoryFilters.map((cat) => {
+              <div className="flex items-center gap-2">
+                <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pb-1">
+                  {catalogCategoryFilters.map((cat) => {
                   const active = catalogCategory === cat;
                   const catLabel =
                     cat === 'All'
@@ -3642,25 +3932,48 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                       ? (isRtl ? 'قرطاسية' : cat)
                       : cat;
 
-                  return (
-                    <button
-                      key={cat}
-                      type="button"
-                      onClick={() => setCatalogCategory(cat)}
-                      className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 ${
-                        active
-                          ? 'bg-blue-700 text-white shadow-xs'
-                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900'
-                      }`}
-                    >
-                      {catLabel}
-                    </button>
-                  );
-                })}
+                    return (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => setCatalogCategory(cat)}
+                        className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 ${
+                          active
+                            ? 'bg-blue-700 text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900'
+                        }`}
+                      >
+                        {catLabel}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
+                  <button
+                    type="button"
+                    aria-label={isRtl ? 'عرض شبكي' : 'Grid view'}
+                    aria-pressed={catalogView === 'grid'}
+                    title={isRtl ? 'عرض شبكي' : 'Grid view'}
+                    onClick={() => setCatalogView('grid')}
+                    className={`rounded-md p-1.5 ${catalogView === 'grid' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                  >
+                    <LayoutGrid className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={isRtl ? 'عرض قائمة' : 'List view'}
+                    aria-pressed={catalogView === 'list'}
+                    title={isRtl ? 'عرض قائمة' : 'List view'}
+                    onClick={() => setCatalogView('list')}
+                    className={`rounded-md p-1.5 ${catalogView === 'list' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                  >
+                    <List className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
             </div>
 
-            {/* Product Cards Grid */}
+            {/* Product Catalogue */}
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-5 bg-slate-50">
               {paginatedCatalogProducts.length === 0 ? (
                 <div className="h-48 flex flex-col items-center justify-center text-center text-slate-500">
@@ -3668,25 +3981,39 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   <p className="text-xs mt-1">{isRtl ? 'حاول تعديل مصطلح البحث أو اختيار تصنيف آخر.' : 'Try adjusting your search query or category filter.'}</p>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                <div className={catalogView === 'grid'
+                  ? 'grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4'
+                  : 'flex flex-col gap-2'}>
                   {paginatedCatalogProducts.map((prod) => {
                     const isOut = !settings.allowNegativeStock && prod.stock <= 0;
                     const inCartCount =
                       cart.find((ci) => ci.product.id === prod.id)?.quantity || 0;
+                    const isHighlighted = highlightedCatalogId === prod.id;
 
                     return (
                       <button
                         key={prod.id}
                         type="button"
                         disabled={isOut}
+                        onMouseEnter={() => setHighlightedCatalogProductId(prod.id)}
                         onClick={() => addToCart(prod)}
-                        className={`text-left p-3.5 rounded-xl border transition-all flex flex-col justify-between ${
+                        className={`text-left rounded-xl border transition-all ${
+                          catalogView === 'grid'
+                            ? 'flex min-h-[112px] flex-col justify-between p-3.5'
+                            : 'flex w-full items-center gap-4 px-4 py-3'
+                        } ${
+                          isHighlighted
+                            ? 'border-blue-600 bg-blue-50 ring-2 ring-blue-200 shadow-sm'
+                            : ''
+                        } ${
                           isOut
                             ? 'bg-slate-100 border-slate-200 opacity-60 cursor-not-allowed'
-                            : 'bg-white border-slate-200 hover:border-blue-600 hover:shadow-sm active:scale-[0.98]'
+                            : isHighlighted
+                              ? ''
+                              : 'bg-white border-slate-200 hover:border-blue-600 hover:shadow-sm active:scale-[0.98]'
                         }`}
                       >
-                        <div>
+                        <div className="min-w-0 flex-1">
                           <div className="flex items-start justify-between gap-1.5">
                             <h4 className="text-xs font-bold text-slate-900 leading-snug line-clamp-2">
                               {isRtl && prod.nameAr ? prod.nameAr : prod.name}
@@ -3717,7 +4044,11 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                           </div>
                         </div>
 
-                        <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between">
+                        <div className={`flex shrink-0 items-center justify-between ${
+                          catalogView === 'grid'
+                            ? 'mt-3 border-t border-slate-100 pt-2'
+                            : 'min-w-[120px] gap-3'
+                        }`}>
                           <span className="text-[10px] text-slate-400 truncate max-w-[80px]">
                             {prod.category}
                           </span>
@@ -3837,7 +4168,6 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
               </button>
               <button
                 type="button"
-                autoFocus
                 disabled={isSubmitting}
                 onClick={() => void handleCompleteSale(true)}
                 className="rounded-lg bg-emerald-700 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-800 disabled:opacity-60"

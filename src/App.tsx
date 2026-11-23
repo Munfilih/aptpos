@@ -1,8 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { TopBar, type NavTab } from './components/TopBar';
 import { RegisterView } from './components/RegisterView';
 import { InventoryView } from './components/InventoryView';
 import { PurchasesView } from './components/PurchasesView';
+import {
+  PurchaseReturnHistoryView,
+} from './components/PurchaseReturnsView';
 import { CustomersView } from './components/CustomersView';
 import { VendorsView } from './components/VendorsView';
 import { SalesHistoryView } from './components/SalesHistoryView';
@@ -10,24 +13,51 @@ import { SalesReturnRegisterView } from './components/SalesReturnRegisterView';
 import { SalesReturnHistoryView } from './components/SalesReturnHistoryView';
 import { ReportsView } from './components/ReportsView';
 import { SettingsView } from './components/SettingsView';
+import { FilesView } from './components/FilesView';
+import { LedgerView } from './components/LedgerView';
+import { ShiftView } from './components/ShiftView';
 import { ThermalReceiptModal } from './components/ThermalReceiptModal';
 import { LoginForm } from './components/LoginForm';
+import { DemoRegistrationWindow } from './components/DemoRegistrationWindow';
 import { LanguageProvider, useLanguage } from './i18n/LanguageContext';
 import type {
+  AppComponentId,
+  AppVersion,
   CashbookEntry,
   CashbookOpeningBalance,
   Customer,
+  DemoAccessStatus,
   CreateCashbookEntryInput,
+  CreatePurchaseReturnInput,
   CreateSalesReturnVoucherInput,
   PrintJob,
   Product,
   PurchaseEntry,
+  PurchaseReturnVoucher,
   Sale,
   SalesReturnVoucher,
   StoreSettings,
+  SettingsSectionId,
+  ThemeMode,
   UserSession,
   Vendor,
 } from './types/pos';
+import { APP_COMPONENTS, APP_VERSIONS } from './types/pos';
+
+const RPOS_TICKET_WIDTH_KEY = 'counterline_rpos_ticket_width';
+const DEFAULT_RPOS_TICKET_WIDTH = 320;
+
+function loadRposTicketWidth(): number {
+  try {
+    const stored = Number(localStorage.getItem(RPOS_TICKET_WIDTH_KEY));
+    return Number.isFinite(stored) && stored >= 150 && stored <= 800
+      ? stored
+      : DEFAULT_RPOS_TICKET_WIDTH;
+  } catch (error) {
+    console.error('Failed to restore RPOS ticket width:', error);
+    return DEFAULT_RPOS_TICKET_WIDTH;
+  }
+}
 
 const DEFAULT_SETTINGS: StoreSettings = {
   storeName: 'aptPOS Retail',
@@ -69,6 +99,8 @@ const DEFAULT_SETTINGS: StoreSettings = {
   invoiceShowReceiptBarcode: true,
   invoiceShowFooter: true,
   invoiceShowQrCode: true,
+  appVersion: 'Standard',
+  disabledAppComponents: [],
 };
 
 async function readCashbookResponse(response: Response, operation: string): Promise<unknown> {
@@ -198,28 +230,92 @@ export function App() {
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => {
     try {
       const stored = sessionStorage.getItem('counterline_user');
-      return stored ? JSON.parse(stored) : null;
+      const user = stored ? JSON.parse(stored) : null;
+      return user?.username?.toLowerCase() === 'demo' ? null : user;
     } catch {
       return null;
     }
   });
 
   const [activeTab, setActiveTab] = useState<NavTab>('register');
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionId>('sales');
+  const [showSettingsWorkspace, setShowSettingsWorkspace] = useState(false);
+  const [showSettingsComponent, setShowSettingsComponent] = useState(false);
+  const [accountsSubtab, setAccountsSubtab] = useState<'ledger' | 'customers' | 'vendors' | 'payments'>('ledger');
+  const [openLauncherAfterLogin, setOpenLauncherAfterLogin] = useState(false);
+  const [loginDemoRegistration, setLoginDemoRegistration] = useState<{
+    user: UserSession;
+    status: DemoAccessStatus;
+  } | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  useLayoutEffect(() => {
+    const activeElement = document.activeElement;
+    if (
+      activeElement instanceof HTMLInputElement ||
+      activeElement instanceof HTMLTextAreaElement ||
+      activeElement instanceof HTMLSelectElement
+    ) {
+      activeElement.blur();
+    }
+  }, [activeTab, settingsSection, showSettingsWorkspace, showSettingsComponent]);
+  const [theme, setTheme] = useState<ThemeMode>(() => {
+    const savedTheme = localStorage.getItem('aptpos_theme');
+    return savedTheme === 'dark' || savedTheme === 'medium' ? savedTheme : 'light';
+  });
+  const [iconOnlyLauncher, setIconOnlyLauncher] = useState(
+    () => localStorage.getItem('aptpos_icon_only_launcher_v2') === 'true'
+  );
+  const [rposTicketWidth, setRposTicketWidth] = useState(loadRposTicketWidth);
+  const handleLauncherOpened = useCallback(() => setOpenLauncherAfterLogin(false), []);
   const [products, setProducts] = useState<Product[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
   const [salesReturnVouchers, setSalesReturnVouchers] = useState<SalesReturnVoucher[]>([]);
   const [cashbookEntries, setCashbookEntries] = useState<CashbookEntry[]>([]);
   const [cashbookOpeningBalance, setCashbookOpeningBalance] =
     useState<CashbookOpeningBalance | null>(null);
+  const [cashbookModalOpen, setCashbookModalOpen] = useState(false);
   const [initialReturnSales, setInitialReturnSales] = useState<Sale[]>([]);
   const [editingReturnVoucher, setEditingReturnVoucher] = useState<SalesReturnVoucher | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [purchases, setPurchases] = useState<PurchaseEntry[]>([]);
+  const [purchaseReturnVouchers, setPurchaseReturnVouchers] = useState<PurchaseReturnVoucher[]>([]);
   const [settings, setSettings] = useState<StoreSettings>(DEFAULT_SETTINGS);
+  const [purchaseVendor, setPurchaseVendor] = useState<{
+    name: string;
+    taxNumber: string;
+    pendingBalance: number;
+    currencySymbol: string;
+    partialCount: number;
+  } | null>(null);
   const [printQueue, setPrintQueue] = useState<PrintJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [productCreateRequest, setProductCreateRequest] = useState(0);
+  const [productCreateBarcode, setProductCreateBarcode] = useState('');
+  const [productCreateReturnTab, setProductCreateReturnTab] = useState<'register' | 'purchases' | null>(null);
+  const [purchaseBarcodeFocusRequest, setPurchaseBarcodeFocusRequest] = useState(0);
+  const handleProductCreateRequestHandled = useCallback(() => {
+    setProductCreateRequest(0);
+    setProductCreateBarcode('');
+  }, []);
+  const handleProductCreatedFromRegister = useCallback(() => {
+    const returnTab = productCreateReturnTab || 'register';
+    if (returnTab === 'purchases') {
+      setPurchaseBarcodeFocusRequest((request) => request + 1);
+    }
+    setProductCreateReturnTab(null);
+    setActiveTab(returnTab);
+  }, [productCreateReturnTab]);
+  const handleProductCreateCancelled = useCallback(() => {
+    if (productCreateReturnTab === 'purchases') {
+      setPurchaseBarcodeFocusRequest((request) => request + 1);
+    }
+    setProductCreateReturnTab(null);
+  }, [productCreateReturnTab]);
+  const [productEditRequest, setProductEditRequest] = useState<{
+    product: Product;
+    requestId: number;
+  } | null>(null);
   const [activeReceipt, setActiveReceipt] = useState<{
     sale: Sale;
     queuedOffline?: boolean;
@@ -228,6 +324,22 @@ export function App() {
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const [closeBackupBusy, setCloseBackupBusy] = useState(false);
   const [closeBackupError, setCloseBackupError] = useState<string | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem('aptpos_theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem('aptpos_icon_only_launcher_v2', String(iconOnlyLauncher));
+  }, [iconOnlyLauncher]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(RPOS_TICKET_WIDTH_KEY, String(rposTicketWidth));
+    } catch (error) {
+      console.error('Failed to save RPOS ticket width:', error);
+    }
+  }, [rposTicketWidth]);
 
   useEffect(() => {
     const api = window.electronAPI;
@@ -290,6 +402,8 @@ export function App() {
       }
 
       event.preventDefault();
+      setProductCreateBarcode('');
+      setProductCreateReturnTab(null);
       setActiveTab('inventory');
       setProductCreateRequest((request) => request + 1);
     };
@@ -308,6 +422,7 @@ export function App() {
         custRes,
         vendRes,
         purchRes,
+        purchaseReturnsRes,
         returnsRes,
         cashbookRes,
       ] = await Promise.all([
@@ -318,6 +433,7 @@ export function App() {
         fetch('/api/customers'),
         fetch('/api/vendors'),
         fetch('/api/purchases'),
+        fetch('/api/purchase-returns'),
         fetch('/api/sales-returns'),
         fetch('/api/cashbook'),
       ]);
@@ -329,6 +445,7 @@ export function App() {
       if (custRes.ok) setCustomers(await custRes.json());
       if (vendRes.ok) setVendors(await vendRes.json());
       if (purchRes.ok) setPurchases(await purchRes.json());
+      if (purchaseReturnsRes.ok) setPurchaseReturnVouchers(await purchaseReturnsRes.json());
       if (returnsRes.ok) setSalesReturnVouchers(await returnsRes.json());
       if (cashbookRes.ok) {
         const cashbookData = await readCashbookResponse(cashbookRes, 'Loading cashbook');
@@ -362,24 +479,201 @@ export function App() {
 
   const handleLoginSuccess = (user: UserSession) => {
     setCurrentUser(user);
+    setLoginDemoRegistration(null);
+    setLoginError(null);
     try {
       sessionStorage.setItem('counterline_user', JSON.stringify(user));
     } catch {
       // storage disabled
     }
     setActiveTab('register');
+    if (user.demoMode) {
+      setSettingsSection('screen');
+      setShowSettingsWorkspace(false);
+      setShowSettingsComponent(false);
+      setAccountsSubtab('ledger');
+    }
+    setOpenLauncherAfterLogin(true);
     setLoading(true);
     fetchAll();
   };
 
-  const handleLogout = () => {
+  const handleDemoRegistrationRequested = (user: UserSession, status: DemoAccessStatus) => {
+    setLoginDemoRegistration({ user, status });
+  };
+
+  const handleLogout = useCallback(() => {
     setCurrentUser(null);
+    setCashbookModalOpen(false);
+    setOpenLauncherAfterLogin(false);
+    setLoginDemoRegistration(null);
     try {
       sessionStorage.removeItem('counterline_user');
     } catch {
       // ignore
     }
+  }, []);
+
+  const handleDemoActivated = (expiresAt: string) => {
+    if (!loginDemoRegistration) return;
+    handleLoginSuccess({
+      ...loginDemoRegistration.user,
+      role: 'admin',
+      permissions: ['register', 'inventory', 'purchases', 'customers', 'vendors', 'accounts', 'reports', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings'],
+      demoMode: true,
+      demoExpiresAt: expiresAt,
+    });
   };
+
+  useEffect(() => {
+    if (!currentUser?.demoMode || !currentUser.demoExpiresAt) return;
+    const expiresAt = Date.parse(currentUser.demoExpiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      handleLogout();
+      setLoginDemoRegistration({ user: currentUser, status: 'expired' });
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      handleLogout();
+      setLoginDemoRegistration({ user: currentUser, status: 'expired' });
+    }, expiresAt - Date.now());
+    return () => window.clearTimeout(timeout);
+  }, [currentUser, handleLogout]);
+
+  useEffect(() => {
+    if (!currentUser?.demoMode && !currentUser?.registeredSystem) return;
+
+    let active = true;
+    let checking = false;
+    const checkDemoAccess = async () => {
+      if (!active || checking) return;
+      checking = true;
+      try {
+        const response = await fetch('/api/registration/demo-access', {
+          cache: 'no-store',
+        });
+        const payload: unknown = await response.json().catch(() => null);
+        if (!active) return;
+
+        if (!response.ok) {
+          const message =
+            typeof payload === 'object' &&
+            payload !== null &&
+            'error' in payload &&
+            typeof payload.error === 'string'
+              ? payload.error
+              : 'Could not verify the demo license. Please sign in again.';
+          handleLogout();
+          setLoginError(message);
+          return;
+        }
+
+        if (
+          typeof payload !== 'object' ||
+          payload === null ||
+          !('status' in payload) ||
+          !('expiresAt' in payload)
+        ) {
+          handleLogout();
+          setLoginError('The demo status service returned an invalid response.');
+          return;
+        }
+
+        const expiresAt = payload.expiresAt;
+        if (payload.status === 'registered') {
+          const appVersionValue = 'appVersion' in payload ? payload.appVersion : undefined;
+          const appVersion = APP_VERSIONS.find((version) => version === appVersionValue);
+          if (!appVersion) {
+            handleLogout();
+            setLoginError('The registered-system status returned an invalid app version.');
+            return;
+          }
+          const settingsResponse = await fetch('/api/settings', { cache: 'no-store' });
+          if (!settingsResponse.ok) {
+            throw new Error('Could not refresh the registered system permissions.');
+          }
+          const updatedSettings: StoreSettings = await settingsResponse.json();
+          if (!updatedSettings.registeredSystem || updatedSettings.appVersion !== appVersion) {
+            throw new Error('The registered system permissions could not be synchronized.');
+          }
+          setSettings(updatedSettings);
+          const updatedUser = {
+            ...currentUser,
+            demoMode: false,
+            demoExpiresAt: undefined,
+            registeredSystem: true,
+            appVersion,
+          };
+          if (
+            currentUser.registeredSystem !== true ||
+            currentUser.appVersion !== appVersion ||
+            currentUser.demoMode
+          ) {
+            setCurrentUser(updatedUser);
+            try {
+              sessionStorage.setItem('counterline_user', JSON.stringify(updatedUser));
+            } catch {
+              // storage disabled
+            }
+          }
+          return;
+        }
+        if (
+          payload.status === 'active' &&
+          typeof expiresAt === 'string' &&
+          Date.parse(expiresAt) > Date.now()
+        ) {
+          if (currentUser.demoExpiresAt !== expiresAt) {
+            const updatedUser = { ...currentUser, demoExpiresAt: expiresAt };
+            setCurrentUser(updatedUser);
+            try {
+              sessionStorage.setItem('counterline_user', JSON.stringify(updatedUser));
+            } catch {
+              // storage disabled
+            }
+          }
+          return;
+        }
+        if (payload.status !== 'never' && payload.status !== 'expired') {
+          handleLogout();
+          setLoginError('The demo status service returned an invalid response.');
+          return;
+        }
+
+        handleLogout();
+        setLoginError(null);
+        setLoginDemoRegistration({
+          user: currentUser,
+          status: payload.status,
+        });
+      } catch (error) {
+        if (!active) return;
+        handleLogout();
+        setLoginError(
+          error instanceof Error
+            ? error.message
+            : 'Could not verify the demo license. Please sign in again.'
+        );
+      } finally {
+        checking = false;
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void checkDemoAccess();
+    };
+    const interval = window.setInterval(() => void checkDemoAccess(), 60_000);
+    window.addEventListener('focus', checkDemoAccess);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', checkDemoAccess);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [currentUser, handleLogout]);
 
   const refreshProducts = async () => {
     const res = await fetch('/api/products');
@@ -514,6 +808,33 @@ export function App() {
     await fetchAll();
   };
 
+  const handleCreatePurchaseReturn = async (input: CreatePurchaseReturnInput) => {
+    const res = await fetch('/api/purchase-returns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to process purchase return.');
+    }
+    if (!data || typeof data.id !== 'number' || !Array.isArray(data.items)) {
+      throw new Error('The server returned an invalid purchase return response.');
+    }
+    await fetchAll();
+    setActiveTab('purchase-return-register');
+    return data as PurchaseReturnVoucher;
+  };
+
+  const handleDeletePurchaseReturn = async (voucherId: number) => {
+    const res = await fetch(`/api/purchase-returns/${voucherId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to delete purchase return.');
+    }
+    await fetchAll();
+  };
+
   const handleEditPurchase = async (purchaseId: number, data: any) => {
     const res = await fetch(`/api/purchases/${purchaseId}`, {
       method: 'PUT',
@@ -575,6 +896,25 @@ export function App() {
     }
   };
 
+  const handleActivateVersion = async (input: {
+    appVersion: AppVersion;
+    disabledAppComponents: AppComponentId[];
+    password: string;
+  }) => {
+    const res = await fetch('/api/settings/activate-version', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(
+        typeof data?.error === 'string' ? data.error : 'Could not activate the selected version.'
+      );
+    }
+    setSettings(data as StoreSettings);
+  };
+
   const handleFlushPrintQueue = async () => {
     if (window.electronAPI?.isElectron) {
       await window.electronAPI.printReceipt({
@@ -607,10 +947,24 @@ export function App() {
 
   const hasPermission = (tabId: NavTab) => {
     if (!currentUser) return false;
-    if (tabId === 'settings' && !isAdmin) return false;
+    if (
+      tabId !== 'settings' &&
+      tabId !== 'unavailable' &&
+      (!isAppAdmin || settings.registeredSystem === true) &&
+      settings.disabledAppComponents?.some((component) => component === tabId)
+    ) return false;
+    if (tabId === 'purchase-return-register' || tabId === 'purchase-return-history') {
+      return isAdmin;
+    }
+    if (tabId === 'files') return isAdmin;
+    if (tabId === 'settings') {
+      return isAdmin || isAppAdmin || currentUser.permissions?.includes('settings') === true;
+    }
     if (isAdmin) return true;
     const requiredPermission =
-      tabId === 'return-register' || tabId === 'return-history'
+      tabId === 'shift'
+        ? 'register'
+        : tabId === 'return-register' || tabId === 'return-history'
         ? 'sales-return'
         : tabId;
     if (
@@ -622,94 +976,362 @@ export function App() {
     return currentUser.permissions?.includes(requiredPermission) ?? false;
   };
 
-  const fallbackTabs = currentUser?.permissions?.filter(
-    (tab): tab is NavTab =>
-      ['register', 'inventory', 'purchases', 'customers', 'vendors', 'sales'].includes(tab)
-  );
+  const fallbackTabs = APP_COMPONENTS
+    .map((component) => component.id)
+    .filter((tab) => hasPermission(tab));
   const effectiveTab: NavTab = hasPermission(activeTab)
     ? activeTab
-    : fallbackTabs?.[0] || 'register';
+    : fallbackTabs[0] || (hasPermission('settings') ? 'settings' : 'unavailable');
+  const nextPurchaseVoucherId = purchases.length
+    ? purchases.reduce((latest, purchase) => purchase.id > latest.id ? purchase : latest).id + 1
+    : 1;
+  const nextPurchaseVoucherNumber = `PV-${String(nextPurchaseVoucherId).padStart(6, '0')}`;
+  const settingsWorkspace = (
+    <SettingsView
+      settings={settings}
+      activeSection={isAdmin || isAppAdmin ? settingsSection : 'screen'}
+      onActiveSectionChange={setSettingsSection}
+      showSectionNavigation={!showSettingsComponent}
+      printQueue={printQueue}
+      isAdmin={isAdmin}
+      isAppAdmin={isAppAdmin}
+      theme={theme}
+      onThemeChange={setTheme}
+      iconOnlyLauncher={iconOnlyLauncher}
+      onIconOnlyLauncherChange={setIconOnlyLauncher}
+      onSaveSettings={handleSaveSettings}
+      onActivateVersion={handleActivateVersion}
+      onFlushPrintQueue={handleFlushPrintQueue}
+      onResetDatabase={handleResetDatabase}
+      onRestoreDatabase={handleRestoreDatabase}
+    />
+  );
 
   return (
     <LanguageProvider initialLanguage={settings.appLanguage}>
       <>
         {!currentUser ? (
-          <LoginForm onLoginSuccess={handleLoginSuccess} />
-        ) : (
-          <div className={`pos-app-shell${activeReceipt ? ' invoice-print-open' : ''} h-[100dvh] max-h-[100dvh] w-screen flex flex-col bg-slate-50 text-slate-900 overflow-hidden`}>
-          {effectiveTab !== 'register' && (
-            <TopBar
-              activeTab={effectiveTab}
-              onSelectTab={setActiveTab}
-              onLogout={handleLogout}
-              currentUser={currentUser}
+          <>
+            <LoginForm
+              onLoginSuccess={handleLoginSuccess}
+              onDemoRegistrationRequested={handleDemoRegistrationRequested}
+              initialError={loginError}
             />
-          )}
+            {loginDemoRegistration && (
+              <DemoRegistrationWindow
+                requestedBy={loginDemoRegistration.user.username}
+                demoAccessStatus={loginDemoRegistration.status}
+                onClose={() => setLoginDemoRegistration(null)}
+                onDemoActivated={handleDemoActivated}
+              />
+            )}
+          </>
+        ) : (
+          <div
+            data-theme={theme}
+            className={`pos-app-shell${activeReceipt ? ' invoice-print-open' : ''} h-[100dvh] max-h-[100dvh] w-screen flex flex-col bg-slate-50 text-slate-900 overflow-hidden`}
+          >
+          <TopBar
+            activeTab={effectiveTab}
+            activeSettingsSection={settingsSection}
+            showSettingsComponent={showSettingsComponent}
+            isAppAdmin={isAppAdmin}
+            onSelectTab={setActiveTab}
+            onSettingsSectionChange={setSettingsSection}
+            onSettingsComponentChange={setShowSettingsComponent}
+            settingsWorkspace={settingsWorkspace}
+            onSettingsLauncherChange={setShowSettingsWorkspace}
+            onLogout={handleLogout}
+            onOpenCashbook={() => setCashbookModalOpen(true)}
+            currentUser={currentUser}
+            disabledAppComponents={settings.disabledAppComponents}
+            iconOnlyLauncher={iconOnlyLauncher}
+            openLauncherOnMount={openLauncherAfterLogin}
+            onLauncherOpened={handleLauncherOpened}
+            demoExpiresAt={currentUser.demoMode ? currentUser.demoExpiresAt : undefined}
+            purchaseVoucherNumber={effectiveTab === 'purchases' ? nextPurchaseVoucherNumber : undefined}
+            purchaseVendor={effectiveTab === 'purchases' ? purchaseVendor : null}
+          />
 
           {loading ? (
             <main className="flex-1 flex items-center justify-center">
               <div className="text-sm text-slate-500">Loading POS terminal...</div>
             </main>
           ) : (
-            <main className="flex-1 flex min-h-0 overflow-hidden">
+            <main className="win11-app-content flex-1 flex min-h-0 overflow-hidden">
           {effectiveTab === 'register' && (
-            <div className={`${isRposMode ? 'w-full' : 'w-full min-[900px]:w-2/3'} flex flex-col min-h-0`}>
-              <TopBar
-                activeTab={effectiveTab}
-                onSelectTab={setActiveTab}
-                onLogout={handleLogout}
-                currentUser={currentUser}
-              />
-              <div className="flex-1 min-h-0 flex">
+            <div
+              style={isRposMode
+                ? {
+                    width: `calc(100% - max(150px, min(${rposTicketWidth}px, calc(100vw - 120px))))`,
+                    marginRight: 'auto',
+                  }
+                : undefined}
+              className={`${isRposMode ? 'w-full' : 'w-full min-[900px]:w-2/3'} flex min-w-0 flex-col min-h-0`}
+            >
+              <div className="flex-1 min-w-0 min-h-0 flex">
                 <RegisterView
                   products={products}
                   customers={customers}
                   settings={settings}
+                  rposTicketWidth={rposTicketWidth}
+                  onRposTicketWidthChange={setRposTicketWidth}
                   onSaleCompleted={handleSaleCompleted}
                   restoredSale={restoredSale}
                   onClearRestoredSale={() => setRestoredSale(null)}
                   receiptModalOpen={Boolean(activeReceipt)}
+                  onOpenSalesHistory={
+                    hasPermission('sales') ? () => setActiveTab('sales') : undefined
+                  }
+                  onEditProduct={
+                    isAdmin && hasPermission('inventory')
+                      ? (product) =>
+                          setProductEditRequest((request) => ({
+                            product,
+                            requestId: (request?.requestId || 0) + 1,
+                          }))
+                      : undefined
+                  }
+                  onAddProduct={
+                    isAdmin && hasPermission('inventory')
+                      ? (barcode) => {
+                          setProductCreateBarcode(barcode);
+                          setProductCreateReturnTab('register');
+                          setProductCreateRequest((request) => request + 1);
+                        }
+                      : undefined
+                  }
+                  productEditorOpen={Boolean(productEditRequest)}
+                  productCreateModalOpen={
+                    effectiveTab === 'register' && productCreateReturnTab === 'register'
+                  }
                 />
               </div>
             </div>
           )}
 
-          {effectiveTab === 'inventory' && isAdmin && (
+          {(effectiveTab === 'register' ||
+            effectiveTab === 'purchases' ||
+            effectiveTab === 'purchase-history') &&
+            isAdmin &&
+            productEditRequest && (
             <InventoryView
               products={products}
               settings={settings}
+              theme={theme}
               onRefreshProducts={refreshProducts}
-              createProductRequest={productCreateRequest}
+              editProductRequest={productEditRequest}
+              editProductOnly
+              onProductEditorClosed={(requestId) => {
+                setProductEditRequest((request) =>
+                  request?.requestId === requestId ? null : request
+                );
+                if (effectiveTab === 'purchases') {
+                  setPurchaseBarcodeFocusRequest((request) => request + 1);
+                }
+              }}
             />
           )}
 
-          {effectiveTab === 'purchases' && isAdmin && (
-            <PurchasesView
-              purchases={purchases}
-              vendors={vendors}
-              products={products}
-              settings={settings}
-              onRefreshPurchases={refreshPurchases}
-              onRefreshProducts={refreshProducts}
-              onNavigateToVendors={() => setActiveTab('vendors')}
-              onDeletePurchase={handleDeletePurchase}
-              onEditPurchase={handleEditPurchase}
-            />
+          {(effectiveTab === 'inventory' ||
+            productCreateReturnTab === 'purchases' ||
+            (effectiveTab === 'register' && productCreateReturnTab === 'register')) &&
+            isAdmin && (
+            <div className={effectiveTab === 'inventory' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+              <InventoryView
+                products={products}
+                settings={settings}
+                theme={theme}
+                onRefreshProducts={refreshProducts}
+                createProductRequest={productCreateRequest}
+                createProductBarcode={productCreateBarcode}
+                onCreateProductRequestHandled={handleProductCreateRequestHandled}
+                returnToSourceAfterCreate={Boolean(productCreateReturnTab)}
+                onProductCreated={handleProductCreatedFromRegister}
+                onProductCreateCancelled={handleProductCreateCancelled}
+              />
+            </div>
           )}
 
-          {effectiveTab === 'customers' && isAdmin && (
-            <CustomersView
-              customers={customers}
-              settings={settings}
-              onRefresh={refreshCustomers}
-            />
+          {effectiveTab === 'files' && isAdmin && <FilesView />}
+          {effectiveTab === 'shift' && currentUser && (
+            <ShiftView currentUser={currentUser} settings={settings} theme={theme} />
           )}
 
-          {effectiveTab === 'vendors' && isAdmin && (
-            <VendorsView
-              vendors={vendors}
+          {isAdmin && (
+            <div
+              className={
+                effectiveTab === 'purchases' ||
+                effectiveTab === 'purchase-history' ||
+                effectiveTab === 'purchase-return-register'
+                  ? 'flex min-h-0 flex-1 flex-col'
+                  : 'hidden'
+              }
+              aria-hidden={
+                effectiveTab !== 'purchases' &&
+                effectiveTab !== 'purchase-history' &&
+                effectiveTab !== 'purchase-return-register'
+              }
+            >
+              <PurchasesView
+                isActive={effectiveTab === 'purchases' || effectiveTab === 'purchase-return-register'}
+                page={effectiveTab === 'purchase-history' ? 'history' : 'entry'}
+                mode={effectiveTab === 'purchase-return-register' ? 'purchase-return' : 'purchase'}
+                focusBarcodeRequest={purchaseBarcodeFocusRequest}
+                onNavigatePage={(page) => {
+                if (effectiveTab === 'purchase-return-register') {
+                  setActiveTab(page === 'history' ? 'purchase-return-history' : 'purchase-return-register');
+                  return;
+                }
+                setActiveTab(page === 'history' ? 'purchase-history' : 'purchases');
+                }}
+                onSelectedVendorChange={setPurchaseVendor}
+                purchases={purchases}
+                purchaseReturnVouchers={purchaseReturnVouchers}
+                sales={sales}
+                salesReturnVouchers={salesReturnVouchers}
+                vendors={vendors}
+                products={products}
+                settings={settings}
+                onRefreshPurchases={refreshPurchases}
+                onRefreshProducts={refreshProducts}
+                onRefreshVendors={refreshVendors}
+                onDeletePurchase={handleDeletePurchase}
+                onEditPurchase={handleEditPurchase}
+                onCreatePurchaseReturn={
+                  hasPermission('purchase-return-register')
+                    ? handleCreatePurchaseReturn
+                    : undefined
+                }
+                onEditProduct={
+                  hasPermission('inventory')
+                    ? (product) =>
+                        setProductEditRequest((request) => ({
+                          product,
+                          requestId: (request?.requestId || 0) + 1,
+                        }))
+                    : undefined
+                }
+                onAddProduct={
+                  hasPermission('inventory')
+                    ? (barcode) => {
+                        setProductCreateBarcode(barcode);
+                        setProductCreateReturnTab('purchases');
+                        setProductCreateRequest((request) => request + 1);
+                      }
+                    : undefined
+                }
+              />
+            </div>
+          )}
+
+          {['accounts', 'customers', 'vendors'].includes(effectiveTab) && (
+            <div className="settings-view flex min-h-0 flex-1 flex-col overflow-hidden">
+              <nav
+                className="settings-section-navigation"
+                aria-label={settings.appLanguage === 'ar' ? 'أقسام الحسابات' : 'Accounts sections'}
+                role="tablist"
+              >
+                <div className="settings-section-tabs">
+                  {[
+                    { subtab: 'ledger' as const, id: 'accounts' as NavTab, label: settings.appLanguage === 'ar' ? 'دفتر الحسابات' : 'Ledger' },
+                    { subtab: 'customers' as const, id: 'customers' as NavTab, label: settings.appLanguage === 'ar' ? 'العملاء' : 'Customers' },
+                    { subtab: 'vendors' as const, id: 'vendors' as NavTab, label: settings.appLanguage === 'ar' ? 'الموردون' : 'Vendors' },
+                    { subtab: 'payments' as const, id: 'accounts' as NavTab, label: settings.appLanguage === 'ar' ? 'المدفوعات والمقبوضات' : 'Payments & Receipts' },
+                  ].filter((tab) => hasPermission(tab.id)).map((tab) => (
+                    <button
+                      key={tab.subtab}
+                      type="button"
+                      role="tab"
+                      aria-selected={
+                        tab.subtab === 'customers'
+                          ? effectiveTab === 'customers'
+                          : tab.subtab === 'vendors'
+                            ? effectiveTab === 'vendors'
+                            : effectiveTab === 'accounts' && accountsSubtab === tab.subtab
+                      }
+                      onClick={() => {
+                        setAccountsSubtab(tab.subtab);
+                        setActiveTab(tab.id);
+                      }}
+                      className={`settings-section-tab${
+                        (tab.subtab === 'customers'
+                          ? effectiveTab === 'customers'
+                          : tab.subtab === 'vendors'
+                            ? effectiveTab === 'vendors'
+                            : effectiveTab === 'accounts' && accountsSubtab === tab.subtab)
+                          ? ' is-active'
+                          : ''
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+              </nav>
+              <div className="settings-content-scroll min-h-0 flex-1 overflow-y-auto">
+                {effectiveTab === 'accounts' && accountsSubtab === 'ledger' && (
+                  <LedgerView
+                    customers={customers}
+                    vendors={vendors}
+                    sales={sales}
+                    purchases={purchases}
+                    returnVouchers={salesReturnVouchers}
+                    cashbookEntries={cashbookEntries}
+                    settings={settings}
+                  />
+                )}
+
+                {effectiveTab === 'customers' && isAdmin && (
+                  <CustomersView
+                    customers={customers}
+                    settings={settings}
+                    onRefresh={refreshCustomers}
+                  />
+                )}
+
+                {effectiveTab === 'vendors' && isAdmin && (
+                  <VendorsView
+                    vendors={vendors}
+                    settings={settings}
+                    onRefresh={refreshVendors}
+                  />
+                )}
+
+                {effectiveTab === 'accounts' && accountsSubtab === 'payments' && hasPermission('accounts') && (
+                  <ReportsView
+                    key="cashbook"
+                    mode="cashbook"
+                    sales={sales}
+                    returnVouchers={salesReturnVouchers}
+                    purchases={purchases}
+                    cashbookEntries={cashbookEntries}
+                    cashbookOpeningBalance={null}
+                    canManageCashbook
+                    onCreateCashbookEntry={handleCreateCashbookEntry}
+                    accountOptions={[
+                      'Cash',
+                      'Bank',
+                      ...customers.map((customer) => customer.name),
+                      ...vendors.map((vendor) => vendor.name),
+                    ]}
+                    settings={settings}
+                  />
+                )}
+              </div>
+            </div>
+          )}
+
+          {effectiveTab === 'purchase-return-history' && isAdmin && (
+            <PurchaseReturnHistoryView
+              vouchers={purchaseReturnVouchers}
               settings={settings}
-              onRefresh={refreshVendors}
+              onCreateReturn={
+                hasPermission('purchase-return-register')
+                  ? () => setActiveTab('purchase-return-register')
+                  : undefined
+              }
+              onDeleteVoucher={handleDeletePurchaseReturn}
             />
           )}
 
@@ -720,7 +1342,7 @@ export function App() {
               settings={settings}
               onReprintSale={(sale) => setActiveReceipt({ sale })}
               onOpenReturnRegister={
-                canReturnSales
+                canReturnSales && hasPermission('return-register')
                   ? (sale) => {
                       setInitialReturnSales([sale]);
                       setActiveTab('return-register');
@@ -739,6 +1361,11 @@ export function App() {
               settings={settings}
               cashierName={currentUser.displayName}
               editingVoucher={editingReturnVoucher || undefined}
+              onOpenReturnHistory={() => {
+                setEditingReturnVoucher(null);
+                setInitialReturnSales([]);
+                setActiveTab('return-history');
+              }}
               onCancel={() => {
                 const wasEditing = Boolean(editingReturnVoucher);
                 setEditingReturnVoucher(null);
@@ -766,45 +1393,54 @@ export function App() {
           )}
 
           {effectiveTab === 'reports' && hasPermission('reports') && (
-            <ReportsView
-              key="reports"
-              mode="reports"
-              sales={sales}
-              returnVouchers={salesReturnVouchers}
-              purchases={purchases}
-              cashbookEntries={cashbookEntries}
-              cashbookOpeningBalance={cashbookOpeningBalance}
-              canManageCashbook={isAdmin}
-              onCreateCashbookEntry={handleCreateCashbookEntry}
-              settings={settings}
-            />
+            <div className="settings-view flex min-h-0 flex-1 flex-col overflow-hidden">
+              <nav
+                className="settings-section-navigation"
+                aria-label={settings.appLanguage === 'ar' ? 'أقسام التقارير' : 'Report sections'}
+                role="tablist"
+              >
+                <div className="settings-section-tabs">
+                  {[
+                    settings.appLanguage === 'ar' ? 'التقارير اليومية' : 'Daily Reports',
+                    settings.appLanguage === 'ar' ? 'تقارير المبيعات' : 'Sales Reports',
+                    settings.appLanguage === 'ar' ? 'تقارير المشتريات' : 'Purchase Reports',
+                    settings.appLanguage === 'ar' ? 'تقارير الضرائب' : 'Tax Reports',
+                    settings.appLanguage === 'ar' ? 'تقارير أخرى' : 'Other Reports',
+                  ].map((label, index) => (
+                    <button
+                      key={label}
+                      type="button"
+                      role="tab"
+                      aria-selected={index === 0}
+                      className={`settings-section-tab${index === 0 ? ' is-active' : ''}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </nav>
+              <div className="settings-content-scroll min-h-0 flex-1 overflow-y-auto">
+                <ReportsView
+                  key="reports"
+                  mode="reports"
+                  sales={sales}
+                  returnVouchers={salesReturnVouchers}
+                  purchases={purchases}
+                  cashbookEntries={cashbookEntries}
+                  cashbookOpeningBalance={cashbookOpeningBalance}
+                  canManageCashbook={isAdmin}
+                  onCreateCashbookEntry={handleCreateCashbookEntry}
+                  settings={settings}
+                />
+              </div>
+            </div>
           )}
 
-          {effectiveTab === 'accounts' && hasPermission('accounts') && (
-            <ReportsView
-              key="cashbook"
-              mode="cashbook"
-              sales={sales}
-              returnVouchers={salesReturnVouchers}
-              purchases={purchases}
-              cashbookEntries={cashbookEntries}
-              cashbookOpeningBalance={null}
-              canManageCashbook
-              onCreateCashbookEntry={handleCreateCashbookEntry}
-              settings={settings}
-            />
-          )}
-
-          {effectiveTab === 'settings' && isAdmin && (
-            <SettingsView
-              settings={settings}
-              printQueue={printQueue}
-              isAppAdmin={isAppAdmin}
-              onSaveSettings={handleSaveSettings}
-              onFlushPrintQueue={handleFlushPrintQueue}
-              onResetDatabase={handleResetDatabase}
-              onRestoreDatabase={handleRestoreDatabase}
-            />
+          {effectiveTab === 'settings' && !showSettingsWorkspace && settingsWorkspace}
+          {effectiveTab === 'unavailable' && (
+            <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-slate-600">
+              No app components are enabled for your account. Contact aptadmin.
+            </div>
           )}
           </main>
           )}
@@ -819,6 +1455,56 @@ export function App() {
               queuedOffline={activeReceipt.queuedOffline}
               onClose={() => setActiveReceipt(null)}
             />
+          )}
+          {cashbookModalOpen && currentUser && (
+            <div
+              className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/60 p-2 sm:p-4"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="cashbook-modal-title"
+              onClick={(event) => {
+                if (event.target === event.currentTarget) setCashbookModalOpen(false);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setCashbookModalOpen(false);
+                }
+              }}
+            >
+              <section className="pos-app-shell flex max-h-[calc(100dvh-1rem)] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl sm:max-h-[calc(100dvh-2rem)]">
+                <header className="flex shrink-0 items-center justify-between border-b border-slate-200 px-4 py-3">
+                  <h2 id="cashbook-modal-title" className="text-sm font-bold text-slate-900">
+                    {settings.appLanguage === 'ar' ? 'دفتر النقدية' : 'Cash Book'}
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={() => setCashbookModalOpen(false)}
+                    className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                  >
+                    {settings.appLanguage === 'ar' ? 'إغلاق' : 'Close'}
+                  </button>
+                </header>
+                <ReportsView
+                  key="cashbook-modal"
+                  mode="cashbook"
+                  sales={sales}
+                  returnVouchers={salesReturnVouchers}
+                  purchases={purchases}
+                  cashbookEntries={cashbookEntries}
+                  cashbookOpeningBalance={cashbookOpeningBalance}
+                  canManageCashbook={hasPermission('accounts')}
+                  onCreateCashbookEntry={handleCreateCashbookEntry}
+                  accountOptions={[
+                    'Cash',
+                    'Bank',
+                    ...customers.map((customer) => customer.name),
+                    ...vendors.map((vendor) => vendor.name),
+                  ]}
+                  settings={settings}
+                />
+              </section>
+            </div>
           )}
           </div>
         )}

@@ -33,6 +33,7 @@ interface ReportsViewProps {
   cashbookEntries: CashbookEntry[];
   cashbookOpeningBalance: CashbookOpeningBalance | null;
   canManageCashbook: boolean;
+  accountOptions?: string[];
   onCreateCashbookEntry: (
     input: Omit<CreateCashbookEntryInput, 'createdBy'>
   ) => Promise<void>;
@@ -89,6 +90,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   cashbookEntries,
   cashbookOpeningBalance,
   canManageCashbook,
+  accountOptions = [],
   onCreateCashbookEntry,
   settings,
 }) => {
@@ -109,7 +111,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   const [query, setQuery] = useState('');
   const [entryDate, setEntryDate] = useState(toLocalDateKey(new Date()));
   const [entryDirection, setEntryDirection] = useState<'IN' | 'OUT'>('IN');
-  const [entryCategory, setEntryCategory] = useState('');
+  const [entryPaymentType, setEntryPaymentType] = useState<'CASH' | 'BANK'>('CASH');
+  const [entryAccount, setEntryAccount] = useState('Cash');
   const [entryDescription, setEntryDescription] = useState('');
   const [entryAmount, setEntryAmount] = useState('');
   const [entryReference, setEntryReference] = useState('');
@@ -243,6 +246,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         date: entry.entryDate,
         direction: entry.direction,
         category: entry.category,
+        paymentType: entry.paymentType,
+        accountName: entry.accountName,
         description: entry.description,
         reference: entry.reference,
         amount: entry.amount,
@@ -598,7 +603,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     return cashbookTransactions.filter((transaction) => !search || [
       transaction.date,
       transaction.direction,
-      transaction.category,
+      transaction.category === 'CASH'
+        ? 'Cash'
+        : transaction.category === 'BANK'
+          ? 'Bank'
+          : transaction.category,
       transaction.description,
       transaction.reference,
       transaction.createdBy,
@@ -607,7 +616,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
 
   const tabs: Array<{ value: ReportTab; label: string; icon: typeof BarChart3 }> =
     mode === 'cashbook'
-      ? [{ value: 'CASHBOOK', label: isRtl ? 'دفتر النقدية' : 'Cashbook', icon: Wallet }]
+      ? [{ value: 'CASHBOOK', label: isRtl ? 'المدفوعات والمقبوضات' : 'Payments & Receipts', icon: Wallet }]
       : [
           { value: 'DAILY_SUMMARY', label: isRtl ? 'الملخص اليومي' : 'Daily Summary', icon: CalendarDays },
           { value: 'DETAILED_SALES', label: isRtl ? 'تفاصيل المبيعات' : 'Detailed Sales', icon: FileText },
@@ -744,11 +753,12 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       XLSX.utils.book_append_sheet(
         workbook,
         XLSX.utils.aoa_to_sheet([
-          ['Date', 'Direction', 'Category', 'Description', 'Reference', 'Amount', 'Entered by'],
+          ['Date', 'Direction', 'Payment Type', 'Account', 'Remarks', 'Reference', 'Amount', 'Entered by'],
           ...cashbookTransactions.map((transaction) => [
             transaction.date,
             transaction.direction === 'IN' ? 'Cash In' : 'Cash Out',
-            transaction.category,
+            transaction.paymentType || '',
+            transaction.accountName || transaction.category,
             transaction.description,
             transaction.reference,
             Number(transaction.amount.toFixed(2)),
@@ -882,12 +892,15 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       await onCreateCashbookEntry({
         entryDate,
         direction: entryDirection,
-        category: entryCategory.trim(),
+        category: entryAccount,
+        paymentType: entryPaymentType,
+        accountName: entryAccount,
         description: entryDescription.trim(),
         amount: Number(entryAmount),
         reference: entryReference.trim(),
       });
-      setEntryCategory('');
+      setEntryPaymentType('CASH');
+      setEntryAccount('Cash');
       setEntryDescription('');
       setEntryAmount('');
       setEntryReference('');
@@ -978,6 +991,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   return (
     <div className="flex-1 min-h-0 overflow-y-auto bg-slate-50 p-3 lg:p-6">
       <div className="mx-auto max-w-[1440px] space-y-3 lg:space-y-5">
+        {mode !== 'cashbook' && (
         <header className="no-print flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-blue-700 text-white shadow-sm">
@@ -985,18 +999,12 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             </div>
             <div>
               <h1 className="text-lg font-bold tracking-tight text-slate-900 lg:text-xl">
-                {mode === 'cashbook'
-                  ? (isRtl ? 'الحسابات' : 'Accounts')
-                  : (isRtl ? 'التقارير' : 'Reports')}
+                {isRtl ? 'التقارير' : 'Reports'}
               </h1>
               <p className="mt-0.5 text-xs text-slate-500">
-                {mode === 'cashbook'
-                  ? (isRtl
-                    ? 'تتبع النقد الوارد والنقد الصادر والمعاملات.'
-                    : 'Track cash in, cash out, and transactions.')
-                  : (isRtl
-                    ? 'الملخص اليومي والتاريخي وتقارير الضرائب والمبيعات.'
-                    : 'Daily and datewise summaries, tax reports, and sales tax reports.')}
+                {isRtl
+                  ? 'الملخص اليومي والتاريخي وتقارير الضرائب والمبيعات.'
+                  : 'Daily and datewise summaries, tax reports, and sales tax reports.'}
               </p>
             </div>
           </div>
@@ -1081,33 +1089,50 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             )}
           </div>
         </header>
+        )}
 
         <div className="no-print flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
-          <div className="flex gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white p-1">
-            {tabs.map((tab) => {
-              const Icon = tab.icon;
-              return (
-                <button
-                  key={tab.value}
-                  type="button"
-                  aria-pressed={activeReport === tab.value}
-                  onClick={() => {
-                    setActiveReport(tab.value);
-                    setQuery('');
-                  }}
-                  className={`inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${
-                    activeReport === tab.value
-                      ? 'bg-blue-700 text-white shadow-sm'
-                      : 'text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  <Icon className="h-4 w-4" />
-                  {tab.label}
-                </button>
-              );
-            })}
-          </div>
+          {mode !== 'cashbook' && (
+            <div className="flex gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white p-1">
+              {tabs.map((tab) => {
+                const Icon = tab.icon;
+                return (
+                  <button
+                    key={tab.value}
+                    type="button"
+                    aria-pressed={activeReport === tab.value}
+                    onClick={() => {
+                      setActiveReport(tab.value);
+                      setQuery('');
+                    }}
+                    className={`inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${
+                      activeReport === tab.value
+                        ? 'bg-blue-700 text-white shadow-sm'
+                        : 'text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Icon className="h-4 w-4" />
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <div className="flex gap-2">
+            {mode === 'cashbook' && (
+              <select
+                value={dateFilter}
+                onChange={(event) => setDateFilter(event.target.value as DateFilter)}
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700"
+                aria-label={isRtl ? 'تصفية حسب التاريخ' : 'Filter by date'}
+              >
+                {(['ALL', 'RANGE', 'TODAY', 'YESTERDAY', 'THIS_WEEK', 'THIS_MONTH'] as const).map(
+                  (filter) => (
+                    <option key={filter} value={filter}>{dateFilterLabel(filter)}</option>
+                  )
+                )}
+              </select>
+            )}
             {(activeReport === 'TAX' || activeReport === 'DATEWISE_SUMMARY' || activeReport === 'CASHBOOK') && (
               <input
                 type="search"
@@ -1157,7 +1182,9 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                   {settings.storeName || 'aptPOS'}
                 </p>
                 <h1 className="text-2xl font-extrabold text-slate-950">
-                  {mode === 'cashbook' ? 'Cashbook' : activeReportLabel}
+                  {mode === 'cashbook'
+                    ? (isRtl ? 'المدفوعات والمقبوضات' : 'Payments & Receipts')
+                    : activeReportLabel}
                 </h1>
                 <p className="text-sm font-semibold text-slate-700">
                   {isRtl ? 'الفترة' : 'Report period'}: {reportPeriodLabel}
@@ -1391,7 +1418,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                     onSubmit={handleCreateEntry}
                     className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
                   >
-                    <h2 className="text-sm font-bold text-slate-900">Record Cash In / Cash Out</h2>
+                    <h2 className="text-sm font-bold text-slate-900">New Payment / Receipt</h2>
                     <div className="grid gap-3 sm:grid-cols-2">
                       <label className="space-y-1 text-xs font-medium text-slate-600">
                         Date
@@ -1415,14 +1442,29 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                         </select>
                       </label>
                       <label className="space-y-1 text-xs font-medium text-slate-600">
-                        Category
-                        <input
+                        Payment Type
+                        <select
                           required
-                          value={entryCategory}
-                          onChange={(event) => setEntryCategory(event.target.value)}
-                          placeholder="e.g. Petty cash, cash deposit"
+                          value={entryPaymentType}
+                          onChange={(event) => setEntryPaymentType(event.target.value as 'CASH' | 'BANK')}
                           className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                        />
+                        >
+                          <option value="CASH">Cash</option>
+                          <option value="BANK">Bank</option>
+                        </select>
+                      </label>
+                      <label className="space-y-1 text-xs font-medium text-slate-600">
+                        Account
+                        <select
+                          required
+                          value={entryAccount}
+                          onChange={(event) => setEntryAccount(event.target.value)}
+                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                        >
+                          {Array.from(new Set(['Cash', 'Bank', ...accountOptions])).map((account) => (
+                            <option key={account} value={account}>{account}</option>
+                          ))}
+                        </select>
                       </label>
                       <label className="space-y-1 text-xs font-medium text-slate-600">
                         Amount
@@ -1437,7 +1479,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                         />
                       </label>
                       <label className="space-y-1 text-xs font-medium text-slate-600 sm:col-span-2">
-                        Description
+                        Remarks
                         <input
                           required
                           value={entryDescription}
@@ -1456,10 +1498,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                     </div>
                     <button
                       type="submit"
-                      disabled={savingCashbook || !entryDate || !entryCategory.trim() || !entryDescription.trim() || !entryAmount}
+                      disabled={savingCashbook || !entryDate || !entryAccount || !entryDescription.trim() || !entryAmount}
                       className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
                     >
-                      Save cash movement
+                      Save
                     </button>
                   </form>
                 </section>
@@ -1471,18 +1513,21 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               )}
               <ReportTable
                 title="Transactions"
-                headers={['Date', 'Direction', 'Category', 'Description', 'Reference', 'Amount', 'Entered by']}
+                headers={['Date', 'Direction', 'Payment Type', 'Account', 'Remarks', 'Reference', 'Amount', 'Entered by']}
                 rows={visibleCashbookTransactions.map((transaction) => [
                   transaction.date,
                   transaction.direction === 'IN' ? 'Cash In' : 'Cash Out',
-                  transaction.category,
+                  transaction.paymentType || (transaction.category === 'CASH' || transaction.category === 'BANK'
+                    ? transaction.category
+                    : '—'),
+                  transaction.accountName || transaction.category,
                   transaction.description,
                   transaction.reference || '—',
                   `${transaction.direction === 'OUT' ? '-' : '+'}${currency}${transaction.amount.toFixed(2)}`,
                   transaction.createdBy,
                 ])}
                 cellClassName={(rowIndex, cellIndex) => {
-                  if (cellIndex !== 5) return '';
+                  if (cellIndex !== 6) return '';
                   return visibleCashbookTransactions[rowIndex]?.direction === 'IN'
                     ? 'font-semibold text-emerald-700'
                     : 'font-semibold text-rose-700';

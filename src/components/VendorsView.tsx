@@ -18,6 +18,9 @@ interface VendorsViewProps {
   vendors: Vendor[];
   settings: StoreSettings;
   onRefresh: () => Promise<void>;
+  createOnly?: boolean;
+  onCreateOnlyClose?: () => void;
+  onVendorCreated?: (vendorId: number) => void;
 }
 
 interface VendorFormState {
@@ -58,12 +61,15 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
   vendors,
   settings,
   onRefresh,
+  createOnly = false,
+  onCreateOnlyClose,
+  onVendorCreated,
 }) => {
   const { t, isRtl } = useLanguage();
   const c = isRtl ? 'ر.س ' : (settings.currencySymbol || 'SAR ');
 
   const [search, setSearch] = useState('');
-  const [modalOpen, setModalOpen] = useState(false);
+  const [modalOpen, setModalOpen] = useState(createOnly);
   const [editingVendor, setEditingVendor] = useState<Vendor | null>(null);
   const [form, setForm] = useState<VendorFormState>(EMPTY_FORM);
   const [formError, setFormError] = useState<string | null>(null);
@@ -96,6 +102,11 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
     setForm(EMPTY_FORM);
     setFormError(null);
     setModalOpen(true);
+  };
+
+  const closeModal = () => {
+    setModalOpen(false);
+    if (createOnly) onCreateOnlyClose?.();
   };
 
   const openEditModal = (vend: Vendor) => {
@@ -144,8 +155,23 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
         throw new Error(data.error || (isRtl ? 'فشل حفظ بيانات المورد.' : 'Failed to save vendor.'));
       }
 
+      const createdVendorId =
+        !editingVendor &&
+        typeof data === 'object' &&
+        data !== null &&
+        'id' in data &&
+        typeof data.id === 'number'
+          ? data.id
+          : null;
       await onRefresh();
       setModalOpen(false);
+      if (createOnly) {
+        if (createdVendorId !== null && onVendorCreated) {
+          onVendorCreated(createdVendorId);
+        } else {
+          onCreateOnlyClose?.();
+        }
+      }
     } catch (err) {
       setFormError((err as Error).message);
     } finally {
@@ -190,7 +216,9 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
   };
 
   return (
-    <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 bg-slate-50">
+    <div className={createOnly ? 'contents' : 'flex-1 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 bg-slate-50'}>
+      {!createOnly && (
+        <>
       {vendorNotice && (
         <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg text-xs">
           {vendorNotice}
@@ -412,6 +440,8 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
           </table>
         </div>
       </div>
+        </>
+      )}
 
       {/* Vendor Modal */}
       {modalOpen && (
@@ -420,6 +450,17 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
           role="dialog"
           aria-modal="true"
           aria-labelledby="vendor-modal-title"
+          onKeyDown={(event) => {
+            if (event.altKey && event.key.toLowerCase() === 's') {
+              event.preventDefault();
+              event.stopPropagation();
+              if (!saving) {
+                event.currentTarget
+                  .querySelector<HTMLFormElement>('#vendor-form')
+                  ?.requestSubmit();
+              }
+            }
+          }}
         >
           <div className="bg-white border border-slate-200 rounded-xl max-w-lg w-full overflow-hidden shadow-xl max-h-[90vh] flex flex-col">
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
@@ -430,14 +471,14 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
               </h2>
               <button
                 type="button"
-                onClick={() => setModalOpen(false)}
+                onClick={closeModal}
                 className="p-1 text-slate-400 hover:text-slate-700"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="p-5 space-y-3.5 text-xs overflow-y-auto flex-1">
+            <form id="vendor-form" onSubmit={handleSubmit} className="p-5 space-y-3.5 text-xs overflow-y-auto flex-1">
               {formError && (
                 <div className="p-2.5 bg-red-50 border border-red-200 rounded-lg text-red-800">
                   {formError}
@@ -613,7 +654,7 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
               <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setModalOpen(false)}
+                  onClick={closeModal}
                   className="px-4 py-2 font-medium text-slate-600 hover:text-slate-900 rounded-lg"
                 >
                   {isRtl ? 'إلغاء' : 'Cancel'}
@@ -621,6 +662,8 @@ export const VendorsView: React.FC<VendorsViewProps> = ({
                 <button
                   type="submit"
                   disabled={saving}
+                  title={isRtl ? 'حفظ المورد (Alt+S)' : 'Save vendor (Alt+S)'}
+                  aria-keyshortcuts="Alt+S"
                   className="px-4 py-2 font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg disabled:opacity-50"
                 >
                   {saving

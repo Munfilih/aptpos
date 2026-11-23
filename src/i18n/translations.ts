@@ -348,7 +348,7 @@ export const translations: Record<Language, Translations> = {
     catSnacks: 'Snacks',
 
     // Register View
-    scanOrSearch: 'Scan or enter barcode... (F2)',
+    scanOrSearch: 'Scan or enter barcode...',
     browseCatalog: 'Browse Catalog (F4)',
     holdTicket: 'Hold Ticket (F6)',
     clearCart: 'Clear Cart',
@@ -615,7 +615,7 @@ export const translations: Record<Language, Translations> = {
     catSnacks: 'الوجبات الخفيفة والحلويات',
 
     // Register View
-    scanOrSearch: 'امسح الباركود أو أدخله... (F2)',
+    scanOrSearch: 'امسح الباركود أو أدخله...',
     browseCatalog: 'استعراض الأصناف (F4)',
     holdTicket: 'تعليق الفاتورة (F6)',
     clearCart: 'تفريغ السلة',

@@ -1,11 +1,15 @@
 import fs from 'fs';
 import path from 'path';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import initSqlJs, { Database } from 'sql.js';
 import type {
   Customer,
   CashbookEntry,
   CashbookOpeningBalance,
+  CashierShift,
   CreateCashbookEntryInput,
+  AppComponentId,
   InventoryOption,
   InventoryOptionType,
   ProductAdditionalBarcode,
@@ -15,8 +19,14 @@ import type {
   Product,
   ProductCategory,
   ProductMultiUnit,
+  RegistrationRequest,
+  RegistrationRequestStatus,
+  RegistrationRequestType,
+  PurchaseReturnVoucher,
+  PurchaseReturnItem,
   PurchaseEntry,
   PurchaseItem,
+  CreatePurchaseReturnInput,
   Sale,
   SaleItem,
   SalesReturnVoucher,
@@ -26,6 +36,7 @@ import type {
   UserSession,
   Vendor,
 } from '../src/types/pos';
+import { APP_COMPONENTS, APP_VERSIONS } from '../src/types/pos';
 import { calculateSaleReturnRefund } from '../src/utils/saleReturns';
 import { calculateSalesTax } from '../src/utils/salesTax';
 import { getKotNumberFromInvoice } from '../src/utils/documentNumbers';
@@ -34,6 +45,7 @@ const DATA_DIR = process.env.POS_DATA_DIR || path.resolve(process.cwd(), 'data')
 const DB_PATH = path.join(DATA_DIR, 'pos.sqlite');
 
 let db: Database | null = null;
+let cachedHardwareSystemIdentity: { fingerprint: string; systemCode: string } | null = null;
 
 function saveDatabase(): void {
   if (!db) return;
@@ -85,6 +97,77 @@ export async function getDb(): Promise<Database> {
   return db;
 }
 
+function migrateOptionalProductBarcodes(database: Database): void {
+  const indexes = database.exec('PRAGMA index_list(products)')[0]?.values ?? [];
+  const hasLegacyBarcodeConstraint = indexes.some((index) => {
+    if (Number(index[2]) !== 1 || Number(index[4]) === 1) return false;
+    const indexName = String(index[1]).replace(/"/g, '""');
+    const columns = database.exec(`PRAGMA index_info("${indexName}")`)[0]?.values ?? [];
+    return columns.some((column) => String(column[2]) === 'barcode');
+  });
+
+  if (hasLegacyBarcodeConstraint) {
+    const foreignKeysEnabled =
+      Number(database.exec('PRAGMA foreign_keys')[0]?.values[0]?.[0] ?? 0) === 1;
+    database.run('PRAGMA foreign_keys = OFF');
+    database.run('BEGIN IMMEDIATE');
+    try {
+      database.run(`
+        CREATE TABLE products_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sku TEXT UNIQUE NOT NULL,
+          barcode TEXT NOT NULL DEFAULT '',
+          name TEXT NOT NULL,
+          name_ar TEXT NOT NULL DEFAULT '',
+          category TEXT NOT NULL,
+          brand TEXT NOT NULL DEFAULT '',
+          image_data TEXT NOT NULL DEFAULT '',
+          image_path TEXT NOT NULL DEFAULT '',
+          cost_price REAL NOT NULL DEFAULT 0,
+          retail_price REAL NOT NULL DEFAULT 0,
+          stock INTEGER NOT NULL DEFAULT 0,
+          reorder_level INTEGER NOT NULL DEFAULT 5,
+          unit TEXT NOT NULL DEFAULT 'ea',
+          multi_units TEXT NOT NULL DEFAULT '[]',
+          updated_at TEXT NOT NULL,
+          tax_rate REAL DEFAULT 15
+        )
+      `);
+      database.run(`
+        INSERT INTO products_new (
+          id, sku, barcode, name, name_ar, category, brand, image_data, image_path,
+          cost_price, retail_price, stock, reorder_level, unit, multi_units, updated_at, tax_rate
+        )
+        SELECT
+          id, sku, barcode, name, name_ar, category, brand, image_data, image_path,
+          cost_price, retail_price, stock, reorder_level, unit, multi_units, updated_at, tax_rate
+        FROM products
+      `);
+      database.run('DROP TABLE products');
+      database.run('ALTER TABLE products_new RENAME TO products');
+      database.run('COMMIT');
+    } catch (error) {
+      database.run('ROLLBACK');
+      throw error;
+    } finally {
+      database.run(`PRAGMA foreign_keys = ${foreignKeysEnabled ? 'ON' : 'OFF'}`);
+    }
+  }
+
+  database.run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_products_nonempty_barcode_unique
+     ON products(barcode) WHERE TRIM(barcode) <> ''`
+  );
+  database.run('CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku)');
+  database.run(
+    'CREATE INDEX IF NOT EXISTS idx_products_normalized_sku ON products(LOWER(TRIM(sku)))'
+  );
+  database.run(
+    'CREATE INDEX IF NOT EXISTS idx_products_normalized_barcode ON products(LOWER(TRIM(barcode)))'
+  );
+}
+
 function initSchema(database: Database): void {
   const hasColumn = (table: string, column: string) =>
     database.exec(`PRAGMA table_info(${table})`)[0]?.values.some(
@@ -99,7 +182,7 @@ function initSchema(database: Database): void {
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       sku TEXT UNIQUE NOT NULL,
-      barcode TEXT UNIQUE NOT NULL,
+      barcode TEXT NOT NULL DEFAULT '',
       name TEXT NOT NULL,
       name_ar TEXT NOT NULL DEFAULT '',
       category TEXT NOT NULL,
@@ -206,6 +289,36 @@ function initSchema(database: Database): void {
       value TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS app_installation (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      system_code TEXT NOT NULL UNIQUE,
+      hardware_fingerprint TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS registration_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      request_type TEXT NOT NULL CHECK (request_type IN ('demo', 'license')),
+      system_code TEXT NOT NULL,
+      submitted_key TEXT NOT NULL,
+      requested_by TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'rejected')),
+      created_at TEXT NOT NULL,
+      reviewed_at TEXT,
+      reviewed_by TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS demo_access (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      system_code TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      activated_at TEXT NOT NULL,
+      offline_grace_started_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_registration_requests_status_created
+      ON registration_requests(status, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS inventory_options (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       type TEXT NOT NULL CHECK (type IN ('category', 'brand', 'taxRate', 'unit')),
@@ -220,6 +333,8 @@ function initSchema(database: Database): void {
       entry_date TEXT NOT NULL,
       direction TEXT NOT NULL CHECK (direction IN ('IN', 'OUT')),
       category TEXT NOT NULL,
+      payment_type TEXT,
+      account_name TEXT,
       description TEXT NOT NULL,
       amount REAL NOT NULL CHECK (amount > 0),
       reference TEXT NOT NULL DEFAULT '',
@@ -232,6 +347,19 @@ function initSchema(database: Database): void {
       entry_date TEXT NOT NULL,
       amount REAL NOT NULL CHECK (amount >= 0)
     );
+
+    CREATE TABLE IF NOT EXISTS cashier_shifts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cashier_username TEXT NOT NULL COLLATE NOCASE,
+      cashier_name TEXT NOT NULL,
+      opened_at TEXT NOT NULL,
+      opening_cash REAL NOT NULL CHECK (opening_cash >= 0),
+      closed_at TEXT,
+      closing_cash REAL CHECK (closing_cash IS NULL OR closing_cash >= 0)
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_cashier_shifts_one_open_per_cashier
+      ON cashier_shifts(cashier_username) WHERE closed_at IS NULL;
 
     CREATE TABLE IF NOT EXISTS print_queue (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -301,6 +429,7 @@ function initSchema(database: Database): void {
       total REAL NOT NULL,
       payment_status TEXT NOT NULL DEFAULT 'PAID',
       notes TEXT NOT NULL DEFAULT '',
+      paid_amount REAL NOT NULL DEFAULT 0,
       FOREIGN KEY (vendor_id) REFERENCES vendors(id)
     );
 
@@ -314,6 +443,35 @@ function initSchema(database: Database): void {
       unit_cost REAL NOT NULL,
       line_total REAL NOT NULL,
       FOREIGN KEY (purchase_id) REFERENCES purchases(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS purchase_return_vouchers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      voucher_number TEXT UNIQUE NOT NULL,
+      purchase_id INTEGER NOT NULL,
+      invoice_number TEXT NOT NULL,
+      vendor_id INTEGER NOT NULL,
+      vendor_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      subtotal REAL NOT NULL DEFAULT 0,
+      tax_amount REAL NOT NULL DEFAULT 0,
+      total REAL NOT NULL DEFAULT 0,
+      notes TEXT NOT NULL DEFAULT '',
+      FOREIGN KEY (purchase_id) REFERENCES purchases(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS purchase_return_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      voucher_id INTEGER NOT NULL,
+      purchase_item_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      sku TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      unit_cost REAL NOT NULL,
+      line_total REAL NOT NULL,
+      FOREIGN KEY (voucher_id) REFERENCES purchase_return_vouchers(id),
+      FOREIGN KEY (purchase_item_id) REFERENCES purchase_items(id)
     );
   `);
 
@@ -352,8 +510,11 @@ function initSchema(database: Database): void {
     'ALTER TABLE inventory_options ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE sale_returns ADD COLUMN voucher_id INTEGER',
     'ALTER TABLE sale_returns ADD COLUMN tax_refund_amount REAL NOT NULL DEFAULT 0',
+    'ALTER TABLE cashbook_entries ADD COLUMN payment_type TEXT',
+    'ALTER TABLE cashbook_entries ADD COLUMN account_name TEXT',
     'ALTER TABLE products ADD COLUMN tax_rate REAL DEFAULT 15',
     'ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT ""',
+    'ALTER TABLE purchases ADD COLUMN paid_amount REAL NOT NULL DEFAULT 0',
     'CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)',
     'CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku)',
     'CREATE INDEX IF NOT EXISTS idx_products_normalized_sku ON products(LOWER(TRIM(sku)))',
@@ -364,6 +525,9 @@ function initSchema(database: Database): void {
     'CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id)',
     'CREATE INDEX IF NOT EXISTS idx_sale_returns_sale_id ON sale_returns(sale_id)',
     'CREATE INDEX IF NOT EXISTS idx_sale_returns_voucher_id ON sale_returns(voucher_id)',
+    'CREATE INDEX IF NOT EXISTS idx_purchase_return_vouchers_purchase_id ON purchase_return_vouchers(purchase_id)',
+    'CREATE INDEX IF NOT EXISTS idx_purchase_return_items_voucher_id ON purchase_return_items(voucher_id)',
+    'CREATE INDEX IF NOT EXISTS idx_purchase_return_items_purchase_item_id ON purchase_return_items(purchase_item_id)',
     'DROP INDEX IF EXISTS idx_sales_order_number',
   ];
 
@@ -374,6 +538,24 @@ function initSchema(database: Database): void {
       // Column already exists
     }
   }
+
+  if (!hasColumn('demo_access', 'offline_grace_started_at')) {
+    database.run('ALTER TABLE demo_access ADD COLUMN offline_grace_started_at TEXT');
+  }
+
+  const hasHardwareFingerprint = database.exec('PRAGMA table_info(app_installation)')[0]?.values
+    .some((row) => String(row[1]) === 'hardware_fingerprint') ?? false;
+  if (!hasHardwareFingerprint) {
+    database.run(
+      "ALTER TABLE app_installation ADD COLUMN hardware_fingerprint TEXT NOT NULL DEFAULT ''"
+    );
+  }
+
+  database.run(
+    "UPDATE purchases SET paid_amount = total WHERE payment_status = 'PAID' AND paid_amount = 0"
+  );
+
+  migrateOptionalProductBarcodes(database);
 
   if (!hadProductTaxRate) {
     const configuredTaxRate = Number(
@@ -516,6 +698,26 @@ function seedInventoryOptions(database: Database): void {
       `UPDATE inventory_options SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END
        WHERE type = 'taxRate'`,
       [selectedOption]
+    );
+  }
+  const defaultUnitOption = database.exec(
+    `SELECT id FROM inventory_options
+     WHERE type = 'unit' AND is_default = 1 ORDER BY id LIMIT 1`
+  )[0]?.values[0]?.[0];
+  const preferredUnitOption = database.exec(
+    `SELECT id FROM inventory_options
+     WHERE type = 'unit' AND LOWER(value) = 'ea' ORDER BY id LIMIT 1`
+  )[0]?.values[0]?.[0];
+  const fallbackUnitOption = database.exec(
+    `SELECT id FROM inventory_options WHERE type = 'unit' ORDER BY id LIMIT 1`
+  )[0]?.values[0]?.[0];
+  const selectedUnitOption =
+    defaultUnitOption ?? preferredUnitOption ?? fallbackUnitOption;
+  if (selectedUnitOption !== undefined) {
+    database.run(
+      `UPDATE inventory_options SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END
+       WHERE type = 'unit'`,
+      [selectedUnitOption]
     );
   }
   insert.free();
@@ -1093,15 +1295,23 @@ export async function updateInventoryOption(
       );
     }
   }
-  if (type === 'taxRate' && input.isDefault === true) {
-    database.run(`UPDATE inventory_options SET is_default = 0 WHERE type = 'taxRate'`);
+  if ((type === 'taxRate' || type === 'unit') && input.isDefault === true) {
+    database.run('UPDATE inventory_options SET is_default = 0 WHERE type = ?', [type]);
   }
   database.run(
     `UPDATE inventory_options
      SET value = ?, image_data = ?, is_default = CASE
-       WHEN type = 'taxRate' AND ? = 1 THEN 1 ELSE is_default END
+       WHEN type IN ('taxRate', 'unit') AND ? = 1 THEN 1 ELSE is_default END
      WHERE id = ?`,
-    [value, imageData, type === 'taxRate' && (input.isDefault === true || Boolean(row[3])) ? 1 : 0, id]
+    [
+      value,
+      imageData,
+      (type === 'taxRate' || type === 'unit') &&
+        (input.isDefault === true || Boolean(row[3]))
+        ? 1
+        : 0,
+      id,
+    ]
   );
   saveDatabase();
   return {
@@ -1109,7 +1319,9 @@ export async function updateInventoryOption(
     type,
     value,
     imageData,
-    isDefault: type === 'taxRate' && (input.isDefault === true || Boolean(row[3])),
+    isDefault:
+      (type === 'taxRate' || type === 'unit') &&
+      (input.isDefault === true || Boolean(row[3])),
   };
 }
 
@@ -1123,8 +1335,9 @@ export async function deleteInventoryOption(id: number): Promise<void> {
   if (!row) throw new Error('Inventory option not found.');
   const type = String(row[0]) as InventoryOptionType;
   const value = String(row[1]);
-  if (type === 'taxRate' && Boolean(row[2])) {
-    throw new Error('The default tax rate cannot be deleted. Choose another default first.');
+  if ((type === 'taxRate' || type === 'unit') && Boolean(row[2])) {
+    const optionName = type === 'taxRate' ? 'tax rate' : 'unit';
+    throw new Error(`The default ${optionName} cannot be deleted. Choose another default first.`);
   }
   const productField: Record<InventoryOptionType, string> = {
     category: 'category',
@@ -1364,6 +1577,17 @@ export async function getSettings(): Promise<StoreSettings> {
         (method): method is string => typeof method === 'string' && method.trim().length > 0
       )
     : [];
+  const parsedDisabledComponents: unknown = map.disabledAppComponents
+    ? JSON.parse(map.disabledAppComponents)
+    : [];
+  const disabledAppComponents: AppComponentId[] = Array.isArray(parsedDisabledComponents)
+    ? parsedDisabledComponents.filter((component): component is AppComponentId =>
+        typeof component === 'string' &&
+        APP_COMPONENTS.some((knownComponent) => knownComponent.id === component)
+      )
+    : [];
+  const appVersion =
+      APP_VERSIONS.find((version) => version === map.appVersion) || 'Standard';
   const paymentMethods: string[] = [];
   const seenPaymentMethods = new Set<string>();
   for (const method of ['Cash', 'Card', 'Split', ...configuredPaymentMethods]) {
@@ -1422,6 +1646,9 @@ export async function getSettings(): Promise<StoreSettings> {
     invoiceShowFooter: map.invoiceShowFooter !== 'false',
     invoiceShowQrCode: map.invoiceShowQrCode !== 'false',
     invoiceTemplates: map.invoiceTemplates ? JSON.parse(map.invoiceTemplates) : undefined,
+    appVersion,
+    disabledAppComponents,
+    registeredSystem: map.registeredSystem === 'true',
   };
 }
 
@@ -2445,7 +2672,7 @@ export async function getCashbookData(): Promise<{
 }> {
   const database = await getDb();
   const entriesRes = database.exec(
-    `SELECT id, entry_date, direction, category, description, amount, reference, created_by, created_at
+    `SELECT id, entry_date, direction, category, payment_type, account_name, description, amount, reference, created_by, created_at
      FROM cashbook_entries ORDER BY entry_date DESC, id DESC`
   );
   const openingRes = database.exec(
@@ -2457,11 +2684,13 @@ export async function getCashbookData(): Promise<{
       entryDate: String(row[1]),
       direction: String(row[2]) as 'IN' | 'OUT',
       category: String(row[3]),
-      description: String(row[4]),
-      amount: Number(row[5]),
-      reference: String(row[6]),
-      createdBy: String(row[7]),
-      createdAt: String(row[8]),
+      paymentType: row[4] ? String(row[4]).toUpperCase() as 'CASH' | 'BANK' : undefined,
+      accountName: row[5] ? String(row[5]) : undefined,
+      description: String(row[6]),
+      amount: Number(row[7]),
+      reference: String(row[8]),
+      createdBy: String(row[9]),
+      createdAt: String(row[10]),
     })),
     openingBalance: openingRes[0]?.values[0]
       ? {
@@ -2505,12 +2734,14 @@ export async function createCashbookEntry(
   const createdAt = new Date().toISOString();
   database.run(
     `INSERT INTO cashbook_entries
-       (entry_date, direction, category, description, amount, reference, created_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       (entry_date, direction, category, payment_type, account_name, description, amount, reference, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.entryDate,
       input.direction,
       input.category.trim(),
+      input.paymentType || null,
+      input.accountName || null,
       input.description.trim(),
       amount,
       (input.reference || '').trim(),
@@ -2525,6 +2756,8 @@ export async function createCashbookEntry(
     entryDate: input.entryDate,
     direction: input.direction,
     category: input.category.trim(),
+    paymentType: input.paymentType,
+    accountName: input.accountName,
     description: input.description.trim(),
     amount,
     reference: (input.reference || '').trim(),
@@ -2555,6 +2788,151 @@ export async function setCashbookOpeningBalance(
   return { entryDate: openingBalance.entryDate, amount };
 }
 
+function mapCashierShift(row: unknown[]): CashierShift {
+  return {
+    id: Number(row[0]),
+    cashierUsername: String(row[1]),
+    cashierName: String(row[2]),
+    openedAt: String(row[3]),
+    openingCash: Number(row[4]),
+    closedAt: row[5] === null ? null : String(row[5]),
+    closingCash: row[6] === null ? null : Number(row[6]),
+  };
+}
+
+export async function listCashierShifts(
+  cashierUsername: unknown
+): Promise<{ active: CashierShift | null; history: CashierShift[] }> {
+  if (typeof cashierUsername !== 'string' || !cashierUsername.trim()) {
+    throw new Error('Cashier username is required.');
+  }
+  const username = cashierUsername.trim();
+  const database = await getDb();
+  const result = database.exec(
+    `SELECT id, cashier_username, cashier_name, opened_at, opening_cash, closed_at, closing_cash
+     FROM cashier_shifts
+     WHERE cashier_username = ?
+     ORDER BY id DESC
+     LIMIT 21`,
+    [username]
+  );
+  const shifts = (result[0]?.values || []).map(mapCashierShift);
+  const active = shifts.find((shift) => shift.closedAt === null) || null;
+  return {
+    active,
+    history: shifts.filter((shift) => shift.closedAt !== null).slice(0, 20),
+  };
+}
+
+export async function openCashierShift(input: {
+  cashierUsername: unknown;
+  cashierName: unknown;
+  openingCash: unknown;
+}): Promise<CashierShift> {
+  if (!input || typeof input.cashierUsername !== 'string' || !input.cashierUsername.trim()) {
+    throw new Error('Cashier username is required.');
+  }
+  if (typeof input.cashierName !== 'string' || !input.cashierName.trim()) {
+    throw new Error('Cashier name is required.');
+  }
+  if (
+    typeof input.openingCash !== 'number' ||
+    !Number.isFinite(input.openingCash) ||
+    input.openingCash < 0
+  ) {
+    throw new Error('Opening cash must be a non-negative amount.');
+  }
+  const cashierUsername = input.cashierUsername.trim();
+  const cashierName = input.cashierName.trim();
+  const openingCash = Number(input.openingCash.toFixed(2));
+  const openedAt = new Date().toISOString();
+  const database = await getDb();
+
+  database.run('BEGIN IMMEDIATE');
+  let id: number;
+  try {
+    const active = database.exec(
+      'SELECT id FROM cashier_shifts WHERE cashier_username = ? AND closed_at IS NULL',
+      [cashierUsername]
+    )[0]?.values[0];
+    if (active) throw new Error('This cashier already has an open shift.');
+    database.run(
+      `INSERT INTO cashier_shifts (cashier_username, cashier_name, opened_at, opening_cash)
+       VALUES (?, ?, ?, ?)`,
+      [cashierUsername, cashierName, openedAt, openingCash]
+    );
+    id = Number(database.exec('SELECT last_insert_rowid()')[0].values[0][0]);
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
+  saveDatabase();
+  return {
+    id,
+    cashierUsername,
+    cashierName,
+    openedAt,
+    openingCash,
+    closedAt: null,
+    closingCash: null,
+  };
+}
+
+export async function closeCashierShift(input: {
+  id: unknown;
+  cashierUsername: unknown;
+  closingCash: unknown;
+}): Promise<CashierShift> {
+  if (
+    !input ||
+    typeof input.id !== 'number' ||
+    !Number.isInteger(input.id) ||
+    input.id <= 0
+  ) {
+    throw new Error('A valid shift is required.');
+  }
+  if (typeof input.cashierUsername !== 'string' || !input.cashierUsername.trim()) {
+    throw new Error('Cashier username is required.');
+  }
+  if (
+    typeof input.closingCash !== 'number' ||
+    !Number.isFinite(input.closingCash) ||
+    input.closingCash < 0
+  ) {
+    throw new Error('Closing cash must be a non-negative amount.');
+  }
+  const database = await getDb();
+  const result = database.exec(
+    `SELECT id, cashier_username, cashier_name, opened_at, opening_cash, closed_at, closing_cash
+     FROM cashier_shifts WHERE id = ?`,
+    [Number(input.id)]
+  );
+  const row = result[0]?.values[0];
+  if (!row) throw new Error('Shift not found.');
+  if (String(row[1]).toLowerCase() !== input.cashierUsername.trim().toLowerCase()) {
+    throw new Error('This shift belongs to another cashier.');
+  }
+  if (row[5] !== null) throw new Error('This shift is already closed.');
+
+  const closedAt = new Date().toISOString();
+  const closingCash = Number(input.closingCash.toFixed(2));
+  database.run(
+    'UPDATE cashier_shifts SET closed_at = ?, closing_cash = ? WHERE id = ? AND closed_at IS NULL',
+    [closedAt, closingCash, Number(input.id)]
+  );
+  saveDatabase();
+  return mapCashierShift([
+    row[0],
+    row[1],
+    row[2],
+    row[3],
+    row[4],
+    closedAt,
+    closingCash,
+  ]);
+}
+
 export async function listPrintQueue(): Promise<PrintJob[]> {
   const database = await getDb();
   const res = database.exec(
@@ -2576,6 +2954,329 @@ export async function flushPrintQueue(): Promise<void> {
   const database = await getDb();
   database.run("UPDATE print_queue SET status = 'PRINTED' WHERE status = 'QUEUED'");
   saveDatabase();
+}
+
+function getSystemCode(database: Database): string {
+  if (!cachedHardwareSystemIdentity) {
+    if (process.platform !== 'win32') {
+      throw new Error('Hardware-based system codes are supported on Windows only.');
+    }
+
+    let hardwareUuid = '';
+    try {
+      hardwareUuid = execFileSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          '(Get-CimInstance -ClassName Win32_ComputerSystemProduct).UUID',
+        ],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 20000, windowsHide: true }
+      ).trim().toUpperCase();
+    } catch {
+      throw new Error("Could not read this computer's hardware UUID to create a system code.");
+    }
+
+    if (
+      !/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(hardwareUuid) ||
+      hardwareUuid === '00000000-0000-0000-0000-000000000000' ||
+      hardwareUuid === 'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF'
+    ) {
+      throw new Error('This computer did not provide a valid hardware UUID for its system code.');
+    }
+
+    const fingerprint = createHash('sha256')
+      .update('aptPOS-registration-system-v1:')
+      .update(hardwareUuid)
+      .digest('hex');
+    const systemCode = (
+      BigInt(`0x${fingerprint.slice(0, 16)}`) % 10_000_000_000n
+    ).toString().padStart(10, '0');
+    cachedHardwareSystemIdentity = {
+      fingerprint,
+      systemCode,
+    };
+  }
+
+  const { fingerprint, systemCode } = cachedHardwareSystemIdentity;
+  const existing = database.exec(
+    'SELECT system_code, hardware_fingerprint FROM app_installation WHERE id = 1'
+  );
+  const current = existing[0]?.values[0];
+
+  if (
+    current &&
+    String(current[1]) === fingerprint &&
+    String(current[0]) === systemCode
+  ) {
+    return systemCode;
+  }
+  if (current) {
+    database.run(
+      'UPDATE app_installation SET system_code = ?, hardware_fingerprint = ? WHERE id = 1',
+      [systemCode, fingerprint]
+    );
+  } else {
+    database.run(
+      'INSERT INTO app_installation (id, system_code, hardware_fingerprint) VALUES (1, ?, ?)',
+      [systemCode, fingerprint]
+    );
+  }
+  saveDatabase();
+  return systemCode;
+}
+
+function mapRegistrationRequest(row: unknown[]): RegistrationRequest {
+  return {
+    id: Number(row[0]),
+    requestType: String(row[1]) as RegistrationRequestType,
+    systemCode: String(row[2]),
+    submittedKey: String(row[3]),
+    requestedBy: String(row[4]),
+    status: String(row[5]) as RegistrationRequestStatus,
+    createdAt: String(row[6]),
+    reviewedAt: row[7] === null ? null : String(row[7]),
+    reviewedBy: row[8] === null ? null : String(row[8]),
+  };
+}
+
+export async function getRegistrationSystemCode(): Promise<string> {
+  return getSystemCode(await getDb());
+}
+
+export async function getDemoAccess(): Promise<{
+  status: 'never' | 'active' | 'expired';
+  expiresAt: string | null;
+}> {
+  const database = await getDb();
+  const result = database.exec(
+    'SELECT system_code, expires_at FROM demo_access WHERE id = 1'
+  );
+  const row = result[0]?.values[0];
+  if (!row || String(row[0]) !== getSystemCode(database)) {
+    return { status: 'never', expiresAt: null };
+  }
+
+  const expiresAt = String(row[1]);
+  const expirationTime = Date.parse(expiresAt);
+  if (!Number.isFinite(expirationTime)) {
+    throw new Error('The saved demo expiration date is invalid.');
+  }
+
+  return {
+    status: expirationTime > Date.now() ? 'active' : 'expired',
+    expiresAt,
+  };
+}
+
+export async function saveDemoAccess(expiresAt: string): Promise<void> {
+  const expirationTime = Date.parse(expiresAt);
+  if (!Number.isFinite(expirationTime) || expirationTime <= Date.now()) {
+    throw new Error('The demo activation service returned an invalid or expired date.');
+  }
+
+  const database = await getDb();
+  const systemCode = getSystemCode(database);
+  database.run(
+    `INSERT INTO demo_access (id, system_code, expires_at, activated_at, offline_grace_started_at)
+     VALUES (1, ?, ?, ?, NULL)
+     ON CONFLICT(id) DO UPDATE SET
+       system_code = excluded.system_code,
+       expires_at = excluded.expires_at,
+       activated_at = excluded.activated_at,
+       offline_grace_started_at = NULL`,
+    [systemCode, new Date(expirationTime).toISOString(), new Date().toISOString()]
+  );
+  saveDatabase();
+}
+
+export async function syncDemoAccessStatus(expiresAt: string): Promise<void> {
+  const expirationTime = Date.parse(expiresAt);
+  if (!Number.isFinite(expirationTime)) {
+    throw new Error('The demo status service returned an invalid expiration date.');
+  }
+
+  const database = await getDb();
+  database.run(
+    `INSERT INTO demo_access (id, system_code, expires_at, activated_at, offline_grace_started_at)
+     VALUES (1, ?, ?, ?, NULL)
+     ON CONFLICT(id) DO UPDATE SET
+       system_code = excluded.system_code,
+       expires_at = excluded.expires_at,
+       offline_grace_started_at = NULL`,
+    [
+      getSystemCode(database),
+      new Date(expirationTime).toISOString(),
+      new Date().toISOString(),
+    ]
+  );
+  saveDatabase();
+}
+
+export async function clearDemoAccess(): Promise<void> {
+  const database = await getDb();
+  database.run('DELETE FROM demo_access WHERE id = 1');
+  saveDatabase();
+}
+
+export async function beginDemoOfflineGrace(): Promise<string> {
+  const database = await getDb();
+  const result = database.exec(
+    'SELECT offline_grace_started_at FROM demo_access WHERE id = 1'
+  );
+  const storedValue = result[0]?.values[0]?.[0];
+  if (typeof storedValue === 'string' && storedValue) {
+    if (!Number.isFinite(Date.parse(storedValue))) {
+      throw new Error('The saved demo offline-grace timestamp is invalid.');
+    }
+    return storedValue;
+  }
+
+  const startedAt = new Date().toISOString();
+  database.run(
+    'UPDATE demo_access SET offline_grace_started_at = ? WHERE id = 1',
+    [startedAt]
+  );
+  saveDatabase();
+  return startedAt;
+}
+
+function storedDemoAccess(database: Database): {
+  expiresAt: string;
+  activatedAt: string;
+  offlineGraceStartedAt: string | null;
+} | null {
+  const result = database.exec(
+    'SELECT expires_at, activated_at, offline_grace_started_at FROM demo_access WHERE id = 1'
+  );
+  const row = result[0]?.values[0];
+  if (!row) return null;
+  return {
+    expiresAt: String(row[0]),
+    activatedAt: String(row[1]),
+    offlineGraceStartedAt: row[2] == null ? null : String(row[2]),
+  };
+}
+
+function restoreDemoAccess(database: Database, access: {
+  expiresAt: string;
+  activatedAt: string;
+  offlineGraceStartedAt: string | null;
+} | null, systemCode: string): void {
+  if (!access) return;
+  const expirationTime = Date.parse(access.expiresAt);
+  const activatedTime = Date.parse(access.activatedAt);
+  const offlineGraceStartedTime = access.offlineGraceStartedAt === null
+    ? null
+    : Date.parse(access.offlineGraceStartedAt);
+  if (
+    !Number.isFinite(expirationTime) ||
+    !Number.isFinite(activatedTime) ||
+    (offlineGraceStartedTime !== null && !Number.isFinite(offlineGraceStartedTime))
+  ) {
+    throw new Error('The saved demo activation record is invalid.');
+  }
+  database.run(
+    `INSERT OR REPLACE INTO demo_access
+       (id, system_code, expires_at, activated_at, offline_grace_started_at)
+     VALUES (1, ?, ?, ?, ?)`,
+    [
+      systemCode,
+      new Date(expirationTime).toISOString(),
+      new Date(activatedTime).toISOString(),
+      offlineGraceStartedTime === null ? null : new Date(offlineGraceStartedTime).toISOString(),
+    ]
+  );
+}
+
+export async function createRegistrationRequest(input: {
+  requestType: RegistrationRequestType;
+  systemCode: string;
+  submittedKey: string;
+  requestedBy: string;
+}): Promise<RegistrationRequest> {
+  const database = await getDb();
+  const systemCode = input.systemCode.trim().toUpperCase();
+  const submittedKey = input.submittedKey.trim();
+  const requestedBy = input.requestedBy.trim();
+
+  if (input.requestType !== 'demo' && input.requestType !== 'license') {
+    throw new Error('Choose a valid registration request type.');
+  }
+  if (systemCode !== getSystemCode(database)) {
+    throw new Error('The system code does not match this aptPOS installation.');
+  }
+  if (!submittedKey || submittedKey.length > 256) {
+    throw new Error('Enter a valid activation key.');
+  }
+  if (!requestedBy || requestedBy.length > 100) {
+    throw new Error('The signed-in username is invalid.');
+  }
+
+  const pendingRequest = database.exec(
+    `SELECT id FROM registration_requests
+     WHERE request_type = ? AND system_code = ? AND status = 'pending'
+     LIMIT 1`,
+    [input.requestType, systemCode]
+  );
+  if (pendingRequest[0]?.values[0]) {
+    throw new Error('A request of this type is already pending for this system.');
+  }
+
+  database.run(
+    `INSERT INTO registration_requests (
+      request_type, system_code, submitted_key, requested_by, status, created_at
+    ) VALUES (?, ?, ?, ?, 'pending', ?)`,
+    [input.requestType, systemCode, submittedKey, requestedBy, new Date().toISOString()]
+  );
+  const idResult = database.exec('SELECT last_insert_rowid()');
+  const id = Number(idResult[0]?.values[0]?.[0]);
+  saveDatabase();
+
+  const created = database.exec(
+    `SELECT id, request_type, system_code, submitted_key, requested_by, status,
+            created_at, reviewed_at, reviewed_by
+     FROM registration_requests WHERE id = ?`,
+    [id]
+  );
+  if (!created[0]?.values[0]) throw new Error('The registration request could not be saved.');
+  return mapRegistrationRequest(created[0].values[0]);
+}
+
+export async function listRegistrationRequests(): Promise<RegistrationRequest[]> {
+  const database = await getDb();
+  const result = database.exec(
+    `SELECT id, request_type, system_code, submitted_key, requested_by, status,
+            created_at, reviewed_at, reviewed_by
+     FROM registration_requests
+     ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, id DESC`
+  );
+  return result[0]?.values.map(mapRegistrationRequest) ?? [];
+}
+
+export async function reviewRegistrationRequest(
+  id: number,
+  status: Exclude<RegistrationRequestStatus, 'pending'>
+): Promise<RegistrationRequest | null> {
+  const database = await getDb();
+  database.run(
+    `UPDATE registration_requests
+     SET status = ?, reviewed_at = ?, reviewed_by = 'aptadmin'
+     WHERE id = ? AND status = 'pending'`,
+    [status, new Date().toISOString(), id]
+  );
+  const updatedRows = Number(database.exec('SELECT changes()')[0]?.values[0]?.[0] ?? 0);
+  if (updatedRows === 0) return null;
+  saveDatabase();
+
+  const result = database.exec(
+    `SELECT id, request_type, system_code, submitted_key, requested_by, status,
+            created_at, reviewed_at, reviewed_by
+     FROM registration_requests WHERE id = ?`,
+    [id]
+  );
+  return result[0]?.values[0] ? mapRegistrationRequest(result[0].values[0]) : null;
 }
 
 export async function authenticateUser(
@@ -2703,6 +3404,9 @@ export async function updateUser(
   );
   if (!existingRes[0]?.values[0]) return null;
   const current = existingRes[0].values[0];
+  if (String(current[1]).toLowerCase() === 'aptadmin') {
+    throw new Error('The primary company admin account cannot be edited.');
+  }
 
   const username = input.username !== undefined ? input.username.trim() : String(current[1]);
   if (input.username !== undefined) {
@@ -2965,12 +3669,20 @@ export async function listVendors(search?: string): Promise<Vendor[]> {
   if (!res[0]) return [];
 
   // Aggregate purchases
-  const purchRes = database.exec(`SELECT vendor_id, total FROM purchases`);
+  const purchRes = database.exec(`SELECT id, vendor_id, total FROM purchases`);
+  const purchaseReturnRes = database.exec(
+    'SELECT purchase_id, SUM(total) FROM purchase_return_vouchers GROUP BY purchase_id'
+  );
+  const purchaseReturnsByPurchase = new Map<number, number>();
+  for (const row of purchaseReturnRes[0]?.values || []) {
+    purchaseReturnsByPurchase.set(Number(row[0]), Number(row[1]));
+  }
   const purchasesByVendor = new Map<number, { total: number; count: number }>();
   if (purchRes[0]) {
     for (const r of purchRes[0].values) {
-      const vId = Number(r[0]);
-      const tot = Number(r[1]);
+      const purchaseId = Number(r[0]);
+      const vId = Number(r[1]);
+      const tot = Math.max(0, Number(r[2]) - (purchaseReturnsByPurchase.get(purchaseId) || 0));
       const cur = purchasesByVendor.get(vId) || { total: 0, count: 0 };
       purchasesByVendor.set(vId, { total: cur.total + tot, count: cur.count + 1 });
     }
@@ -3152,7 +3864,7 @@ export async function deleteVendor(id: number): Promise<boolean> {
 export async function listPurchases(): Promise<PurchaseEntry[]> {
   const database = await getDb();
   const res = database.exec(
-    `SELECT id, invoice_number, vendor_id, vendor_name, created_at, received_date, subtotal, tax_amount, shipping_cost, total, payment_status, notes
+    `SELECT id, invoice_number, vendor_id, vendor_name, created_at, received_date, subtotal, tax_amount, shipping_cost, total, payment_status, notes, paid_amount
      FROM purchases ORDER BY id DESC`
   );
   if (!res[0]) return [];
@@ -3195,6 +3907,7 @@ export async function listPurchases(): Promise<PurchaseEntry[]> {
       total: Number(row[9]),
       paymentStatus: String(row[10]) as 'PAID' | 'PENDING' | 'PARTIAL',
       notes: String(row[11] || ''),
+      paidAmount: Number(row[12] ?? (String(row[10]) === 'PAID' ? row[9] : 0)),
       items: itemsByPurchase.get(id) || [],
     };
   });
@@ -3207,6 +3920,7 @@ export interface CreatePurchaseInput {
   taxAmount?: number;
   shippingCost?: number;
   paymentStatus?: 'PAID' | 'PENDING' | 'PARTIAL';
+  paidAmount?: number;
   notes?: string;
   updateCostPrices?: boolean;
   items: Array<{
@@ -3214,6 +3928,18 @@ export interface CreatePurchaseInput {
     quantity: number;
     unitCost: number;
   }>;
+}
+
+function getPurchasePaymentStatus(
+  paidAmount: number,
+  total: number,
+  preferredStatus?: 'PAID' | 'PENDING' | 'PARTIAL'
+): 'PAID' | 'PENDING' | 'PARTIAL' {
+  if ((total > 0 && paidAmount >= total) || (total === 0 && preferredStatus === 'PAID')) {
+    return 'PAID';
+  }
+  if (paidAmount > 0 || preferredStatus === 'PARTIAL') return 'PARTIAL';
+  return 'PENDING';
 }
 
 export async function createPurchaseEntry(
@@ -3252,8 +3978,14 @@ export async function createPurchaseEntry(
     }
     const sku = String(prodRes[0].values[0][1]);
     const name = String(prodRes[0].values[0][2]);
-    const qty = Math.max(1, parseInt(String(item.quantity), 10) || 1);
-    const cost = Math.max(0, Number(item.unitCost) || 0);
+    const qty = Number(item.quantity);
+    const cost = Number(item.unitCost);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      throw new Error('Purchase item quantity must be greater than zero.');
+    }
+    if (!Number.isFinite(cost) || cost < 0) {
+      throw new Error('Purchase item cost must be zero or greater.');
+    }
     const lineTotal = Number((qty * cost).toFixed(2));
     resolvedItems.push({
       productId: item.productId,
@@ -3271,14 +4003,23 @@ export async function createPurchaseEntry(
   const tax = Number(Number(input.taxAmount || 0).toFixed(2));
   const shipping = Number(Number(input.shippingCost || 0).toFixed(2));
   const total = Number((subtotal + tax + shipping).toFixed(2));
+  const paidAmount = input.paidAmount === undefined
+    ? (input.paymentStatus === undefined || input.paymentStatus === 'PAID' ? total : 0)
+    : Number(input.paidAmount);
+  if (!Number.isFinite(paidAmount) || paidAmount < 0 || paidAmount > total) {
+    throw new Error('Paid amount must be between zero and the purchase total.');
+  }
+  const paymentStatus = input.paidAmount === undefined
+    ? (input.paymentStatus || 'PAID')
+    : getPurchasePaymentStatus(paidAmount, total, input.paymentStatus);
   const now = new Date().toISOString();
   const receivedDate = input.receivedDate || now.slice(0, 10);
 
   database.run(
     `INSERT INTO purchases (
       invoice_number, vendor_id, vendor_name, created_at, received_date,
-      subtotal, tax_amount, shipping_cost, total, payment_status, notes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      subtotal, tax_amount, shipping_cost, total, payment_status, notes, paid_amount
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.invoiceNumber.trim(),
       input.vendorId,
@@ -3289,8 +4030,9 @@ export async function createPurchaseEntry(
       tax,
       shipping,
       total,
-      input.paymentStatus || 'PAID',
+      paymentStatus,
       (input.notes || '').trim(),
+      paidAmount,
     ]
   );
 
@@ -3343,10 +4085,286 @@ export async function createPurchaseEntry(
     taxAmount: tax,
     shippingCost: shipping,
     total,
-    paymentStatus: input.paymentStatus || 'PAID',
+    paymentStatus,
+    paidAmount,
     notes: (input.notes || '').trim(),
     items: purchaseItems,
   };
+}
+
+export async function listPurchaseReturnVouchers(): Promise<PurchaseReturnVoucher[]> {
+  const database = await getDb();
+  const vouchersRes = database.exec(
+    `SELECT id, voucher_number, purchase_id, invoice_number, vendor_id, vendor_name,
+            created_at, subtotal, tax_amount, total, notes
+     FROM purchase_return_vouchers ORDER BY id DESC`
+  );
+  if (!vouchersRes[0]) return [];
+
+  const itemsRes = database.exec(
+    `SELECT id, voucher_id, purchase_item_id, product_id, sku, product_name,
+            quantity, unit_cost, line_total
+     FROM purchase_return_items ORDER BY id ASC`
+  );
+  const itemsByVoucher = new Map<number, PurchaseReturnItem[]>();
+  for (const row of itemsRes[0]?.values || []) {
+    const item: PurchaseReturnItem = {
+      id: Number(row[0]),
+      voucherId: Number(row[1]),
+      purchaseItemId: Number(row[2]),
+      productId: Number(row[3]),
+      sku: String(row[4]),
+      productName: String(row[5]),
+      quantity: Number(row[6]),
+      unitCost: Number(row[7]),
+      lineTotal: Number(row[8]),
+    };
+    const items = itemsByVoucher.get(item.voucherId) || [];
+    items.push(item);
+    itemsByVoucher.set(item.voucherId, items);
+  }
+
+  return vouchersRes[0].values.map((row) => {
+    const id = Number(row[0]);
+    return {
+      id,
+      voucherNumber: String(row[1]),
+      purchaseId: Number(row[2]),
+      invoiceNumber: String(row[3]),
+      vendorId: Number(row[4]),
+      vendorName: String(row[5]),
+      createdAt: String(row[6]),
+      subtotal: Number(row[7]),
+      taxAmount: Number(row[8]),
+      total: Number(row[9]),
+      notes: String(row[10] || ''),
+      items: itemsByVoucher.get(id) || [],
+    };
+  });
+}
+
+export async function createPurchaseReturnVoucher(
+  input: CreatePurchaseReturnInput
+): Promise<PurchaseReturnVoucher> {
+  const purchaseId = Number(input.purchaseId);
+  if (!Number.isInteger(purchaseId) || purchaseId <= 0) {
+    throw new Error('A valid purchase invoice is required.');
+  }
+  if (!Array.isArray(input.items) || input.items.length === 0) {
+    throw new Error('Purchase return must contain at least one item.');
+  }
+
+  const database = await getDb();
+  const now = new Date().toISOString();
+  const year = now.slice(0, 4);
+  const requestedItems = new Map<number, number>();
+  for (const item of input.items) {
+    const purchaseItemId = Number(item.purchaseItemId);
+    const quantity = Number(item.quantity);
+    if (!Number.isInteger(purchaseItemId) || purchaseItemId <= 0) {
+      throw new Error('Purchase return contains an invalid purchase item.');
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      throw new Error('Return quantity must be greater than zero.');
+    }
+    if (requestedItems.has(purchaseItemId)) {
+      throw new Error('Purchase return contains the same item more than once.');
+    }
+    requestedItems.set(purchaseItemId, quantity);
+  }
+
+  let voucherId = 0;
+  database.run('BEGIN IMMEDIATE');
+  try {
+    const purchaseRes = database.exec(
+      `SELECT id, invoice_number, vendor_id, vendor_name, subtotal, tax_amount
+       FROM purchases WHERE id = ?`,
+      [purchaseId]
+    );
+    const purchaseRow = purchaseRes[0]?.values[0];
+    if (!purchaseRow) throw new Error('Purchase invoice not found.');
+
+    const purchaseItemsRes = database.exec(
+      `SELECT id, product_id, sku, product_name, quantity, unit_cost
+       FROM purchase_items WHERE purchase_id = ?`,
+      [purchaseId]
+    );
+    const sourceItems = new Map<number, {
+      productId: number;
+      sku: string;
+      productName: string;
+      quantity: number;
+      unitCost: number;
+    }>();
+    for (const row of purchaseItemsRes[0]?.values || []) {
+      sourceItems.set(Number(row[0]), {
+        productId: Number(row[1]),
+        sku: String(row[2]),
+        productName: String(row[3]),
+        quantity: Number(row[4]),
+        unitCost: Number(row[5]),
+      });
+    }
+    const previouslyReturned = new Map<number, number>();
+    const returnedRes = database.exec(
+      `SELECT purchase_return_items.purchase_item_id, SUM(purchase_return_items.quantity)
+       FROM purchase_return_items
+       JOIN purchase_return_vouchers
+         ON purchase_return_vouchers.id = purchase_return_items.voucher_id
+       WHERE purchase_return_vouchers.purchase_id = ?
+       GROUP BY purchase_return_items.purchase_item_id`,
+      [purchaseId]
+    );
+    for (const row of returnedRes[0]?.values || []) {
+      previouslyReturned.set(Number(row[0]), Number(row[1]));
+    }
+
+    const resolvedItems: Array<PurchaseReturnItem & { productId: number }> = [];
+    for (const [purchaseItemId, quantity] of requestedItems) {
+      const sourceItem = sourceItems.get(purchaseItemId);
+      if (!sourceItem) throw new Error('A returned item does not belong to this purchase invoice.');
+      const remaining = sourceItem.quantity - (previouslyReturned.get(purchaseItemId) || 0);
+      if (quantity > remaining + 0.000001) {
+        throw new Error(`Return quantity exceeds the remaining quantity for ${sourceItem.productName}.`);
+      }
+      const productRes = database.exec('SELECT stock FROM products WHERE id = ?', [
+        sourceItem.productId,
+      ]);
+      const stock = productRes[0]?.values[0] ? Number(productRes[0].values[0][0]) : null;
+      if (stock === null) throw new Error(`Product #${sourceItem.productId} no longer exists.`);
+      if (stock + 0.000001 < quantity) {
+        throw new Error(`Cannot return ${sourceItem.productName}; there is not enough stock on hand.`);
+      }
+      resolvedItems.push({
+        id: 0,
+        voucherId: 0,
+        purchaseItemId,
+        productId: sourceItem.productId,
+        sku: sourceItem.sku,
+        productName: sourceItem.productName,
+        quantity,
+        unitCost: sourceItem.unitCost,
+        lineTotal: Number((quantity * sourceItem.unitCost).toFixed(2)),
+      });
+    }
+
+    const subtotal = Number(
+      resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0).toFixed(2)
+    );
+    const sourceSubtotal = Number(purchaseRow[4]);
+    const sourceTax = Number(purchaseRow[5]);
+    const previousTaxRes = database.exec(
+      'SELECT COALESCE(SUM(tax_amount), 0) FROM purchase_return_vouchers WHERE purchase_id = ?',
+      [purchaseId]
+    );
+    const remainingTax = Math.max(
+      0,
+      sourceTax - Number(previousTaxRes[0]?.values[0]?.[0] || 0)
+    );
+    const taxAmount = sourceSubtotal > 0
+      ? Math.min(remainingTax, Number((sourceTax * subtotal / sourceSubtotal).toFixed(2)))
+      : 0;
+    const total = Number((subtotal + taxAmount).toFixed(2));
+    const voucherNumberSeed = `PR-${year}-${Date.now()}`;
+    database.run(
+      `INSERT INTO purchase_return_vouchers (
+        voucher_number, purchase_id, invoice_number, vendor_id, vendor_name,
+        created_at, subtotal, tax_amount, total, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        voucherNumberSeed,
+        purchaseId,
+        String(purchaseRow[1]),
+        Number(purchaseRow[2]),
+        String(purchaseRow[3]),
+        now,
+        subtotal,
+        taxAmount,
+        total,
+        (input.notes || '').trim(),
+      ]
+    );
+    voucherId = Number(database.exec('SELECT last_insert_rowid()')[0].values[0][0]);
+    const voucherNumber = `PR-${year}-${String(voucherId).padStart(6, '0')}`;
+    database.run('UPDATE purchase_return_vouchers SET voucher_number = ? WHERE id = ?', [
+      voucherNumber,
+      voucherId,
+    ]);
+
+    for (const item of resolvedItems) {
+      database.run(
+        `INSERT INTO purchase_return_items (
+          voucher_id, purchase_item_id, product_id, sku, product_name,
+          quantity, unit_cost, line_total
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          voucherId,
+          item.purchaseItemId,
+          item.productId,
+          item.sku,
+          item.productName,
+          item.quantity,
+          item.unitCost,
+          item.lineTotal,
+        ]
+      );
+      database.run(
+        'UPDATE products SET stock = stock - ?, updated_at = ? WHERE id = ?',
+        [item.quantity, now, item.productId]
+      );
+    }
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
+
+  saveDatabase();
+  const voucher = (await listPurchaseReturnVouchers()).find((entry) => entry.id === voucherId);
+  if (!voucher) throw new Error('Purchase return was saved, but could not be loaded.');
+  return voucher;
+}
+
+export async function deletePurchaseReturnVoucher(voucherId: number): Promise<boolean> {
+  if (!Number.isInteger(voucherId) || voucherId <= 0) {
+    throw new Error('Invalid purchase return voucher ID.');
+  }
+  const database = await getDb();
+  const voucherRes = database.exec(
+    'SELECT id FROM purchase_return_vouchers WHERE id = ?',
+    [voucherId]
+  );
+  if (!voucherRes[0]?.values[0]) return false;
+  const now = new Date().toISOString();
+
+  database.run('BEGIN IMMEDIATE');
+  try {
+    const returnedItems = database.exec(
+      `SELECT product_id, SUM(quantity)
+       FROM purchase_return_items WHERE voucher_id = ? GROUP BY product_id`,
+      [voucherId]
+    )[0]?.values || [];
+    for (const row of returnedItems) {
+      const productId = Number(row[0]);
+      const quantity = Number(row[1]);
+      const productRes = database.exec('SELECT id FROM products WHERE id = ?', [productId]);
+      if (!productRes[0]?.values[0]) throw new Error('A returned product no longer exists.');
+      database.run('UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?', [
+        quantity,
+        now,
+        productId,
+      ]);
+    }
+    database.run('DELETE FROM purchase_return_items WHERE voucher_id = ?', [voucherId]);
+    database.run('DELETE FROM purchase_return_vouchers WHERE id = ?', [voucherId]);
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
+
+  saveDatabase();
+  return true;
 }
 
 export async function deleteSale(saleId: number): Promise<boolean> {
@@ -3697,6 +4715,13 @@ export async function deletePurchase(purchaseId: number): Promise<boolean> {
   const purchases = await listPurchases();
   const target = purchases.find((p) => p.id === purchaseId);
   if (!target) return false;
+  const returnRes = database.exec(
+    'SELECT 1 FROM purchase_return_vouchers WHERE purchase_id = ? LIMIT 1',
+    [purchaseId]
+  );
+  if (returnRes[0]?.values.length) {
+    throw new Error('Purchase invoices with returns cannot be deleted.');
+  }
 
   const now = new Date().toISOString();
   // Reverse inventory increase: subtract quantities received
@@ -3721,33 +4746,200 @@ export async function updatePurchase(
     vendorId?: number;
     receivedDate?: string;
     paymentStatus?: 'PAID' | 'PENDING' | 'PARTIAL';
+    paidAmount?: number;
     notes?: string;
+    taxAmount?: number;
+    shippingCost?: number;
+    updateCostPrices?: boolean;
+    items?: Array<{
+      productId: number;
+      quantity: number;
+      unitCost: number;
+    }>;
   }
 ): Promise<PurchaseEntry | null> {
   const database = await getDb();
   const purchases = await listPurchases();
   const target = purchases.find((p) => p.id === purchaseId);
   if (!target) return null;
-
-  let vendorName = target.vendorName;
-  let vendorId = target.vendorId;
-  if (input.vendorId && input.vendorId !== target.vendorId) {
-    const vRes = database.exec('SELECT name FROM vendors WHERE id = ?', [input.vendorId]);
-    if (vRes[0]?.values[0]) {
-      vendorId = input.vendorId;
-      vendorName = String(vRes[0].values[0][0]);
-    }
+  const returnRes = database.exec(
+    'SELECT 1 FROM purchase_return_vouchers WHERE purchase_id = ? LIMIT 1',
+    [purchaseId]
+  );
+  if (returnRes[0]?.values.length) {
+    throw new Error('Purchase invoices with returns cannot be edited.');
   }
+
+  const vendorId = input.vendorId === undefined ? target.vendorId : Number(input.vendorId);
+  const vendorRes = database.exec('SELECT name FROM vendors WHERE id = ?', [vendorId]);
+  if (!vendorRes[0]?.values[0]) {
+    throw new Error('Vendor not found.');
+  }
+  const vendorName = String(vendorRes[0].values[0][0]);
 
   const invoiceNumber = input.invoiceNumber !== undefined ? input.invoiceNumber.trim() : target.invoiceNumber;
   const receivedDate = input.receivedDate !== undefined ? input.receivedDate : target.receivedDate;
-  const paymentStatus = input.paymentStatus !== undefined ? input.paymentStatus : target.paymentStatus;
+  const requestedPaymentStatus =
+    input.paymentStatus !== undefined ? input.paymentStatus : target.paymentStatus;
   const notes = input.notes !== undefined ? input.notes.trim() : target.notes;
+  if (!invoiceNumber) throw new Error('Invoice number is required.');
 
-  database.run(
-    `UPDATE purchases SET invoice_number = ?, vendor_id = ?, vendor_name = ?, received_date = ?, payment_status = ?, notes = ? WHERE id = ?`,
-    [invoiceNumber, vendorId, vendorName, receivedDate, paymentStatus, notes, purchaseId]
-  );
+  const resolvedItems: Array<{
+    productId: number;
+    sku: string;
+    productName: string;
+    quantity: number;
+    unitCost: number;
+    lineTotal: number;
+  }> | undefined = input.items?.map((item) => {
+    const productId = Number(item.productId);
+    const quantity = Number(item.quantity);
+    const unitCost = Number(item.unitCost);
+    if (!Number.isInteger(productId) || productId <= 0) {
+      throw new Error('Purchase item has an invalid product.');
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      throw new Error('Purchase item quantity must be greater than zero.');
+    }
+    if (!Number.isFinite(unitCost) || unitCost < 0) {
+      throw new Error('Purchase item cost must be zero or greater.');
+    }
+    const productRes = database.exec(
+      'SELECT sku, name FROM products WHERE id = ?',
+      [productId]
+    );
+    if (!productRes[0]?.values[0]) {
+      throw new Error(`Product #${productId} not found.`);
+    }
+    return {
+      productId,
+      sku: String(productRes[0].values[0][0]),
+      productName: String(productRes[0].values[0][1]),
+      quantity,
+      unitCost,
+      lineTotal: Number((quantity * unitCost).toFixed(2)),
+    };
+  });
+  if (resolvedItems && resolvedItems.length === 0) {
+    throw new Error('Purchase entry must contain at least one item.');
+  }
+
+  const subtotal = resolvedItems
+    ? Number(resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0).toFixed(2))
+    : target.subtotal;
+  const taxAmount = input.taxAmount === undefined ? target.taxAmount : Number(input.taxAmount);
+  const shippingCost = input.shippingCost === undefined ? target.shippingCost : Number(input.shippingCost);
+  if (!Number.isFinite(taxAmount) || taxAmount < 0) {
+    throw new Error('Tax amount must be zero or greater.');
+  }
+  if (!Number.isFinite(shippingCost) || shippingCost < 0) {
+    throw new Error('Shipping cost must be zero or greater.');
+  }
+  const total = Number((subtotal + taxAmount + shippingCost).toFixed(2));
+  const paidAmount = input.paidAmount !== undefined
+    ? Number(input.paidAmount)
+    : requestedPaymentStatus === 'PAID'
+      ? total
+      : requestedPaymentStatus === 'PENDING'
+        ? 0
+        : target.paymentStatus === 'PARTIAL'
+          ? Math.min(target.paidAmount, total)
+          : 0;
+  if (!Number.isFinite(paidAmount) || paidAmount < 0 || paidAmount > total) {
+    throw new Error('Paid amount must be between zero and the purchase total.');
+  }
+  const paymentStatus = input.paidAmount === undefined
+    ? requestedPaymentStatus
+    : getPurchasePaymentStatus(paidAmount, total, input.paymentStatus);
+
+  const now = new Date().toISOString();
+  database.run('BEGIN IMMEDIATE');
+  try {
+    if (resolvedItems) {
+      const stockDeltas = new Map<number, number>();
+      const latestCosts = new Map<number, number>();
+      for (const item of target.items) {
+        stockDeltas.set(
+          item.productId,
+          (stockDeltas.get(item.productId) || 0) - item.quantity
+        );
+      }
+      for (const item of resolvedItems) {
+        stockDeltas.set(
+          item.productId,
+          (stockDeltas.get(item.productId) || 0) + item.quantity
+        );
+        latestCosts.set(item.productId, item.unitCost);
+      }
+
+      for (const [productId, delta] of stockDeltas) {
+        const productRes = database.exec('SELECT stock FROM products WHERE id = ?', [productId]);
+        if (!productRes[0]?.values[0]) {
+          throw new Error(`Product #${productId} not found.`);
+        }
+        const stock = Number(productRes[0].values[0][0]);
+        const nextStock = stock + delta;
+        if (nextStock < -0.000001) {
+          throw new Error(`Cannot reduce product #${productId} stock below zero while editing this purchase.`);
+        }
+        const safeStock = Math.max(0, nextStock);
+        const nextCost = latestCosts.get(productId);
+        if (input.updateCostPrices && nextCost !== undefined) {
+          database.run(
+            'UPDATE products SET stock = ?, cost_price = ?, updated_at = ? WHERE id = ?',
+            [safeStock, nextCost, now, productId]
+          );
+        } else {
+          database.run(
+            'UPDATE products SET stock = ?, updated_at = ? WHERE id = ?',
+            [safeStock, now, productId]
+          );
+        }
+      }
+
+      database.run('DELETE FROM purchase_items WHERE purchase_id = ?', [purchaseId]);
+      for (const item of resolvedItems) {
+        database.run(
+          `INSERT INTO purchase_items (purchase_id, product_id, sku, product_name, quantity, unit_cost, line_total)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            purchaseId,
+            item.productId,
+            item.sku,
+            item.productName,
+            item.quantity,
+            item.unitCost,
+            item.lineTotal,
+          ]
+        );
+      }
+    }
+
+    database.run(
+      `UPDATE purchases
+       SET invoice_number = ?, vendor_id = ?, vendor_name = ?, received_date = ?,
+           subtotal = ?, tax_amount = ?, shipping_cost = ?, total = ?, payment_status = ?, notes = ?, paid_amount = ?
+       WHERE id = ?`,
+      [
+        invoiceNumber,
+        vendorId,
+        vendorName,
+        receivedDate,
+        subtotal,
+        taxAmount,
+        shippingCost,
+        total,
+        paymentStatus,
+        notes,
+        paidAmount,
+        purchaseId,
+      ]
+    );
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
 
   saveDatabase();
   const updatedPurchases = await listPurchases();
@@ -3756,6 +4948,8 @@ export async function updatePurchase(
 
 export async function resetDatabase(): Promise<boolean> {
   const database = await getDb();
+  const demoAccess = storedDemoAccess(database);
+  const systemCode = getSystemCode(database);
 
   database.run('PRAGMA foreign_keys = OFF');
   let transactionStarted = false;
@@ -3784,6 +4978,7 @@ export async function resetDatabase(): Promise<boolean> {
     initSchema(database);
     seedInitialData(database);
     seedInventoryOptions(database);
+    restoreDemoAccess(database, demoAccess, systemCode);
     database.run('DELETE FROM sqlite_sequence');
     database.run('COMMIT');
     transactionStarted = false;
@@ -3816,6 +5011,8 @@ export async function restoreDatabase(fileBuffer: Buffer): Promise<boolean> {
     throw new Error('Invalid SQLite file format. Must be a valid SQLite database.');
   }
 
+  const database = await getDb();
+  const demoAccess = storedDemoAccess(database);
   const SQL = await initSqlJs();
   const newDb = new SQL.Database(fileBuffer);
   
@@ -3824,6 +5021,8 @@ export async function restoreDatabase(fileBuffer: Buffer): Promise<boolean> {
   
   // Replace active database in memory
   db = newDb;
+  const systemCode = getSystemCode(newDb);
+  restoreDemoAccess(newDb, demoAccess, systemCode);
   saveDatabase();
 
   return true;
@@ -3881,7 +5080,7 @@ export async function importProducts(
           errors.push(`Row ${i + 1}: SKU and Name are required.`);
           continue;
         }
-        const barcode = (row.barcode || sku).trim();
+        const barcode = (row.barcode || '').trim();
         const category = (row.category || '').trim() as ProductCategory;
         const costPrice = Math.max(0, Number(row.costPrice) || 0);
         const retailPrice = Math.max(0, Number(row.retailPrice) || 0);

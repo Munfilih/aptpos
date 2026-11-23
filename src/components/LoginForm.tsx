@@ -1,27 +1,37 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { AlertCircle, Lock, User, ShoppingBag, Sparkles, Globe } from 'lucide-react';
-import type { UserSession } from '../types/pos';
+import { AlertCircle, Lock, User, ShoppingBag, Sparkles, Globe, ArrowRight, ReceiptText, BarChart3, PackageCheck } from 'lucide-react';
+import type { DemoAccessStatus, UserSession } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
 
 interface LoginFormProps {
   onLoginSuccess: (user: UserSession) => void;
+  onDemoRegistrationRequested: (user: UserSession, status: DemoAccessStatus) => void;
+  initialError?: string | null;
 }
 
-export const LoginForm: React.FC<LoginFormProps> = ({ onLoginSuccess }) => {
+export const LoginForm: React.FC<LoginFormProps> = ({
+  onLoginSuccess,
+  onDemoRegistrationRequested,
+  initialError = null,
+}) => {
   const { t, language, toggleLanguage, isRtl } = useLanguage();
   const usernameRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
+  const loginFormRef = useRef<HTMLFormElement>(null);
+  const adminLogoActivationRef = useRef(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialError);
+
+  useEffect(() => {
+    if (initialError) {
+      setError(initialError);
+    }
+  }, [initialError]);
 
   // Opening screen fade animation state
   const [splashState, setSplashState] = useState<'splash' | 'fading' | 'ready'>('splash');
-
-  useEffect(() => {
-    usernameRef.current?.focus();
-  }, []);
 
   useEffect(() => {
     // Stage 1: Display opening screen, then start fade-out at 1.4s
@@ -40,6 +50,11 @@ export const LoginForm: React.FC<LoginFormProps> = ({ onLoginSuccess }) => {
     };
   }, []);
 
+  useEffect(() => {
+    if (splashState !== 'ready') return;
+    usernameRef.current?.focus();
+  }, [splashState]);
+
   const handleUsernameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -47,9 +62,35 @@ export const LoginForm: React.FC<LoginFormProps> = ({ onLoginSuccess }) => {
     }
   };
 
+  const handleBrandActivation = () => {
+    if (username.trim().toLowerCase() !== 'aptadmin') {
+      usernameRef.current?.focus();
+      return;
+    }
+
+    if (!password) {
+      passwordRef.current?.focus();
+      return;
+    }
+
+    if (!loading) {
+      adminLogoActivationRef.current = true;
+      loginFormRef.current?.requestSubmit();
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    if (
+      username.trim().toLowerCase() === 'aptadmin' &&
+      !adminLogoActivationRef.current
+    ) {
+      setError('Invalid username or password.');
+      return;
+    }
+    adminLogoActivationRef.current = false;
+
     if (!username.trim() || !password) {
       setError('Please enter both username and password.');
       return;
@@ -68,6 +109,28 @@ export const LoginForm: React.FC<LoginFormProps> = ({ onLoginSuccess }) => {
         throw new Error(data.error || 'Authentication failed. Please check credentials.');
       }
 
+      if (data.user?.username?.toLowerCase() === 'demo') {
+        const status = data.demoAccess?.status as DemoAccessStatus | undefined;
+        if (status === 'registered') {
+          onLoginSuccess(data.user);
+          return;
+        }
+        const demoStatus: DemoAccessStatus =
+          status === 'active' &&
+          typeof data.demoAccess.expiresAt === 'string' &&
+          Date.parse(data.demoAccess.expiresAt) > Date.now()
+            ? 'active'
+            : status === 'expired' || status === 'active'
+              ? 'expired'
+              : 'never';
+        if (demoStatus === 'active') {
+          onLoginSuccess(data.user);
+        } else {
+          onDemoRegistrationRequested(data.user, demoStatus);
+        }
+        return;
+      }
+
       onLoginSuccess(data.user);
     } catch (err) {
       setError((err as Error).message);
@@ -77,13 +140,13 @@ export const LoginForm: React.FC<LoginFormProps> = ({ onLoginSuccess }) => {
   };
 
   return (
-    <div className="min-h-screen w-screen flex flex-col items-center justify-center bg-slate-900 px-4 py-12 relative overflow-hidden" dir={isRtl ? 'rtl' : 'ltr'}>
+    <div className="login-screen min-h-screen w-screen flex flex-col items-center justify-center px-4 py-12 relative overflow-hidden" dir={isRtl ? 'rtl' : 'ltr'}>
       {/* Top right language switcher on login screen */}
       <div className="absolute top-4 right-4 z-20">
         <button
           type="button"
           onClick={toggleLanguage}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg border border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer backdrop-blur-xs"
+          className="login-language inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer"
         >
           <Globe className="w-3.5 h-3.5 text-blue-400" />
           <span>{language === 'en' ? 'العربية' : 'English'}</span>
@@ -93,7 +156,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({ onLoginSuccess }) => {
       {/* Opening Splash Screen with graceful Fade Animation */}
       {splashState !== 'ready' && (
         <div
-          className={`fixed inset-0 z-50 flex flex-col items-center justify-center bg-slate-950 transition-opacity duration-700 ease-in-out ${
+          className={`login-splash fixed inset-0 z-50 flex flex-col items-center justify-center transition-opacity duration-700 ease-in-out ${
             splashState === 'fading' ? 'opacity-0 pointer-events-none' : 'opacity-100'
           }`}
         >
@@ -107,11 +170,11 @@ export const LoginForm: React.FC<LoginFormProps> = ({ onLoginSuccess }) => {
           >
             {/* Animated Logo Badge */}
             <div className="relative mb-6">
-              <div className="w-20 h-20 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-2xl shadow-blue-500/30 animate-pulse">
-                <ShoppingBag className="w-10 h-10 text-white" />
+              <div className="login-logo-badge flex h-20 w-20 items-center justify-center rounded-2xl">
+                <ShoppingBag className="h-10 w-10 text-violet-100" />
               </div>
-              <div className="absolute -top-1.5 -right-1.5 w-7 h-7 rounded-full bg-blue-500/20 border border-blue-400/40 flex items-center justify-center">
-                <Sparkles className="w-4 h-4 text-blue-300 animate-spin" style={{ animationDuration: '6s' }} />
+              <div className="absolute -top-1.5 -right-1.5 flex h-7 w-7 items-center justify-center rounded-full border border-fuchsia-300/30 bg-violet-500/20">
+                <Sparkles className="h-4 w-4 animate-spin text-violet-200" style={{ animationDuration: '6s' }} />
               </div>
             </div>
 
@@ -134,42 +197,79 @@ export const LoginForm: React.FC<LoginFormProps> = ({ onLoginSuccess }) => {
         </div>
       )}
 
-      {/* Subtle background grid pattern */}
       <div
-        className="absolute inset-0 opacity-[0.03] pointer-events-none"
-        style={{
-          backgroundImage:
-            'radial-gradient(circle at 1px 1px, white 1px, transparent 0)',
-          backgroundSize: '24px 24px',
-        }}
-      />
-
-      <div
-        className={`w-full max-w-sm relative z-10 transition-all duration-700 ease-out transform ${
+        className={`login-shell relative z-10 transition-all duration-700 ease-out transform ${
           splashState === 'splash'
             ? 'opacity-0 translate-y-6 scale-95 pointer-events-none'
             : 'opacity-100 translate-y-0 scale-100'
         }`}
       >
-        {/* Logo & Brand Header */}
-        <div className="text-center mb-6">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-blue-500/25 mx-auto mb-3">
-            <ShoppingBag className="w-8 h-8 text-white" />
+        <aside className="login-brand-panel" aria-label="aptPOS">
+          <div className="login-brand-glow" />
+          <div className="relative z-10">
+            <button
+              type="button"
+              onClick={handleBrandActivation}
+              aria-label={language === 'ar' ? 'تسجيل الدخول إلى aptPOS' : 'Sign in to aptPOS'}
+              className="login-brand-mark cursor-pointer transition-transform hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300"
+            >
+              <ShoppingBag className="h-7 w-7 text-violet-100" />
+            </button>
+            <p className="login-eyebrow">
+              {isRtl ? 'منصة البيع الذكية' : 'SMART RETAIL PLATFORM'}
+            </p>
+            <h1 className="font-display text-4xl font-extrabold tracking-tight text-white">
+              apt<span className="text-violet-300">POS</span>
+            </h1>
+            <p className="mt-3 max-w-xs text-sm leading-6 text-slate-300">
+              {t.loginSubtitle}
+            </p>
           </div>
-          <h1 className="font-display text-3xl font-extrabold tracking-tight text-white">
-            apt<span className="text-blue-400">POS</span>
-          </h1>
-          <p className="text-xs text-slate-400 mt-1">
-            {t.loginSubtitle}
-          </p>
-        </div>
 
-        {/* Login Card - Clean: only Username, Password, Sign In */}
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-xl overflow-hidden p-6">
-          <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off">
+          <div className="login-feature-list relative z-10">
+            <div className="login-feature">
+              <ReceiptText className="h-4 w-4" />
+              <span>{isRtl ? 'فواتير سريعة' : 'Fast billing'}</span>
+            </div>
+            <div className="login-feature">
+              <PackageCheck className="h-4 w-4" />
+              <span>{isRtl ? 'تحكم بالمخزون' : 'Stock control'}</span>
+            </div>
+            <div className="login-feature">
+              <BarChart3 className="h-4 w-4" />
+              <span>{isRtl ? 'تقارير واضحة' : 'Clear reports'}</span>
+            </div>
+          </div>
+        </aside>
+
+        <div className="login-panel login-form-panel">
+          <div className="login-mobile-brand">
+            <button
+              type="button"
+              onClick={handleBrandActivation}
+              aria-label={language === 'ar' ? 'تسجيل الدخول إلى aptPOS' : 'Sign in to aptPOS'}
+              className="login-logo-badge flex h-12 w-12 cursor-pointer items-center justify-center rounded-xl transition-transform hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300"
+            >
+              <ShoppingBag className="h-6 w-6 text-violet-100" />
+            </button>
+            <span className="font-display text-xl font-extrabold text-white">
+              apt<span className="text-violet-300">POS</span>
+            </span>
+          </div>
+
+          <div className="mb-6">
+            <p className="login-form-kicker">
+              {isRtl ? 'الوصول الآمن' : 'SECURE TERMINAL'}
+            </p>
+            <h2 className="mt-1 text-2xl font-bold text-white">
+              {isRtl ? 'مرحباً بعودتك' : 'Welcome back'}
+            </h2>
+          </div>
+
+          <form ref={loginFormRef} onSubmit={handleSubmit} className="space-y-4" autoComplete="off">
             {error && (
-              <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800 flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0 text-red-600 mt-0.5" />
+              <div className="login-error p-3 border rounded-lg text-xs flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-red-300 mt-0.5" />
                 <span>{error}</span>
               </div>
             )}
@@ -177,7 +277,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({ onLoginSuccess }) => {
             <div>
               <label
                 htmlFor="username"
-                className="block text-xs font-semibold text-slate-700 mb-1"
+                className="block text-xs font-semibold text-slate-200 mb-1"
               >
                 {t.username}
               </label>
@@ -190,11 +290,10 @@ export const LoginForm: React.FC<LoginFormProps> = ({ onLoginSuccess }) => {
                   type="text"
                   autoComplete="off"
                   required
-                  autoFocus
                   value={username}
                   onKeyDown={handleUsernameKeyDown}
                   onChange={(e) => setUsername(e.target.value)}
-                  className={`w-full ${isRtl ? 'pr-9 pl-3' : 'pl-9 pr-3'} py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:bg-white focus:outline-none focus:border-blue-700 focus:ring-1 focus:ring-blue-700`}
+                  className={`login-input w-full ${isRtl ? 'pr-9 pl-3' : 'pl-9 pr-3'} py-2 text-sm rounded-lg focus:outline-none`}
                 />
               </div>
             </div>
@@ -202,7 +301,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({ onLoginSuccess }) => {
             <div>
               <label
                 htmlFor="password"
-                className="block text-xs font-semibold text-slate-700 mb-1"
+                className="block text-xs font-semibold text-slate-200 mb-1"
               >
                 {t.password}
               </label>
@@ -217,7 +316,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({ onLoginSuccess }) => {
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className={`w-full ${isRtl ? 'pr-9 pl-3' : 'pl-9 pr-3'} py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:bg-white focus:outline-none focus:border-blue-700 focus:ring-1 focus:ring-blue-700`}
+                  className={`login-input w-full ${isRtl ? 'pr-9 pl-3' : 'pl-9 pr-3'} py-2 text-sm rounded-lg focus:outline-none`}
                 />
               </div>
             </div>
@@ -225,9 +324,10 @@ export const LoginForm: React.FC<LoginFormProps> = ({ onLoginSuccess }) => {
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-2.5 px-4 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:bg-slate-300 rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 cursor-pointer"
+              className="login-submit w-full py-3 px-4 text-sm font-semibold text-white disabled:opacity-60 transition-all flex items-center justify-center gap-2 focus:outline-none cursor-pointer"
             >
               <span>{loading ? t.signingIn : t.signIn}</span>
+              {!loading && <ArrowRight className={`h-4 w-4 ${isRtl ? 'rotate-180' : ''}`} />}
             </button>
           </form>
         </div>

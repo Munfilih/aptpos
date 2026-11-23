@@ -1,5 +1,16 @@
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle, ArrowLeft, Plus, Receipt, RotateCcw, Search, Trash2 } from 'lucide-react';
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Banknote,
+  CreditCard,
+  History,
+  Plus,
+  Receipt,
+  RotateCcw,
+  Search,
+  Trash2,
+} from 'lucide-react';
 import type {
   CreateSalesReturnVoucherInput,
   PaymentMethod,
@@ -18,6 +29,7 @@ interface SalesReturnRegisterViewProps {
   cashierName: string;
   editingVoucher?: SalesReturnVoucher;
   onCancel: () => void;
+  onOpenReturnHistory: () => void;
   onProcessVoucher: (
     input: Omit<CreateSalesReturnVoucherInput, 'cashierName'>
   ) => Promise<SalesReturnVoucher>;
@@ -80,6 +92,7 @@ export const SalesReturnRegisterView: React.FC<SalesReturnRegisterViewProps> = (
   cashierName,
   editingVoucher,
   onCancel,
+  onOpenReturnHistory,
   onProcessVoucher,
   onUpdateVoucher,
 }) => {
@@ -92,6 +105,7 @@ export const SalesReturnRegisterView: React.FC<SalesReturnRegisterViewProps> = (
     editingVoucher?.paymentMethod || initialSales[0]?.paymentMethod || 'Cash'
   );
   const [invoiceSearch, setInvoiceSearch] = useState('');
+  const [mobileTab, setMobileTab] = useState<'table' | 'checkout'>('table');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -202,20 +216,20 @@ export const SalesReturnRegisterView: React.FC<SalesReturnRegisterViewProps> = (
   };
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto bg-slate-50 p-3 lg:p-6">
-      <div className="mx-auto max-w-[1440px] space-y-4 lg:space-y-5">
-        <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex-1 flex flex-col min-h-0 bg-slate-100 overflow-hidden relative">
+      <div className="flex min-h-0 flex-1 flex-col">
+        <header className="shrink-0 flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 py-2 shadow-xs sm:px-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-violet-700 text-white shadow-sm">
-              <RotateCcw className="h-5 w-5" />
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-700 text-white shadow-sm">
+              <Receipt className="h-4 w-4" />
             </div>
-            <div>
-              <h1 className="text-lg font-bold tracking-tight text-slate-900 lg:text-xl">
+            <div className="min-w-0 flex-1">
+              <h1 className="truncate text-sm font-bold tracking-tight text-slate-900">
                 {editingVoucher
                   ? (isRtl ? 'تعديل مرتجع المبيعات' : 'Edit Sales Return')
                   : (isRtl ? 'تسجيل مرتجع مبيعات' : 'Sales Return Register')}
               </h1>
-              <p className="mt-0.5 text-xs text-slate-500">
+              <p className="mt-0.5 truncate text-[11px] text-slate-500">
                 {editingVoucher
                   ? `${isRtl ? 'السند' : 'Voucher'} ${editingVoucher.voucherNumber} · ${
                     isRtl ? 'يُعاد حساب المبلغ حسب الكميات.' : 'Refund recalculates from quantities.'
@@ -226,218 +240,345 @@ export const SalesReturnRegisterView: React.FC<SalesReturnRegisterViewProps> = (
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="inline-flex w-fit items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            {editingVoucher
-              ? (isRtl ? 'العودة لسجل المرتجعات' : 'Back to return history')
-              : (isRtl ? 'العودة للمبيعات' : 'Back to sales')}
-          </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              type="button"
+              onClick={onOpenReturnHistory}
+              aria-label={isRtl ? 'سجل المرتجعات' : 'Return History'}
+              title={isRtl ? 'سجل المرتجعات' : 'Return History'}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 transition-colors hover:border-blue-500 hover:bg-blue-50 hover:text-blue-700"
+            >
+              <History className="h-4 w-4" />
+              <span className="hidden sm:inline">{isRtl ? 'سجل المرتجعات' : 'Return History'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={onCancel}
+              aria-label={
+                editingVoucher
+                  ? (isRtl ? 'إلغاء التعديل' : 'Cancel editing')
+                  : (isRtl ? 'العودة للمبيعات' : 'Back to sales')
+              }
+              title={
+                editingVoucher
+                  ? (isRtl ? 'إلغاء التعديل' : 'Cancel editing')
+                  : (isRtl ? 'العودة للمبيعات' : 'Back to sales')
+              }
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              <span className="hidden sm:inline">
+                {editingVoucher
+                  ? (isRtl ? 'إلغاء التعديل' : 'Cancel editing')
+                  : (isRtl ? 'العودة للمبيعات' : 'Back to sales')}
+              </span>
+            </button>
+          </div>
         </header>
 
-        <section className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm lg:p-5">
-          <div className="mb-3 flex items-center gap-2">
-            <Search className="h-4 w-4 text-slate-400" />
-            <h2 className="text-sm font-bold text-slate-900">
-              {isRtl ? 'إضافة فاتورة إلى السند' : 'Add invoice to voucher'}
-            </h2>
-          </div>
-          <div className="relative">
-            <input
-              type="search"
-              value={invoiceSearch}
-              onChange={(event) => setInvoiceSearch(event.target.value)}
-              placeholder={isRtl ? 'ابحث برقم الفاتورة أو العميل...' : 'Search by receipt or customer...'}
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-violet-100"
-            />
-          </div>
-          {invoiceSearch.trim() && (
-            <div className="mt-2 divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200">
-              {matchingSales.length > 0 ? (
-                matchingSales.map((sale) => (
-                  <div key={sale.id} className="flex items-center justify-between gap-3 p-3">
-                    <div className="min-w-0">
-                      <p className="truncate font-mono text-xs font-bold text-slate-900">
-                        {sale.receiptNumber}
-                      </p>
-                      <p className="truncate text-xs text-slate-500">
-                        {sale.customerName} · {currency}{sale.total.toFixed(2)}
-                      </p>
+        <div className="min-[900px]:hidden shrink-0 border-b border-slate-200 bg-white p-2 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setMobileTab('table')}
+            aria-pressed={mobileTab === 'table'}
+            className={`flex-1 rounded-lg py-2 text-xs font-semibold transition-colors ${
+              mobileTab === 'table' ? 'bg-blue-700 text-white shadow-xs' : 'bg-slate-100 text-slate-700'
+            }`}
+          >
+            {isRtl ? `الأصناف المرتجعة (${voucherLines.length})` : `Return Items (${voucherLines.length})`}
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobileTab('checkout')}
+            aria-pressed={mobileTab === 'checkout'}
+            className={`flex-1 rounded-lg py-2 text-xs font-semibold transition-colors ${
+              mobileTab === 'checkout' ? 'bg-blue-700 text-white shadow-xs' : 'bg-slate-100 text-slate-700'
+            }`}
+          >
+            {isRtl
+              ? `تسوية المرتجع · ${currency}${voucherTotal.toFixed(2)}`
+              : `Refund · ${currency}${voucherTotal.toFixed(2)}`}
+          </button>
+        </div>
+
+        <div className="flex-1 flex min-h-0 overflow-hidden flex-col min-[900px]:flex-row">
+          <main
+            className={`flex-1 flex flex-col min-h-0 min-w-0 bg-white border-r border-slate-200 overflow-hidden ${
+              mobileTab === 'table' ? 'flex' : 'hidden min-[900px]:flex'
+            }`}
+          >
+          <div className="shrink-0 space-y-1.5 border-b border-slate-200 bg-slate-50 p-2 sm:p-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-xs font-bold text-slate-800">
+                  {isRtl ? 'اختيار فاتورة المبيعات' : 'Choose sales invoice'}
+                </h2>
+                <p className="mt-0.5 text-[11px] text-slate-500">
+                  {isRtl
+                    ? 'ابحث برقم الفاتورة أو اسم العميل لإضافتها إلى سند المرتجع.'
+                    : 'Search by receipt or customer to add an invoice to this return.'}
+                </p>
+              </div>
+              {selectedSales.length > 0 && (
+                <div className="inline-flex w-fit items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-600">
+                  <span>{isRtl ? 'الفواتير المحددة' : 'Selected invoices'}</span>
+                  <span className="font-mono font-bold tabular-nums text-slate-900">
+                    {selectedSales.length}
+                  </span>
+                </div>
+              )}
+            </div>
+            <div className="relative w-full">
+              <Search className={`pointer-events-none absolute top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 ${isRtl ? 'right-3' : 'left-3'}`} />
+              <input
+                type="search"
+                value={invoiceSearch}
+                onChange={(event) => setInvoiceSearch(event.target.value)}
+                placeholder={isRtl ? 'ابحث برقم الفاتورة أو العميل...' : 'Search by receipt or customer...'}
+                className={`w-full rounded-lg border-2 border-slate-300 bg-white py-1.5 text-xs text-slate-900 placeholder:text-slate-400 transition-colors focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100 ${isRtl ? 'pr-9 pl-3' : 'pl-9 pr-3'}`}
+              />
+            </div>
+            {invoiceSearch.trim() && (
+              <div className="divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200">
+                {matchingSales.length > 0 ? (
+                  matchingSales.map((sale) => (
+                    <div key={sale.id} className="flex items-center justify-between gap-3 p-3">
+                      <div className="min-w-0">
+                        <p className="truncate font-mono text-xs font-bold text-slate-900">
+                          {sale.receiptNumber}
+                        </p>
+                        <p className="truncate text-xs text-slate-500">
+                          {sale.customerName} · {currency}{sale.total.toFixed(2)}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => addInvoice(sale)}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        {isRtl ? 'إضافة' : 'Add'}
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => addInvoice(sale)}
-                      className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-700 hover:bg-violet-100"
-                    >
-                      <Plus className="h-3.5 w-3.5" />
-                      {isRtl ? 'إضافة' : 'Add'}
-                    </button>
-                  </div>
-                ))
-              ) : (
-                <p className="p-3 text-xs text-slate-500">
-                  {isRtl ? 'لا توجد فواتير قابلة للإرجاع.' : 'No eligible invoices found.'}
+                  ))
+                ) : (
+                  <p className="p-3 text-xs text-slate-500">
+                    {isRtl ? 'لا توجد فواتير قابلة للإرجاع.' : 'No eligible invoices found.'}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain space-y-2 bg-slate-50 p-2 sm:p-3">
+            {selectedSales.length === 0 ? (
+              <div className="h-full min-h-[360px] flex items-center justify-center p-6 text-center bg-slate-50/50">
+                <div className="opacity-30">
+                  <div className="text-xl font-bold text-slate-900">{settings.storeName}</div>
+                </div>
+              </div>
+            ) : (
+              selectedSales.map((sale) => {
+                const saleWithoutVoucher = getSaleWithoutVoucher(sale, editingVoucher);
+                return (
+                  <article
+                    key={sale.id}
+                    className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+                  >
+                    <header className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-3 py-3 lg:px-4">
+                      <div className="min-w-0">
+                        <p className="truncate font-mono text-sm font-bold text-slate-900">
+                          {sale.receiptNumber}
+                        </p>
+                        <p className="truncate text-xs text-slate-500">
+                          {sale.customerName} · {new Date(sale.createdAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeInvoice(sale.id)}
+                        aria-label={`${isRtl ? 'إزالة الفاتورة' : 'Remove invoice'} ${sale.receiptNumber}`}
+                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:border-red-200 hover:bg-red-50 hover:text-red-700"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </header>
+                    <div className="divide-y divide-slate-100">
+                      {saleWithoutVoucher.items.map((item) => {
+                        const remaining = Math.max(0, item.quantity - (item.returnedQuantity || 0));
+                        const quantity = returnQuantities[item.id] ?? 0;
+                        const lineRefund = calculateSaleReturnRefund(
+                          saleWithoutVoucher,
+                          [{ saleItemId: item.id, quantity }],
+                          saleWithoutVoucher.returnedTotal || 0
+                        ).total;
+                        return (
+                          <div
+                            key={item.id}
+                            className="grid grid-cols-[minmax(0,1fr)_88px] items-center gap-3 px-3 py-3 lg:grid-cols-[minmax(0,1fr)_100px_130px] lg:px-4"
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold text-slate-900">
+                                {isRtl ? item.nameAr || item.productName : item.productName}
+                              </p>
+                              <p className="text-[11px] text-slate-500">
+                                {item.sku} · {isRtl ? 'الكمية المباعة' : 'Sold'} {item.quantity}
+                                {(item.returnedQuantity || 0) > 0 &&
+                                  ` · ${isRtl ? 'مرتجع' : 'Returned'} ${item.returnedQuantity}`}
+                              </p>
+                            </div>
+                            <label className="flex flex-col gap-1">
+                              <span className="text-[10px] font-medium text-slate-500">
+                                {isRtl ? 'كمية الإرجاع' : 'Return qty'} (max {remaining})
+                              </span>
+                              <input
+                                type="number"
+                                min={0}
+                                max={remaining}
+                                step={1}
+                                value={quantity}
+                                disabled={remaining === 0}
+                                onChange={(event) => {
+                                  const next = Math.min(
+                                    remaining,
+                                    Math.max(0, Math.floor(Number(event.target.value) || 0))
+                                  );
+                                  setReturnQuantities((current) => ({ ...current, [item.id]: next }));
+                                }}
+                                className="w-full rounded-lg border border-slate-200 px-2 py-2 text-center text-sm font-bold text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100 disabled:text-slate-400"
+                              />
+                            </label>
+                            <p className="hidden text-right text-xs font-semibold text-slate-700 lg:block">
+                              {currency}{lineRefund.toFixed(2)}
+                            </p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </article>
+                );
+              })
+            )}
+          </div>
+
+          </main>
+
+          <aside
+            className={`z-10 flex w-full shrink-0 flex-col border-l border-slate-200 bg-white min-h-0 ${
+              mobileTab === 'checkout' ? 'flex' : 'hidden min-[900px]:flex'
+            } min-[900px]:w-1/3`}
+          >
+            <header className="shrink-0 border-b border-slate-200 bg-slate-50 px-2 py-1">
+              <h2 className="text-sm font-bold text-slate-900">
+                {isRtl ? 'تسوية المرتجع' : 'Return Settlement'}
+              </h2>
+              <p className="mt-0.5 text-[11px] text-slate-500">
+                {selectedSales.length} {isRtl ? 'فواتير' : 'invoices'} · {voucherLines.length}{' '}
+                {isRtl ? 'أصناف' : 'lines'}
+              </p>
+            </header>
+
+            <div className="flex-1 min-h-0 flex flex-col overflow-y-auto px-3 pt-3 pb-3 space-y-3">
+              <section className="space-y-2">
+                <h3 className="text-xs font-semibold text-slate-700">
+                  {isRtl ? 'طريقة رد المبلغ' : 'Refund payment method'}
+                </h3>
+                <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 min-[900px]:grid-cols-2 xl:grid-cols-3">
+                  {paymentMethods.map((method) => {
+                    const selected = refundPaymentMethod === method;
+                    return (
+                      <button
+                        key={method}
+                        type="button"
+                        onClick={() => setRefundPaymentMethod(method)}
+                        aria-pressed={selected}
+                        className={`flex items-center justify-center gap-1 rounded-lg border px-1.5 py-2 text-xs font-bold transition-colors ${
+                          selected
+                            ? 'border-blue-700 bg-blue-700 text-white'
+                            : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        {method === 'Cash'
+                          ? <Banknote className="h-3.5 w-3.5" />
+                          : <CreditCard className="h-3.5 w-3.5" />}
+                        {method === 'Cash'
+                          ? (isRtl ? 'نقداً' : 'Cash')
+                          : method === 'Card'
+                            ? (isRtl ? 'بطاقة' : 'Card')
+                            : method === 'Split'
+                              ? (isRtl ? 'مجزأ' : 'Split')
+                              : method}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  {editingVoucher
+                    ? `${isRtl ? 'الكاشير الأصلي:' : 'Original cashier:'} ${editingVoucher.cashierName}`
+                    : (isRtl ? `الكاشير: ${cashierName}` : `Cashier: ${cashierName}`)}
+                </p>
+              </section>
+
+              <section className="space-y-1.5 border-t border-slate-200 pt-3 text-xs">
+                <div className="flex justify-between text-slate-600">
+                  <span>{isRtl ? 'الفواتير' : 'Invoices'}</span>
+                  <span className="font-mono">{selectedSales.length}</span>
+                </div>
+                <div className="flex justify-between text-slate-600">
+                  <span>{isRtl ? 'الكمية المرتجعة' : 'Returned quantity'}</span>
+                  <span className="font-mono">
+                    {voucherLines.reduce((sum, line) => sum + line.quantity, 0)}
+                  </span>
+                </div>
+                <div className="flex items-baseline justify-between border-t border-blue-200 pt-2">
+                  <span className="font-bold text-slate-900">
+                    {isRtl ? 'إجمالي المبلغ المسترد' : 'Total refund'}
+                  </span>
+                  <strong className="font-mono text-xl font-black text-blue-800">
+                    {currency}{voucherTotal.toFixed(2)}
+                  </strong>
+                </div>
+              </section>
+
+              {error && (
+                <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
+                  {error}
                 </p>
               )}
             </div>
-          )}
-        </section>
 
-        <section className="space-y-3">
-          {selectedSales.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center">
-              <Receipt className="mx-auto h-8 w-8 text-slate-300" />
-              <p className="mt-3 text-sm font-semibold text-slate-700">
-                {isRtl ? 'أضف فاتورة لبدء سند المرتجع' : 'Add an invoice to start this return voucher'}
-              </p>
-            </div>
-          ) : (
-            selectedSales.map((sale) => {
-              const saleWithoutVoucher = getSaleWithoutVoucher(sale, editingVoucher);
-              return (
-                <article
-                  key={sale.id}
-                  className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+            <footer className="shrink-0 border-t border-slate-200 bg-white p-4">
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  disabled={isProcessing}
+                  onClick={onCancel}
+                  className="flex h-14 items-center justify-center rounded-lg border border-red-700 bg-red-700 px-4 text-sm font-bold text-white transition-colors hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <header className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-3 py-3 lg:px-4">
-                    <div className="min-w-0">
-                      <p className="truncate font-mono text-sm font-bold text-slate-900">
-                        {sale.receiptNumber}
-                      </p>
-                      <p className="truncate text-xs text-slate-500">
-                        {sale.customerName} · {new Date(sale.createdAt).toLocaleDateString()}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => removeInvoice(sale.id)}
-                      aria-label={`${isRtl ? 'إزالة الفاتورة' : 'Remove invoice'} ${sale.receiptNumber}`}
-                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:border-red-200 hover:bg-red-50 hover:text-red-700"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </header>
-                  <div className="divide-y divide-slate-100">
-                    {saleWithoutVoucher.items.map((item) => {
-                      const remaining = Math.max(0, item.quantity - (item.returnedQuantity || 0));
-                      const quantity = returnQuantities[item.id] ?? 0;
-                      const lineRefund = calculateSaleReturnRefund(
-                        saleWithoutVoucher,
-                        [{ saleItemId: item.id, quantity }],
-                        saleWithoutVoucher.returnedTotal || 0
-                      ).total;
-                      return (
-                        <div
-                          key={item.id}
-                          className="grid grid-cols-[minmax(0,1fr)_88px] items-center gap-3 px-3 py-3 lg:grid-cols-[minmax(0,1fr)_100px_130px] lg:px-4"
-                        >
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold text-slate-900">
-                              {isRtl ? item.nameAr || item.productName : item.productName}
-                            </p>
-                            <p className="text-[11px] text-slate-500">
-                              {item.sku} · {isRtl ? 'الكمية المباعة' : 'Sold'} {item.quantity}
-                              {(item.returnedQuantity || 0) > 0 &&
-                                ` · ${isRtl ? 'مرتجع' : 'Returned'} ${item.returnedQuantity}`}
-                            </p>
-                          </div>
-                          <label className="flex flex-col gap-1">
-                            <span className="text-[10px] font-medium text-slate-500">
-                              {isRtl ? 'كمية الإرجاع' : 'Return qty'} (max {remaining})
-                            </span>
-                            <input
-                              type="number"
-                              min={0}
-                              max={remaining}
-                              step={1}
-                              value={quantity}
-                              disabled={remaining === 0}
-                              onChange={(event) => {
-                                const next = Math.min(
-                                  remaining,
-                                  Math.max(0, Math.floor(Number(event.target.value) || 0))
-                                );
-                                setReturnQuantities((current) => ({ ...current, [item.id]: next }));
-                              }}
-                              className="w-full rounded-lg border border-slate-200 px-2 py-2 text-center text-sm font-bold text-slate-900 focus:border-violet-500 focus:outline-none focus:ring-4 focus:ring-violet-100 disabled:bg-slate-100 disabled:text-slate-400"
-                            />
-                          </label>
-                          <p className="hidden text-right text-xs font-semibold text-slate-700 lg:block">
-                            {currency}{lineRefund.toFixed(2)}
-                          </p>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </article>
-              );
-            })
-          )}
-        </section>
-
-        <section className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end lg:p-5">
-          <label className="block space-y-1.5">
-            <span className="text-xs font-semibold text-slate-700">
-              {isRtl ? 'طريقة رد المبلغ' : 'Refund payment method'}
-            </span>
-            <select
-              value={refundPaymentMethod}
-              onChange={(event) => setRefundPaymentMethod(event.target.value as PaymentMethod)}
-              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 focus:border-violet-500 focus:outline-none focus:ring-4 focus:ring-violet-100 sm:max-w-xs"
-            >
-              {paymentMethods.map((method) => (
-                <option key={method} value={method}>
-                  {method === 'Cash'
-                    ? (isRtl ? 'نقداً' : 'Cash')
-                    : method === 'Card'
-                      ? (isRtl ? 'بطاقة' : 'Card')
-                      : method === 'Split'
-                        ? (isRtl ? 'مجزأ' : 'Split')
-                        : method}
-                </option>
-              ))}
-            </select>
-            <span className="block text-[11px] text-slate-500">
-              {editingVoucher
-                ? `${isRtl ? 'الكاشير الأصلي:' : 'Original cashier:'} ${editingVoucher.cashierName}`
-                : (isRtl ? `الكاشير: ${cashierName}` : `Cashier: ${cashierName}`)}
-            </span>
-          </label>
-          <div className="flex flex-col items-stretch gap-2 sm:items-end">
-            <p className="text-xs text-slate-500">
-              {isRtl ? 'إجمالي المبلغ المسترد' : 'Voucher refund total'}
-            </p>
-            <p className="font-mono text-xl font-bold tabular-nums text-violet-800">
-              {currency}{voucherTotal.toFixed(2)}
-            </p>
-            <button
-              type="button"
-              disabled={isProcessing || voucherLines.length === 0}
-              onClick={() => {
-                setError(null);
-                setIsConfirmOpen(true);
-              }}
-              className="inline-flex items-center justify-center gap-2 rounded-xl bg-violet-700 px-5 py-3 text-sm font-bold text-white shadow-sm hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <RotateCcw className="h-4 w-4" />
-              {isProcessing
-                ? (editingVoucher
-                  ? (isRtl ? 'جارٍ حفظ التعديلات...' : 'Saving changes...')
-                  : (isRtl ? 'جارٍ معالجة المرتجع...' : 'Processing return...'))
-                : (editingVoucher
-                  ? (isRtl ? 'حفظ التعديلات' : 'Save changes')
-                  : (isRtl ? 'إصدار سند المرتجع' : 'Issue return voucher'))}
-            </button>
-          </div>
-          {error && (
-            <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 sm:col-span-2">
-              {error}
-            </p>
-          )}
-        </section>
+                  {isRtl ? 'إلغاء' : 'Cancel'}
+                </button>
+                <button
+                  type="button"
+                  disabled={isProcessing || voucherLines.length === 0}
+                  onClick={() => {
+                    setError(null);
+                    setIsConfirmOpen(true);
+                  }}
+                  className="flex h-14 items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 text-sm font-bold text-white transition-colors hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  {isProcessing
+                    ? (editingVoucher
+                      ? (isRtl ? 'جارٍ حفظ التعديلات...' : 'Saving changes...')
+                      : (isRtl ? 'جارٍ معالجة المرتجع...' : 'Processing return...'))
+                    : (editingVoucher
+                      ? (isRtl ? 'حفظ التعديلات' : 'Save changes')
+                      : (isRtl ? 'إصدار سند المرتجع' : 'Issue return'))}
+                </button>
+              </div>
+            </footer>
+          </aside>
+        </div>
       </div>
       {isConfirmOpen && (
         <div
@@ -448,7 +589,7 @@ export const SalesReturnRegisterView: React.FC<SalesReturnRegisterViewProps> = (
         >
           <div className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
             <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-violet-100 text-violet-700">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-100 text-blue-700">
                 <AlertTriangle className="h-5 w-5" />
               </div>
               <div>
@@ -462,7 +603,7 @@ export const SalesReturnRegisterView: React.FC<SalesReturnRegisterViewProps> = (
                 </p>
               </div>
             </div>
-            <div className="space-y-2 rounded-xl border border-violet-100 bg-violet-50/60 p-4 text-xs text-slate-700">
+            <div className="space-y-2 rounded-xl border border-blue-100 bg-blue-50/60 p-4 text-xs text-slate-700">
               <div className="flex justify-between gap-3">
                 <span>{isRtl ? 'الفواتير' : 'Invoices'}</span>
                 <strong>{selectedSales.length}</strong>
@@ -475,7 +616,7 @@ export const SalesReturnRegisterView: React.FC<SalesReturnRegisterViewProps> = (
                 <span>{isRtl ? 'طريقة رد المبلغ' : 'Refund method'}</span>
                 <strong>{refundPaymentMethod}</strong>
               </div>
-              <div className="flex justify-between gap-3 border-t border-violet-200 pt-2 text-sm">
+              <div className="flex justify-between gap-3 border-t border-blue-200 pt-2 text-sm">
                 <span className="font-semibold">{isRtl ? 'إجمالي المبلغ' : 'Total refund'}</span>
                 <strong className="font-mono">{currency}{voucherTotal.toFixed(2)}</strong>
               </div>
@@ -506,7 +647,7 @@ export const SalesReturnRegisterView: React.FC<SalesReturnRegisterViewProps> = (
                   setIsConfirmOpen(false);
                   void handleProcess();
                 }}
-                className="inline-flex items-center gap-2 rounded-lg bg-violet-700 px-4 py-2.5 text-xs font-semibold text-white hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <RotateCcw className="h-3.5 w-3.5" />
                 {isProcessing

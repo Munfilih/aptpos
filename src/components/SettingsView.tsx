@@ -1,9 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Check,
   Printer,
   Store,
-  LayoutGrid,
   Percent,
   Database,
   Download,
@@ -21,29 +20,50 @@ import {
   Lock,
   UserCheck,
   Monitor,
+  Moon,
   FileText,
   Globe,
   QrCode,
+  Sun,
 } from 'lucide-react';
 import type {
+  AppComponentId,
+  AppVersion,
   InvoiceTemplateSettings,
   PaperWidth,
   PosScreenLayout,
   PrintJob,
   StoreSettings,
+  SettingsSectionId,
   TaxType,
+  ThemeMode,
   UserAccount,
 } from '../types/pos';
+import { APP_COMPONENTS, APP_VERSIONS } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
-import { getPaymentMethods } from '../utils/paymentMethods';
+import { BUILT_IN_PAYMENT_METHODS, getPaymentMethods } from '../utils/paymentMethods';
 import { MINIMUM_INVOICE_MARGIN_MM, resolveInvoiceMarginsMm } from '../utils/thermalPrinting';
+import { RegistrationRequestsPanel } from './RegistrationRequestsPanel';
 import type { UpdateStatus } from '../../electron/updateStatus';
 
 interface SettingsViewProps {
   settings: StoreSettings;
+  activeSection: SettingsSectionId;
+  onActiveSectionChange: (section: SettingsSectionId) => void;
+  showSectionNavigation?: boolean;
   printQueue: PrintJob[];
+  isAdmin: boolean;
   isAppAdmin: boolean;
+  theme: ThemeMode;
+  onThemeChange: (theme: ThemeMode) => void;
+  iconOnlyLauncher: boolean;
+  onIconOnlyLauncherChange: (enabled: boolean) => void;
   onSaveSettings: (updated: StoreSettings) => Promise<void>;
+  onActivateVersion: (input: {
+    appVersion: AppVersion;
+    disabledAppComponents: AppComponentId[];
+    password: string;
+  }) => Promise<void>;
   onFlushPrintQueue: () => Promise<void>;
   onResetDatabase?: () => Promise<void>;
   onRestoreDatabase?: (buffer: ArrayBuffer) => Promise<void>;
@@ -51,11 +71,75 @@ interface SettingsViewProps {
 
 type BackupMode = 'on-close' | 'manual' | 'scheduled';
 
+interface SettingsSectionTabsProps {
+  activeSection: SettingsSectionId | null;
+  isAppAdmin: boolean;
+  themeOnly?: boolean;
+  onSelect: (section: SettingsSectionId) => void;
+}
+
+export const SettingsSectionTabs: React.FC<SettingsSectionTabsProps> = ({
+  activeSection,
+  isAppAdmin,
+  themeOnly = false,
+  onSelect,
+}) => {
+  const { t, isRtl } = useLanguage();
+  const allSections: Array<{
+    id: SettingsSectionId;
+    label: string;
+  }> = [
+    { id: 'sales', label: isRtl ? t.secSalesTax : 'Vouchers' },
+    { id: 'screen', label: isRtl ? 'المظهر' : 'Theme' },
+    { id: 'store', label: isRtl ? t.secStoreInfo : 'My Store' },
+    { id: 'printer', label: isRtl ? t.secPrintTemplate : 'Print' },
+    { id: 'users', label: isRtl ? t.secUsersPerms : 'Users' },
+    { id: 'database', label: isRtl ? t.secDatabase : 'Database' },
+    { id: 'version', label: isRtl ? 'الإصدار' : 'Version' },
+    { id: 'updates', label: isRtl ? 'التحديثات' : 'Update' },
+  ];
+  const sections = themeOnly
+    ? allSections.filter((section) => section.id === 'screen')
+    : allSections.filter(
+      (section) => isAppAdmin || !['users', 'database', 'version'].includes(section.id)
+      );
+
+  return (
+    <div className="settings-section-tabs">
+      {sections.map((section) => {
+        const active = activeSection === section.id;
+        return (
+          <button
+            key={section.id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onSelect(section.id)}
+            title={section.label}
+            className={`settings-section-tab${active ? ' is-active' : ''}`}
+          >
+            {section.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+};
+
 export const SettingsView: React.FC<SettingsViewProps> = ({
   settings,
+  activeSection,
+  onActiveSectionChange,
+  showSectionNavigation = true,
   printQueue,
+  isAdmin,
   isAppAdmin,
+  theme,
+  onThemeChange,
+  iconOnlyLauncher,
+  onIconOnlyLauncherChange,
   onSaveSettings,
+  onActivateVersion,
   onFlushPrintQueue,
   onResetDatabase,
   onRestoreDatabase,
@@ -68,12 +152,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [printerDialogOpen, setPrinterDialogOpen] = useState(false);
   const [printerDialogTarget, setPrinterDialogTarget] = useState<'template' | 'kot'>('template');
   const [printersLoading, setPrintersLoading] = useState(false);
-  const [activeSettingsSection, setActiveSettingsSection] = useState<
-    'sales' | 'screen' | 'store' | 'printer' | 'users' | 'database' | 'updates'
-  >('sales');
+  const activeSettingsSection = activeSection;
+  const settingsViewRef = useRef<HTMLDivElement>(null);
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
+  const [versionActivationOpen, setVersionActivationOpen] = useState(false);
+  const [versionAdminPassword, setVersionAdminPassword] = useState('');
+  const [versionActivationBusy, setVersionActivationBusy] = useState(false);
+  const [versionActivationError, setVersionActivationError] = useState<string | null>(null);
+  const [versionActivationNotice, setVersionActivationNotice] = useState(false);
   const [newPaymentMethod, setNewPaymentMethod] = useState('');
+  const [editingPaymentMethod, setEditingPaymentMethod] = useState<string | null>(null);
   const [paymentMethodError, setPaymentMethodError] = useState<string | null>(null);
   const [showResetModal, setShowResetModal] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
@@ -357,10 +446,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   }, [isAppAdmin]);
 
   useEffect(() => {
-    if (!isAppAdmin && (activeSettingsSection === 'screen' || activeSettingsSection === 'users' || activeSettingsSection === 'database')) {
-      setActiveSettingsSection('sales');
+    if (!isAdmin && !isAppAdmin && activeSettingsSection !== 'screen') {
+      onActiveSectionChange('screen');
+    } else if (
+      isAdmin &&
+      !isAppAdmin &&
+      (activeSettingsSection === 'users' ||
+        activeSettingsSection === 'database' ||
+        activeSettingsSection === 'version')
+    ) {
+      onActiveSectionChange('sales');
     }
-  }, [isAppAdmin, activeSettingsSection]);
+  }, [isAdmin, isAppAdmin, activeSettingsSection, onActiveSectionChange]);
 
   useEffect(() => {
     const api = window.electronAPI;
@@ -400,6 +497,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   const handleOpenEditUser = (user: UserAccount) => {
+    if (user.username.toLowerCase() === 'aptadmin') return;
     setEditingUser(user);
     setUserFormData({
       username: user.username,
@@ -442,6 +540,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (editingUser?.username.toLowerCase() === 'aptadmin') {
+      setUserFormError('The primary company admin account cannot be edited.');
+      return;
+    }
     setUserFormSaving(true);
     setUserFormError(null);
     try {
@@ -540,6 +642,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setSelectedTemplate(settings.paperWidth || '80mm');
   }, [settings]);
 
+  useLayoutEffect(() => {
+    settingsViewRef.current?.querySelectorAll<HTMLElement>('.settings-content-scroll').forEach((pane) => {
+      pane.scrollTop = 0;
+    });
+  }, [activeSettingsSection]);
+
   const loadAvailablePrinters = async () => {
     if (!window.electronAPI?.isElectron) {
       setPrinterListError('Available printers can only be listed in the desktop app.');
@@ -576,6 +684,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (activeSettingsSection === 'version') return;
     setSaving(true);
     setSavedNotice(false);
     try {
@@ -587,23 +696,83 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
+  const handleVersionActivation = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setVersionActivationBusy(true);
+    setVersionActivationError(null);
+    try {
+      await onActivateVersion({
+        appVersion: form.appVersion || 'Standard',
+        disabledAppComponents: form.disabledAppComponents || [],
+        password: versionAdminPassword,
+      });
+      setVersionActivationOpen(false);
+      setVersionAdminPassword('');
+      setVersionActivationNotice(true);
+      setTimeout(() => setVersionActivationNotice(false), 3500);
+    } catch (error) {
+      setVersionActivationError(
+        error instanceof Error ? error.message : 'Could not activate the selected version.'
+      );
+    } finally {
+      setVersionActivationBusy(false);
+    }
+  };
+
   const paymentMethods = getPaymentMethods(form.paymentMethods);
 
-  const handleAddPaymentMethod = () => {
+  const isBuiltInPaymentMethod = (method: string) =>
+    BUILT_IN_PAYMENT_METHODS.some((builtInMethod) => builtInMethod.toLowerCase() === method.toLowerCase());
+
+  const handleSavePaymentMethod = () => {
     const name = newPaymentMethod.trim();
     if (!name) {
       setPaymentMethodError(isRtl ? 'أدخل اسم طريقة الدفع.' : 'Enter a payment method name.');
       return;
     }
-    if (paymentMethods.some((method) => method.toLowerCase() === name.toLowerCase())) {
+    if (paymentMethods.some((method) =>
+      method.toLowerCase() !== editingPaymentMethod?.toLowerCase() &&
+      method.toLowerCase() === name.toLowerCase()
+    )) {
       setPaymentMethodError(isRtl ? 'طريقة الدفع موجودة بالفعل.' : 'That payment method already exists.');
       return;
     }
 
     setForm((current) => ({
       ...current,
-      paymentMethods: [...getPaymentMethods(current.paymentMethods), name],
+      paymentMethods: editingPaymentMethod
+        ? getPaymentMethods(current.paymentMethods).map((method) =>
+          method === editingPaymentMethod ? name : method
+        )
+        : [...getPaymentMethods(current.paymentMethods), name],
     }));
+    setNewPaymentMethod('');
+    setEditingPaymentMethod(null);
+    setPaymentMethodError(null);
+  };
+
+  const handleEditPaymentMethod = (method: string) => {
+    if (isBuiltInPaymentMethod(method)) return;
+    setEditingPaymentMethod(method);
+    setNewPaymentMethod(method);
+    setPaymentMethodError(null);
+  };
+
+  const handleDeletePaymentMethod = (method: string) => {
+    if (isBuiltInPaymentMethod(method)) return;
+    setForm((current) => ({
+      ...current,
+      paymentMethods: getPaymentMethods(current.paymentMethods).filter((configuredMethod) => configuredMethod !== method),
+    }));
+    if (editingPaymentMethod === method) {
+      setEditingPaymentMethod(null);
+      setNewPaymentMethod('');
+    }
+    setPaymentMethodError(null);
+  };
+
+  const handleCancelPaymentMethodEdit = () => {
+    setEditingPaymentMethod(null);
     setNewPaymentMethod('');
     setPaymentMethodError(null);
   };
@@ -679,16 +848,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     },
   ];
 
-  const settingsNav = ([
-    { id: 'sales',    label: t.secSalesTax,        icon: Percent,   desc: 'Tax modes, rounding, discounts' },
-    { id: 'screen',   label: t.secScreenModels,    icon: LayoutGrid, desc: 'Layout & display model' },
-    { id: 'store',    label: t.secStoreInfo,       icon: Store,     desc: 'Store info, logo, footer' },
-    { id: 'printer',  label: t.secPrintTemplate,   icon: Printer,   desc: 'Paper, A4 template & items' },
-    { id: 'users',    label: t.secUsersPerms,      icon: Users,     desc: 'Staff accounts & access' },
-    { id: 'database', label: t.secDatabase,        icon: Database,  desc: 'Backup, restore, reset' },
-    { id: 'updates',  label: isRtl ? 'التحديثات' : 'Software Updates', icon: RefreshCw, desc: 'Check and install app updates' },
-  ] as const).filter((section) => isAppAdmin || !['screen', 'users', 'database'].includes(section.id));
-
   const activeTemplateSettings = templateSettings(form, selectedTemplate);
   const activeInvoiceMarginsMm = resolveInvoiceMarginsMm(
     selectedTemplate,
@@ -712,119 +871,213 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   ];
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-[#f3f3f3] text-[#1f1f1f]">
-      <nav
-        className="shrink-0 bg-[#f3f3f3] px-2 py-3 sm:px-4"
-        aria-label="Settings sections"
-        role="tablist"
-      >
-        <div className="grid w-full grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-7">
-          {settingsNav.map((sec) => {
-            const Icon = sec.icon;
-            const active = activeSettingsSection === sec.id;
-            return (
-              <button
-                key={sec.id}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => setActiveSettingsSection(sec.id)}
-                className={`flex min-h-11 min-w-0 items-center justify-center gap-2 rounded-md border px-2 py-3 text-xs font-semibold transition-colors sm:px-4 ${
-                  active
-                    ? 'border-[#0f6cbd] bg-[#eaf3ff] text-[#0f6cbd]'
-                    : 'border-[#d9d9d9] bg-white text-[#555] hover:border-[#a6a6a6] hover:bg-[#f8f8f8] hover:text-[#1a1a1a]'
-                }`}
-              >
-                <Icon className="h-4 w-4 shrink-0" />
-                <span>{sec.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </nav>
+    <div ref={settingsViewRef} className="settings-view flex min-h-0 flex-1 flex-col overflow-hidden">
+      {showSectionNavigation && (
+        <nav
+          className="settings-section-navigation"
+          aria-label="Settings sections"
+          role="tablist"
+        >
+          <SettingsSectionTabs
+            activeSection={activeSettingsSection}
+            isAppAdmin={isAppAdmin}
+            themeOnly={!isAdmin && !isAppAdmin}
+            onSelect={onActiveSectionChange}
+          />
+        </nav>
+      )}
 
-      <div className={`min-h-0 overflow-y-auto ${activeSettingsSection === 'updates' ? 'hidden' : 'flex-1'}`}>
-        <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-4">
+      <div className={`settings-content-scroll min-w-0 min-h-0 overflow-y-auto ${activeSettingsSection === 'updates' ? 'hidden' : 'flex-1'}`}>
+        <div className="settings-content-inner p-4 sm:p-6 max-w-5xl mx-auto space-y-4">
+          {activeSettingsSection === 'screen' && (
+            <section className="settings-item-list settings-item-row settings-input-row">
+              <div className="settings-item-copy">
+                <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                  {theme === 'dark' ? <Moon className="h-4 w-4" /> : theme === 'medium' ? <Monitor className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+                  {isRtl ? 'المظهر' : 'Appearance'}
+                </h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  {isRtl ? 'اختر مظهراً فاتحاً أو متوسطاً أو داكناً للتطبيق.' : 'Choose a light, medium, or dark appearance for the app.'}
+                </p>
+              </div>
+              <select
+                value={theme}
+                aria-label={isRtl ? 'المظهر' : 'Theme'}
+                onChange={(event) => {
+                  if (
+                    event.target.value === 'light' ||
+                    event.target.value === 'medium' ||
+                    event.target.value === 'dark'
+                  ) {
+                    onThemeChange(event.target.value);
+                  }
+                }}
+                className="settings-item-control rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100"
+              >
+                <option value="light">{isRtl ? 'فاتح' : 'Light'}</option>
+                <option value="medium">{isRtl ? 'متوسط' : 'Medium'}</option>
+                <option value="dark">{isRtl ? 'داكن' : 'Dark'}</option>
+              </select>
+            </section>
+          )}
 
           {/* Main Settings Form */}
           <form
+            id="settings-form"
             onSubmit={handleSubmit}
-            className="bg-white border border-[#d9d9d9] rounded-md p-4 sm:p-5 space-y-4 text-xs shadow-[0_1px_0_rgba(0,0,0,0.02)]"
+            className="space-y-5 text-xs"
           >
+            {isAppAdmin && activeSettingsSection === 'version' && (
+              <div className="space-y-4">
+                {settings.registeredSystem ? (
+                  <section className="rounded-xl border border-blue-200 bg-blue-50 p-4 shadow-xs">
+                    <h2 className="text-sm font-semibold text-slate-900">
+                      {isRtl ? 'الإصدار المُدار مركزياً' : 'Version managed by Auth'}
+                    </h2>
+                    <p className="mt-1 text-xs leading-5 text-slate-600">
+                      {isRtl
+                        ? `هذا النظام مسجل بإصدار ${settings.appVersion || 'Standard'}؛ يتم التحكم في الوحدات المتاحة من تطبيق المصادقة.`
+                        : `This system is registered on ${settings.appVersion || 'Standard'}. Its allowed modules are managed in the Auth app.`}
+                    </p>
+                  </section>
+                ) : (
+                  <>
+                <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+                  <h2 className="text-sm font-semibold text-slate-900">
+                    {isRtl ? 'إصدار التطبيق' : 'Application Version'}
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {isRtl
+                      ? 'اختر إصدار التطبيق. يمكنك ضبط المكونات المتاحة للمستخدمين أدناه.'
+                      : 'Choose the app version. Configure which components users can access below.'}
+                  </p>
+                  <label
+                    htmlFor="app-version"
+                    className="mt-4 block text-xs font-medium text-slate-700"
+                  >
+                    {isRtl ? 'إصدار التطبيق' : 'App version'}
+                  </label>
+                  <select
+                    id="app-version"
+                    value={form.appVersion || 'Standard'}
+                    onChange={(event) => {
+                      const appVersion = APP_VERSIONS.find(
+                        (version) => version === event.target.value
+                      );
+                      if (appVersion) {
+                        setForm((current) => ({ ...current, appVersion }));
+                      }
+                    }}
+                    className="mt-1 w-full max-w-sm rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                  >
+                    {APP_VERSIONS.map((version) => (
+                      <option key={version} value={version}>
+                        {version}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-2 text-[11px] text-slate-500">
+                    {isRtl
+                      ? `الإصدار النشط حالياً: ${settings.appVersion || 'Standard'}. لن تُطبق التغييرات حتى التفعيل.`
+                      : `Currently active: ${settings.appVersion || 'Standard'}. Changes take effect only after activation.`}
+                  </p>
+                </section>
+
+                <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+                  <h2 className="text-sm font-semibold text-slate-900">
+                    {isRtl ? 'المكونات المتاحة' : 'Available Components'}
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {isRtl
+                      ? 'المكونات المحددة ستكون غير متاحة للمستخدمين الآخرين. يبقى aptadmin قادراً على الوصول إليها.'
+                      : 'Checked components are unavailable to other users. aptadmin retains access to every component.'}
+                  </p>
+                  <div className="settings-item-list mt-3">
+                    {APP_COMPONENTS.map((component) => (
+                      <label
+                        key={component.id}
+                        className="settings-item-row cursor-pointer"
+                      >
+                        <span className="settings-item-copy text-sm font-medium text-slate-700">
+                          {isRtl ? component.labelAr : component.label}
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={form.disabledAppComponents?.includes(component.id) ?? false}
+                          onChange={(event) =>
+                            setForm((current) => {
+                              const disabledComponents = new Set(
+                                current.disabledAppComponents || []
+                              );
+                              if (event.target.checked) {
+                                disabledComponents.add(component.id);
+                              } else {
+                                disabledComponents.delete(component.id);
+                              }
+                              return {
+                                ...current,
+                                disabledAppComponents: Array.from(disabledComponents),
+                              };
+                            })
+                          }
+                          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </section>
+                  </>
+                )}
+                <RegistrationRequestsPanel />
+              </div>
+            )}
+
             {/* SECTION 1: SALES & TAX SETTINGS */}
             {activeSettingsSection === 'sales' && (
               <div className="space-y-4">
-                <div className="rounded-md border border-[#d9d9d9] bg-[#fafafa] p-4">
-                  <h2 className="text-[15px] font-semibold text-[#1f1f1f] flex items-center gap-2">
-                    <Percent className="w-4 h-4 text-[#0f6cbd]" />
-                    <span>Sales & Taxation</span>
-                  </h2>
-                  <p className="text-xs text-[#666] mt-1">
-                    Product tax rates are managed under Inventory &gt; Manage. Choose here whether each product price includes tax or adds it at checkout.
-                  </p>
-                </div>
-
-                {/* Tax Inclusion Toggle */}
-                <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
-                  <div>
-                    <label className="block font-semibold text-slate-900">
-                      Tax Calculation Mode
-                    </label>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
-                      Each product uses its assigned Inventory tax rate. Choose whether retail prices include that tax or if it is added at checkout.
-                    </p>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setForm({ ...form, taxType: 'exclusive' })}
-                      className={`p-3 text-left rounded-md border transition-all ${
-                        form.taxType === 'exclusive'
-                          ? 'bg-[#edf5ff] border-[#8ab4ff] shadow-[inset_0_0_0_1px_rgba(15,108,189,0.2)]'
-                          : 'bg-white border-[#d9d9d9] text-[#444] hover:bg-[#fafafa]'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-slate-900">Tax Exclusive (Added)</span>
-                        {form.taxType === 'exclusive' && (
-                          <span className="text-blue-700 text-[10px] font-bold uppercase tracking-wider">
-                            Active
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-slate-500 mt-1">
-                        Tax is added on top of the subtotal at checkout (Standard in US & Canada).
-                      </p>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setForm({ ...form, taxType: 'inclusive' })}
-                      className={`p-3 text-left rounded-md border transition-all ${
-                        form.taxType === 'inclusive'
-                          ? 'bg-[#edf5ff] border-[#8ab4ff] shadow-[inset_0_0_0_1px_rgba(15,108,189,0.2)]'
-                          : 'bg-white border-[#d9d9d9] text-[#444] hover:bg-[#fafafa]'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-slate-900">Tax Inclusive (VAT/GST)</span>
-                        {form.taxType === 'inclusive' && (
-                          <span className="text-blue-700 text-[10px] font-bold uppercase tracking-wider">
-                            Active
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-slate-500 mt-1">
-                        Retail price includes tax. Subtotal and extracted tax breakdown printed on receipt.
-                      </p>
-                    </button>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 gap-4">
-                  <div>
-                    <label className="block font-medium text-slate-700 mb-1">
+                <div className="settings-item-list">
+                  <label className="settings-item-row cursor-pointer">
+                    <span className="settings-item-copy">
+                      <span className="block text-sm font-semibold text-slate-700">
+                        {isRtl ? 'الأيقونات فقط' : 'Icon Only'}
+                      </span>
+                      <span className="mt-1 block text-xs text-slate-500">
+                        {isRtl
+                          ? 'إخفاء أسماء العناصر أسفل أيقونات المشغّل.'
+                          : 'Hide the text labels below launcher icons.'}
+                      </span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      aria-label={isRtl ? 'الأيقونات فقط' : 'Icon Only'}
+                      checked={iconOnlyLauncher}
+                      onChange={(event) => onIconOnlyLauncherChange(event.target.checked)}
+                      className="peer sr-only"
+                    />
+                    <span className="relative h-5 w-9 shrink-0 rounded-full bg-slate-300 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-blue-600 peer-checked:after:translate-x-4 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-blue-600 rtl:peer-checked:after:-translate-x-4" />
+                  </label>
+                  <label className="settings-item-row cursor-pointer">
+                    <span className="settings-item-copy text-sm font-normal text-slate-700">
+                      {isRtl ? 'سعر البيع شامل الضريبة' : 'Selling Price include tax'}
+                    </span>
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      aria-label={isRtl ? 'سعر البيع شامل الضريبة' : 'Selling Price include tax'}
+                      checked={form.taxType === 'inclusive'}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          taxType: event.target.checked ? 'inclusive' : 'exclusive',
+                        }))
+                      }
+                      className="peer sr-only"
+                    />
+                    <span className="relative h-5 w-9 shrink-0 rounded-full bg-slate-300 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-blue-600 peer-checked:after:translate-x-4 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-blue-600 rtl:peer-checked:after:-translate-x-4" />
+                  </label>
+                  <div className="settings-item-row settings-input-row">
+                    <label className="settings-item-copy text-sm font-semibold text-slate-700">
                       Currency Symbol
                     </label>
                     <input
@@ -832,12 +1085,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       maxLength={4}
                       value={form.currencySymbol}
                       onChange={(e) => setForm({ ...form, currencySymbol: e.target.value })}
-                      className="w-full px-3 py-2 font-mono border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
+                      className="settings-item-control border border-slate-200 px-3 py-2 font-mono text-slate-900 focus:border-blue-700 focus:outline-none"
                     />
                   </div>
 
-                  <div>
-                    <label className="block font-medium text-slate-700 mb-1">
+                  <div className="settings-item-row settings-input-row">
+                    <label className="settings-item-copy text-sm font-semibold text-slate-700">
                       Default Walk-in Customer Label
                     </label>
                     <input
@@ -845,25 +1098,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       value={form.defaultCustomer}
                       onChange={(e) => setForm({ ...form, defaultCustomer: e.target.value })}
                       placeholder="Walk-in Customer"
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
+                      className="settings-item-control border border-slate-200 px-3 py-2 text-slate-900 focus:border-blue-700 focus:outline-none"
                     />
                   </div>
 
-                  <div>
-                    <label className="block font-medium text-slate-700 mb-1">
+                  <div className="settings-item-row settings-input-row">
+                    <label className="settings-item-copy text-sm font-semibold text-slate-700">
                       Active Cashier Shift Name
                     </label>
                     <input
                       type="text"
                       value={form.cashierName}
                       onChange={(e) => setForm({ ...form, cashierName: e.target.value })}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
+                      className="settings-item-control border border-slate-200 px-3 py-2 text-slate-900 focus:border-blue-700 focus:outline-none"
                     />
                   </div>
                 </div>
 
-                <section className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
-                  <div>
+                <section className="space-y-2">
+                  <div className="px-1">
                     <h3 className="text-sm font-semibold text-slate-900">
                       {isRtl ? 'طرق الدفع' : 'Payment Methods'}
                     </h3>
@@ -873,7 +1126,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         : 'Add custom payment methods to make them available at checkout.'}
                     </p>
                   </div>
-                  <div className="flex flex-col gap-2 sm:flex-row">
+                  <div className="settings-item-list settings-item-row">
                     <input
                       type="text"
                       maxLength={40}
@@ -885,61 +1138,98 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       onKeyDown={(event) => {
                         if (event.key === 'Enter') {
                           event.preventDefault();
-                          handleAddPaymentMethod();
+                          handleSavePaymentMethod();
                         }
                       }}
                       placeholder={isRtl ? 'مثال: تحويل بنكي' : 'e.g. Bank Transfer'}
-                      aria-label={isRtl ? 'اسم طريقة الدفع الجديدة' : 'New payment method name'}
-                      className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-700 focus:outline-none"
+                      aria-label={
+                        editingPaymentMethod
+                          ? (isRtl ? 'تعديل اسم طريقة الدفع' : 'Edit payment method name')
+                          : (isRtl ? 'اسم طريقة الدفع الجديدة' : 'New payment method name')
+                      }
+                      className="settings-item-control border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-700 focus:outline-none"
                     />
                     <button
                       type="button"
-                      onClick={handleAddPaymentMethod}
+                      onClick={handleSavePaymentMethod}
                       className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-700 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-800"
                     >
-                      <Plus className="h-4 w-4" />
-                      {isRtl ? 'إضافة طريقة دفع' : 'Add New Payment Method'}
+                      {editingPaymentMethod ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                      {editingPaymentMethod
+                        ? (isRtl ? 'تحديث طريقة الدفع' : 'Update Payment Method')
+                        : (isRtl ? 'إضافة طريقة دفع' : 'Add New Payment Method')}
                     </button>
+                    {editingPaymentMethod && (
+                      <button
+                        type="button"
+                        onClick={handleCancelPaymentMethodEdit}
+                        aria-label={isRtl ? 'إلغاء تعديل طريقة الدفع' : 'Cancel payment method edit'}
+                        className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white p-2 text-slate-600 hover:bg-slate-50"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    )}
                   </div>
                   {paymentMethodError && (
-                    <p role="alert" className="text-xs text-red-700">{paymentMethodError}</p>
+                    <p role="alert" className="settings-item-row text-xs text-red-700">
+                      {paymentMethodError}
+                    </p>
                   )}
-                  <div className="flex flex-wrap gap-2">
-                    {paymentMethods.map((method) => (
-                      <span
-                        key={method}
-                        className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700"
-                      >
-                        {method}
-                        {(method === 'Cash' || method === 'Card' || method === 'Split') && (
-                          <span className="text-[10px] text-slate-400">
-                            {isRtl ? 'افتراضي' : 'Default'}
-                          </span>
-                        )}
-                      </span>
-                    ))}
+                  <div className="settings-item-list">
+                    <div className="settings-item-row flex-wrap gap-2">
+                      {paymentMethods.map((method) => {
+                        const isBuiltIn = isBuiltInPaymentMethod(method);
+                        return (
+                          <div
+                            key={method}
+                            className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700"
+                          >
+                            <span>{method}</span>
+                            {isBuiltIn ? (
+                              <span className="text-[10px] text-slate-400">
+                                {isRtl ? 'افتراضي' : 'Default'}
+                              </span>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => handleEditPaymentMethod(method)}
+                                  aria-label={`${isRtl ? 'تعديل' : 'Edit'} ${method}`}
+                                  className="rounded-full p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                                >
+                                  <Edit2 className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeletePaymentMethod(method)}
+                                  aria-label={`${isRtl ? 'حذف' : 'Delete'} ${method}`}
+                                  className="rounded-full p-1 text-slate-500 hover:bg-red-50 hover:text-red-700"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="settings-item-row text-[11px] text-slate-500">
+                      {isRtl
+                        ? 'احفظ الإعدادات لتطبيق التغييرات.'
+                        : 'Save Settings to apply changes.'}
+                    </p>
                   </div>
-                  <p className="text-[11px] text-slate-500">
-                    {isRtl
-                      ? 'احفظ الإعدادات لتطبيق التغييرات.'
-                      : 'Save Settings to apply changes.'}
-                  </p>
                 </section>
 
                 {/* Operational Toggles */}
-                <div className="space-y-3 pt-2 border-t border-slate-100">
-                  <h3 className="text-xs font-semibold text-slate-900 uppercase tracking-wider text-slate-500">
+                <section className="space-y-2">
+                  <h3 className="px-1 text-sm font-semibold text-slate-900">
                     Checkout & Inventory Safeguards
                   </h3>
 
-                  <label className="flex items-start gap-3 p-3 bg-slate-50 rounded-lg border border-slate-200 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={form.allowNegativeStock}
-                      onChange={(e) => setForm({ ...form, allowNegativeStock: e.target.checked })}
-                      className="mt-0.5 rounded text-blue-700 focus:ring-blue-700"
-                    />
-                    <div>
+                  <div className="settings-item-list">
+                  <div className="settings-item-row settings-toggle-row">
+                    <div className="settings-item-copy">
                       <span className="font-semibold text-slate-900 block">
                         Allow Negative Inventory Billing
                       </span>
@@ -947,18 +1237,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         When enabled, cashiers can complete sales even if SQLite stock count is zero or uncounted.
                       </span>
                     </div>
-                  </label>
-
-                  <label className="flex items-start gap-3 p-3 bg-slate-50 rounded-lg border border-slate-200 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={form.roundTotalToFiveCents}
-                      onChange={(e) =>
-                        setForm({ ...form, roundTotalToFiveCents: e.target.checked })
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-label="Allow Negative Inventory Billing"
+                      aria-checked={form.allowNegativeStock}
+                      onClick={() =>
+                        setForm((current) => ({
+                          ...current,
+                          allowNegativeStock: !current.allowNegativeStock,
+                        }))
                       }
-                      className="mt-0.5 rounded text-blue-700 focus:ring-blue-700"
-                    />
-                    <div>
+                      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 ${
+                        form.allowNegativeStock ? 'bg-blue-600' : 'bg-slate-300'
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                          isRtl ? 'right-0.5' : 'left-0.5'
+                        } ${
+                          form.allowNegativeStock
+                            ? isRtl
+                              ? '-translate-x-4'
+                              : 'translate-x-4'
+                            : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  <div className="settings-item-row settings-toggle-row">
+                    <div className="settings-item-copy">
                       <span className="font-semibold text-slate-900 block">
                         Cash Rounding to Nearest 5 Cents (Swedish Rounding)
                       </span>
@@ -966,16 +1275,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         Rounds checkout balance to $0.05 for countries eliminating 1-cent coins.
                       </span>
                     </div>
-                  </label>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-label="Cash Rounding to Nearest 5 Cents"
+                      aria-checked={form.roundTotalToFiveCents}
+                      onClick={() =>
+                        setForm((current) => ({
+                          ...current,
+                          roundTotalToFiveCents: !current.roundTotalToFiveCents,
+                        }))
+                      }
+                      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 ${
+                        form.roundTotalToFiveCents ? 'bg-blue-600' : 'bg-slate-300'
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                          isRtl ? 'right-0.5' : 'left-0.5'
+                        } ${
+                          form.roundTotalToFiveCents
+                            ? isRtl
+                              ? '-translate-x-4'
+                              : 'translate-x-4'
+                            : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
 
-                  <label className="flex items-start gap-3 p-3 bg-slate-50 rounded-lg border border-slate-200 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={form.barcodeScanBeep}
-                      onChange={(e) => setForm({ ...form, barcodeScanBeep: e.target.checked })}
-                      className="mt-0.5 rounded text-blue-700 focus:ring-blue-700"
-                    />
-                    <div>
+                  <div className="settings-item-row settings-toggle-row">
+                    <div className="settings-item-copy">
                       <span className="font-semibold text-slate-900 block">
                         Audio Beep Feedback on Barcode Scan
                       </span>
@@ -983,15 +1313,43 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         Synthesizes a short POS scan tone via Web Audio API whenever an item is added to the cart.
                       </span>
                     </div>
-                  </label>
-                </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-label="Audio Beep Feedback on Barcode Scan"
+                      aria-checked={form.barcodeScanBeep}
+                      onClick={() =>
+                        setForm((current) => ({
+                          ...current,
+                          barcodeScanBeep: !current.barcodeScanBeep,
+                        }))
+                      }
+                      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 ${
+                        form.barcodeScanBeep ? 'bg-blue-600' : 'bg-slate-300'
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                          isRtl ? 'right-0.5' : 'left-0.5'
+                        } ${
+                          form.barcodeScanBeep
+                            ? isRtl
+                              ? '-translate-x-4'
+                              : 'translate-x-4'
+                            : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  </div>
+                </section>
               </div>
             )}
 
             {/* SECTION 2: POS SCREEN MODELS */}
             {isAppAdmin && activeSettingsSection === 'screen' && (
               <div className="space-y-4">
-                <div className="rounded-md border border-[#d9d9d9] bg-[#fafafa] p-4">
+                <div className="px-1">
                   <h2 className="text-[15px] font-semibold text-[#1f1f1f] flex items-center gap-2">
                     <Monitor className="w-4 h-4 text-[#0f6cbd]" />
                     <span>{isRtl ? 'نماذج شاشة نقطة البيع' : 'POS Screen Modes'}</span>
@@ -1003,49 +1361,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </p>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="settings-item-list">
                   {screenModels.map((model) => {
                     const isSelected = form.posScreenLayout === model.id || (model.id === 'pos' && form.posScreenLayout !== 'rpos');
                     return (
-                      <div
+                      <button
                         key={model.id}
+                        type="button"
                         onClick={() => handleSelectLayout(model.id)}
-                        className={`p-5 rounded-md border cursor-pointer transition-all flex flex-col justify-between ${
+                        className={`settings-item-row w-full text-left transition-colors ${
                           isSelected
-                            ? 'bg-[#edf5ff] border-[#8ab4ff] shadow-[inset_0_0_0_1px_rgba(15,108,189,0.15)]'
-                            : 'bg-white border-[#d9d9d9] hover:border-[#b7b7b7]'
+                            ? 'bg-blue-50'
+                            : 'hover:bg-slate-50'
                         }`}
                       >
-                        <div>
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-bold text-slate-900 text-base">
-                              {model.title}
-                            </span>
-                            <span
-                              className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full ${
-                                isSelected
-                                  ? 'bg-blue-700 text-white shadow-xs'
-                                  : 'bg-slate-100 text-slate-600'
-                              }`}
-                            >
-                              {model.badge}
-                            </span>
-                          </div>
-                          <p className="text-xs text-slate-600 mt-3 leading-relaxed">
+                        <div className="settings-item-copy">
+                          <span className="block font-semibold text-slate-900">
+                            {model.title}
+                          </span>
+                          <span className="mt-1 block text-xs leading-relaxed text-slate-500">
                             {model.description}
-                          </p>
-                        </div>
-
-                        <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
-                          <span
-                            className={
-                              isSelected ? 'text-blue-700 font-bold' : 'text-slate-400 font-medium'
-                            }
-                          >
-                            {isSelected ? (isRtl ? '✓ النموذج النشط حالياً' : '✓ Active Layout Model') : (isRtl ? 'انقر للتفعيل' : 'Click to Activate')}
                           </span>
                         </div>
-                      </div>
+                        <span className="shrink-0 text-right">
+                          <span className="block text-xs font-semibold text-slate-700">
+                            {model.badge}
+                          </span>
+                          <span className={`mt-1 block text-[11px] font-semibold ${isSelected ? 'text-blue-700' : 'text-slate-400'}`}>
+                            {isSelected ? (isRtl ? 'النموذج النشط' : 'Active') : (isRtl ? 'انقر للتفعيل' : 'Select')}
+                          </span>
+                        </span>
+                      </button>
                     );
                   })}
                 </div>
@@ -1055,7 +1401,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             {/* SECTION 3: STORE & RECEIPT INFO */}
             {activeSettingsSection === 'store' && (
               <div className="space-y-4">
-                <div className="rounded-md border border-[#d9d9d9] bg-[#fafafa] p-4">
+                <div className="px-1">
                   <h2 className="text-[15px] font-semibold text-[#1f1f1f] flex items-center gap-2">
                     <Store className="w-4 h-4 text-[#0f6cbd]" />
                     <span>Store Profile</span>
@@ -1065,7 +1411,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </p>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="settings-item-list settings-field-list">
                   <div>
                     <label className="block font-medium text-slate-700 mb-1">Store Name (English) *</label>
                     <input
@@ -1198,7 +1544,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     />
                   </div>
 
-                  <div className="sm:col-span-2">
+                  <div>
                     <label className="block font-medium text-slate-700 mb-1">
                       Full Address Line / العنوان بالكامل
                     </label>
@@ -1244,7 +1590,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             {/* SECTION 4: PRINT & INVOICE TEMPLATE SETTINGS */}
             {activeSettingsSection === 'printer' && (
               <div className="space-y-4">
-                <div className="rounded-md border border-[#d9d9d9] bg-[#fafafa] p-4">
+                <div className="px-1">
                   <h2 className="text-[15px] font-semibold text-[#1f1f1f] flex items-center gap-2">
                     <Printer className="w-4 h-4 text-[#0f6cbd]" />
                     <span>{t.printTemplateTitle}</span>
@@ -1254,38 +1600,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </p>
                 </div>
 
-                <div className="flex flex-col gap-3 rounded-xl border border-rose-200 bg-rose-50/60 p-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
+                <div className="settings-item-list">
+                <div className="settings-item-row">
+                  <div className="settings-item-copy">
                     <h3 className="text-sm font-semibold text-slate-900">KOT Printer</h3>
                     <p className="mt-1 text-xs text-slate-600">
                       Print kitchen order tickets to a dedicated printer. System Default is used when none is selected.
                     </p>
-                    <label className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-slate-800">
-                      <input
-                        type="checkbox"
-                        checked={form.enableKot === true}
-                        onChange={(event) => setForm((current) => ({ ...current, enableKot: event.target.checked }))}
-                        className="rounded text-blue-700 focus:ring-blue-600 border-slate-300"
-                      />
-                      Enable KOT printing
-                    </label>
                     <p className="mt-2 text-xs font-medium text-slate-700">
                       Selected: {form.kotPrinter || 'System Default'}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => openPrinterDialog('kot')}
-                    className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-rose-300 bg-white px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100"
-                  >
-                    <Printer className="h-3.5 w-3.5" />
-                    Choose KOT Printer
-                  </button>
+                  <div className="flex shrink-0 items-center gap-4">
+                    <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700">
+                      Enable
+                      <input
+                        type="checkbox"
+                        checked={form.enableKot === true}
+                        onChange={(event) => setForm((current) => ({ ...current, enableKot: event.target.checked }))}
+                        className="h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-600"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => openPrinterDialog('kot')}
+                      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-slate-50"
+                    >
+                      <Printer className="h-3.5 w-3.5" />
+                      Choose Printer
+                    </button>
+                  </div>
+                </div>
                 </div>
 
                 {/* 1. Paper Format Selection (80mm / 58mm / A4) */}
-                <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
-                  <div>
+                <section className="space-y-2">
+                  <div className="px-1">
                     <label className="block font-semibold text-slate-900">
                       {t.paperFormat}
                     </label>
@@ -1294,7 +1644,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     </p>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="settings-item-list">
                     {[
                       { id: '80mm', title: '80mm Roll', desc: 'Standard POS thermal receipt roll', badge: 'Standard POS' },
                       { id: '58mm', title: '58mm Roll', desc: 'Compact portable receipt printer', badge: 'Compact' },
@@ -1308,27 +1658,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           setSelectedTemplate(format);
                           setForm((current) => ({ ...current, paperWidth: format }));
                         }}
-                        className={`p-3.5 text-left rounded-md border transition-all cursor-pointer ${
+                        className={`settings-item-row w-full text-left transition-colors ${
                           selectedTemplate === fmt.id
-                            ? 'bg-[#edf5ff] border-[#8ab4ff] shadow-[inset_0_0_0_1px_rgba(15,108,189,0.15)]'
-                            : 'bg-white border-[#d9d9d9] text-[#444] hover:bg-[#fafafa]'
+                            ? 'bg-blue-50'
+                            : 'hover:bg-slate-50'
                         }`}
                       >
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-slate-900 text-xs">{fmt.title}</span>
-                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                            selectedTemplate === fmt.id ? 'bg-blue-100 text-blue-800' : 'bg-slate-100 text-slate-600'
-                          }`}>
-                            {fmt.badge}
-                          </span>
+                        <div className="settings-item-copy">
+                          <span className="block font-semibold text-slate-900">{fmt.title}</span>
+                          <span className="mt-1 block text-[11px] text-slate-500">{fmt.desc}</span>
                         </div>
-                        <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
-                          {fmt.desc}
-                        </p>
+                        <span className="shrink-0 text-right">
+                          <span className="block text-xs font-semibold text-slate-700">{fmt.badge}</span>
+                          <span className={`mt-1 block text-[11px] font-semibold ${selectedTemplate === fmt.id ? 'text-blue-700' : 'text-slate-400'}`}>
+                            {selectedTemplate === fmt.id ? 'Selected' : 'Select'}
+                          </span>
+                        </span>
                       </button>
                     ))}
                   </div>
-                </div>
+                </section>
 
                 {/* 2. Selected template printer */}
                 <div className="p-4 bg-white border border-slate-200 rounded-xl space-y-4 shadow-2xs">
@@ -1435,39 +1784,38 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
 
                 {/* 3. Invoice Item Elements Display Options */}
-                <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
-                  <div>
+                <section className="space-y-2">
+                  <div className="px-1">
                     <h3 className="text-xs font-bold text-slate-900 flex items-center gap-2">
                       <FileText className="w-4 h-4 text-blue-700" />
                       <span>{t.invoiceDisplayOptions}</span>
                     </h3>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
+                    <p className="text-[11px] text-slate-500">
                       {t.invoiceDisplayOptionsDesc}
                     </p>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                  <div className="settings-item-list">
                     {invoiceOptions.map((opt) => (
                       <label
                         key={opt.key}
-                        className={`flex items-start gap-2.5 p-2.5 rounded-lg border transition-all cursor-pointer ${
-                          opt.val ? 'bg-white border-blue-200 shadow-2xs' : 'bg-white/60 border-slate-200 hover:bg-white'
-                        }`}
+                        className="settings-item-row cursor-pointer transition-colors hover:bg-slate-50"
                       >
                         <input
                           type="checkbox"
                           checked={opt.val}
                           onChange={(e) => updateTemplateSettings(opt.key, e.target.checked)}
-                          className="mt-0.5 rounded text-blue-700 focus:ring-blue-600 border-slate-300"
+                          className="peer sr-only"
                         />
-                        <div className="text-xs">
+                        <div className="settings-item-copy">
                           <div className="font-semibold text-slate-800">{opt.label}</div>
-                          <div className="text-[10px] text-slate-500 mt-0.5">{opt.desc}</div>
+                          <div className="mt-0.5 text-[10px] text-slate-500">{opt.desc}</div>
                         </div>
+                        <span className="relative h-5 w-9 shrink-0 rounded-full bg-slate-300 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-blue-600 peer-checked:after:translate-x-4 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-blue-600 rtl:peer-checked:after:-translate-x-4" />
                       </label>
                     ))}
                   </div>
-                </div>
+                </section>
 
                 {/* 4. Decimal Places (Price & Quantity) */}
                 <div className="p-4 bg-white border border-slate-200 rounded-xl space-y-2 shadow-2xs">
@@ -1503,7 +1851,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             {/* SECTION 5: DATABASE MAINTENANCE, BACKUP & RESTORE */}
             {isAppAdmin && activeSettingsSection === 'database' && (
               <div className="space-y-4">
-                <div className="rounded-md border border-[#d9d9d9] bg-[#fafafa] p-4">
+                <div className="px-1">
                   <h2 className="text-[15px] font-semibold text-[#1f1f1f] flex items-center gap-2">
                     <Database className="w-4 h-4 text-[#0f6cbd]" />
                     <span>Database & Backup</span>
@@ -1861,7 +2209,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             {/* SECTION: USERS & PERMISSIONS */}
             {isAppAdmin && activeSettingsSection === 'users' && (
               <div className="space-y-4">
-                <div className="rounded-md border border-[#d9d9d9] bg-[#fafafa] p-4">
+                <div className="px-1">
                   <h2 className="text-[15px] font-semibold text-[#1f1f1f] flex items-center gap-2">
                     <Users className="w-4 h-4 text-[#0f6cbd]" />
                     <span>Users & Permissions</span>
@@ -1880,7 +2228,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 )}
 
                 {/* User list */}
-                <div className="space-y-2">
+                <div className="settings-item-list">
                   {usersLoading ? (
                     <div className="py-8 text-center text-slate-400 text-xs">Loading accounts…</div>
                   ) : usersList.length === 0 ? (
@@ -1894,9 +2242,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       return (
                         <div
                           key={u.id}
-                          className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl"
+                          className="settings-item-row"
                         >
-                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="settings-item-copy flex items-center gap-3">
                             <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${isAdmin ? 'bg-blue-100 text-blue-700' : 'bg-slate-200 text-slate-600'}`}>
                               {isAdmin ? <Shield className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
                             </div>
@@ -1927,8 +2275,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                             <button
                               type="button"
                               onClick={() => handleOpenEditUser(u)}
-                              className="p-1.5 text-slate-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors"
-                              title="Edit user"
+                              disabled={isPrimaryAdmin}
+                              aria-label={isPrimaryAdmin ? 'Primary company admin cannot be edited' : `Edit ${u.username}`}
+                              className="p-1.5 text-slate-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                              title={isPrimaryAdmin ? 'Primary company admin cannot be edited' : 'Edit user'}
                             >
                               <Edit2 className="w-3.5 h-3.5" />
                             </button>
@@ -1979,24 +2329,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
             )}
 
-            {/* Save Buttons */}
-            <div className="pt-4 border-t border-slate-200 flex items-center justify-between">
-              <div>
-                {savedNotice && (
-                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700">
-                    <Check className="w-4 h-4" />
-                    <span>Configuration saved to SQLite</span>
-                  </span>
-                )}
-              </div>
-              <button
-                type="submit"
-                disabled={saving}
-                className="px-5 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors disabled:opacity-50 shadow-sm"
-              >
-                {saving ? 'Saving...' : 'Save All Settings'}
-              </button>
-            </div>
           </form>
 
           {/* Printer status and queue controls belong to the printer settings section. */}
@@ -2103,7 +2435,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       )}
 
       {activeSettingsSection === 'updates' && (
-        <div className="flex-1 min-h-0 overflow-y-auto">
+        <div className="settings-content-scroll flex-1 min-h-0 overflow-y-auto">
           <div className="mx-auto max-w-5xl space-y-5 p-4 sm:p-6">
           <div className="flex items-center gap-3">
             <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-700">
@@ -2644,6 +2976,122 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </button>
             </footer>
           </section>
+        </div>
+      )}
+      {versionActivationOpen && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/60 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !versionActivationBusy) {
+              setVersionActivationOpen(false);
+              setVersionAdminPassword('');
+              setVersionActivationError(null);
+            }
+          }}
+        >
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="version-activation-title"
+            onSubmit={handleVersionActivation}
+            className="w-full max-w-md space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-2xl"
+          >
+            <div className="flex items-start gap-3">
+              <span className="rounded-lg bg-blue-50 p-2 text-blue-700">
+                <Lock className="h-4 w-4" />
+              </span>
+              <div>
+                <h2 id="version-activation-title" className="text-sm font-bold text-slate-900">
+                  {isRtl ? 'تأكيد تفعيل الإصدار' : 'Confirm Version Activation'}
+                </h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  {isRtl
+                    ? `أدخل كلمة مرور aptadmin لتفعيل ${form.appVersion || 'Standard'} وتطبيق خيارات المكونات.`
+                    : `Enter the aptadmin password to activate ${form.appVersion || 'Standard'} and apply its component access settings.`}
+                </p>
+              </div>
+            </div>
+            <label htmlFor="version-admin-password" className="block text-xs font-semibold text-slate-700">
+              {isRtl ? 'كلمة مرور مسؤول التطبيق' : 'App admin password'}
+            </label>
+            <input
+              id="version-admin-password"
+              type="password"
+              autoComplete="current-password"
+              autoFocus
+              required
+              value={versionAdminPassword}
+              onChange={(event) => setVersionAdminPassword(event.target.value)}
+              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100"
+            />
+            {versionActivationError && (
+              <p role="alert" className="text-xs font-medium text-rose-700">
+                {versionActivationError}
+              </p>
+            )}
+            <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+              <button
+                type="button"
+                disabled={versionActivationBusy}
+                onClick={() => {
+                  setVersionActivationOpen(false);
+                  setVersionAdminPassword('');
+                  setVersionActivationError(null);
+                }}
+                className="rounded-lg px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+              >
+                {isRtl ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="submit"
+                disabled={versionActivationBusy || !versionAdminPassword}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
+              >
+                {versionActivationBusy
+                  ? isRtl ? 'جارٍ التفعيل...' : 'Activating...'
+                  : isRtl ? 'تفعيل الإصدار' : 'Activate Version'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      {(isAdmin || isAppAdmin) && (
+        <div className="settings-floating-save">
+          {savedNotice && (
+            <span className="settings-save-notice" role="status">
+              <Check className="h-4 w-4" />
+              {isRtl ? 'تم حفظ الإعدادات' : 'Settings saved'}
+            </span>
+          )}
+          {versionActivationNotice && (
+            <span className="settings-save-notice" role="status">
+              <Check className="h-4 w-4" />
+              {isRtl ? 'تم تفعيل الإصدار' : 'Version activated'}
+            </span>
+          )}
+          {activeSettingsSection === 'version' ? (
+            <button
+              type="button"
+              disabled={versionActivationBusy}
+              onClick={() => {
+                setVersionActivationError(null);
+                setVersionAdminPassword('');
+                setVersionActivationOpen(true);
+              }}
+              className="settings-save-button"
+            >
+              {isRtl ? 'تفعيل الإصدار' : `Activate ${form.appVersion || 'Standard'}`}
+            </button>
+          ) : (
+            <button
+              type="submit"
+              form="settings-form"
+              disabled={saving}
+              className="settings-save-button"
+            >
+              {saving ? 'Saving...' : isRtl ? 'حفظ الإعدادات' : 'Save All Settings'}
+            </button>
+          )}
         </div>
       )}
     </div>
