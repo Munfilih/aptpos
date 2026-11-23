@@ -1119,6 +1119,7 @@ export function App() {
       printQueue={printQueue}
       isAdmin={isAdmin}
       isAppAdmin={isAppAdmin}
+      canRegisterSystem={isAppAdmin || currentUser?.demoMode === true}
       theme={theme}
       onThemeChange={setTheme}
       iconOnlyLauncher={iconOnlyLauncher}

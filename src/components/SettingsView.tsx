@@ -58,6 +58,7 @@ interface SettingsViewProps {
   printQueue: PrintJob[];
   isAdmin: boolean;
   isAppAdmin: boolean;
+  canRegisterSystem: boolean;
   theme: ThemeMode;
   onThemeChange: (theme: ThemeMode) => void;
   iconOnlyLauncher: boolean;
@@ -86,6 +87,7 @@ type BackupMode = 'on-close' | 'manual' | 'scheduled';
 interface SettingsSectionTabsProps {
   activeSection: SettingsSectionId | null;
   isAppAdmin: boolean;
+  canRegisterSystem?: boolean;
   themeOnly?: boolean;
   onSelect: (section: SettingsSectionId) => void;
 }
@@ -93,6 +95,7 @@ interface SettingsSectionTabsProps {
 export const SettingsSectionTabs: React.FC<SettingsSectionTabsProps> = ({
   activeSection,
   isAppAdmin,
+  canRegisterSystem = false,
   themeOnly = false,
   onSelect,
 }) => {
@@ -114,7 +117,10 @@ export const SettingsSectionTabs: React.FC<SettingsSectionTabsProps> = ({
   const sections = themeOnly
     ? allSections.filter((section) => section.id === 'screen')
     : allSections.filter(
-      (section) => isAppAdmin || !['users', 'database', 'registration', 'version'].includes(section.id)
+      (section) =>
+        isAppAdmin ||
+        !['users', 'database', 'version'].includes(section.id) &&
+          (section.id !== 'registration' || canRegisterSystem)
       );
 
   return (
@@ -147,6 +153,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   printQueue,
   isAdmin,
   isAppAdmin,
+  canRegisterSystem,
   theme,
   onThemeChange,
   iconOnlyLauncher,
@@ -482,12 +489,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       !isAppAdmin &&
       (activeSettingsSection === 'users' ||
         activeSettingsSection === 'database' ||
-        activeSettingsSection === 'registration' ||
+        (activeSettingsSection === 'registration' && !canRegisterSystem) ||
         activeSettingsSection === 'version')
     ) {
       onActiveSectionChange('sales');
     }
-  }, [isAdmin, isAppAdmin, activeSettingsSection, onActiveSectionChange]);
+  }, [isAdmin, isAppAdmin, canRegisterSystem, activeSettingsSection, onActiveSectionChange]);
 
   useEffect(() => {
     const api = window.electronAPI;
@@ -1017,6 +1024,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <SettingsSectionTabs
             activeSection={activeSettingsSection}
             isAppAdmin={isAppAdmin}
+            canRegisterSystem={canRegisterSystem}
             themeOnly={!isAdmin && !isAppAdmin}
             onSelect={onActiveSectionChange}
           />
@@ -1066,7 +1074,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             {settingsSaveError && (
               <p className="text-xs text-red-600" role="alert">{settingsSaveError}</p>
             )}
-            {isAppAdmin && activeSettingsSection === 'registration' && (
+            {canRegisterSystem && activeSettingsSection === 'registration' && (
               <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
                 <h2 className="text-sm font-semibold text-slate-900">
                   {isRtl ? 'تسجيل النظام' : 'Register this system'}

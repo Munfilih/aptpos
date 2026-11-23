@@ -611,6 +611,7 @@ export const TopBar: React.FC<TopBarProps> = ({
                     <SettingsSectionTabs
                       activeSection={null}
                       isAppAdmin={isAppAdmin}
+                      canRegisterSystem={isAppAdmin || currentUser?.demoMode === true}
                       themeOnly={currentUser?.role !== 'admin' && !isAppAdmin}
                       onSelect={(section) => {
                         onSettingsSectionChange(section);
