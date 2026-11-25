@@ -41,6 +41,7 @@ import { getKotNumberFromInvoice } from '../utils/documentNumbers';
 import { calculateSalesTax } from '../utils/salesTax';
 import {
   applyThermalPageSize,
+  buildStandaloneThermalPrintHtml,
   measureThermalPageSize,
   printWithThermalPageSize,
   resolveInvoiceMarginsMm,
@@ -717,12 +718,14 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       document.body.classList.add('kot-printing');
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
+      const kotElement = document.getElementById('kot-print-area');
+      const paddingCss = `${kotMarginsMm.top}mm ${kotMarginsMm.right}mm ${kotMarginsMm.bottom}mm ${kotMarginsMm.left}mm`;
       const pageSize = kotFormat === 'A4'
         ? { width: 210_000, height: 297_000 }
-        : measureThermalPageSize(document.getElementById('kot-print-area'), {
+        : measureThermalPageSize(kotElement, {
             elementWidthMm: kotPageWidthMm,
             pageWidthMm: kotPageWidthMm,
-            padding: `${kotMarginsMm.top}mm ${kotMarginsMm.right}mm ${kotMarginsMm.bottom}mm ${kotMarginsMm.left}mm`,
+            padding: paddingCss,
             container: document.querySelector('.kot-print-source'),
           });
       const template = settings.invoiceTemplates?.[kotFormat];
@@ -734,21 +737,21 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       const silent = Boolean(settings.kotPrinter) || printerMode !== 'choose-at-print-time';
 
       if (window.electronAPI?.isElectron) {
-        const removePageStyle = applyThermalPageSize(pageSize);
-        try {
-          const result = await window.electronAPI.printReceipt({
-            silent,
-            printerName,
-            pageSize,
-          });
-          if (!result.ok) {
-            throw new Error(result.error || 'Kitchen order ticket could not be printed.');
-          }
-          setFeedback({ type: 'info', text: `KOT ${kotNumber} sent.` });
-          await waitPrintSettlingDelay(600);
-        } finally {
-          removePageStyle();
+        const html = buildStandaloneThermalPrintHtml(kotElement, {
+          widthMm: kotFormat === 'A4' ? 210 : kotPageWidthMm,
+          pageSize,
+          padding: kotFormat === 'A4' ? undefined : paddingCss,
+        });
+        const result = await window.electronAPI.printReceipt({
+          silent,
+          printerName,
+          pageSize,
+          html,
+        });
+        if (!result.ok) {
+          throw new Error(result.error || 'Kitchen order ticket could not be printed.');
         }
+        setFeedback({ type: 'info', text: `KOT ${kotNumber} sent.` });
       } else {
         printWithThermalPageSize(pageSize);
         setFeedback({ type: 'info', text: `KOT ${kotNumber} print dialog opened.` });

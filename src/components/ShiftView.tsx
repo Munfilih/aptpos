@@ -13,6 +13,7 @@ import type {
 import { useLanguage } from '../i18n/LanguageContext';
 import {
   applyThermalPageSize,
+  buildStandaloneThermalPrintHtml,
   measureThermalPageSize,
   printWithThermalPageSize,
   resolveInvoiceMarginsMm,
@@ -428,14 +429,18 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
     setPrintError(null);
     try {
       const thermalWidthMm = activeFormat === '58mm' ? 58 : 80;
+      const shiftElement = activeFormat === 'A4'
+        ? document.querySelector<HTMLElement>('.shift-print-page.paper-a4')
+        : document.querySelector<HTMLElement>('.shift-print-page:not(.paper-a4)');
+      const paddingCss = `${invoiceMargins.top}mm ${invoiceMargins.right}mm ${invoiceMargins.bottom}mm ${invoiceMargins.left}mm`;
       const pageSize = activeFormat === 'A4'
         ? { width: 210_000, height: 297_000 }
         : measureThermalPageSize(
-            document.querySelector<HTMLElement>('.shift-print-page:not(.paper-a4)'),
+            shiftElement,
             {
               elementWidthMm: thermalWidthMm,
               pageWidthMm: thermalWidthMm,
-              padding: `${invoiceMargins.top}mm ${invoiceMargins.right}mm ${invoiceMargins.bottom}mm ${invoiceMargins.left}mm`,
+              padding: paddingCss,
               container: document.querySelector<HTMLElement>('.shift-print-source'),
             }
           );
@@ -444,24 +449,24 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
         if (window.electronAPI?.isElectron) {
           const printerMode = templateSettings?.printerMode
             || (templateSettings?.defaultPrinter ? 'saved-printer' : 'system-default');
-          const removePageStyle = applyThermalPageSize(pageSize);
-          try {
-            const result = await window.electronAPI.printReceipt({
-              silent: printerMode !== 'choose-at-print-time',
-              printerName: printerMode === 'saved-printer'
-                ? templateSettings?.defaultPrinter || undefined
-                : undefined,
-              pageSize,
-            });
-            if (!result.ok) {
-              if (['cancelled', 'canceled'].includes(result.error?.toLowerCase() || '')) {
-                return false;
-              }
-              throw new Error(result.error || 'Shift report could not be printed.');
+          const html = buildStandaloneThermalPrintHtml(shiftElement, {
+            widthMm: activeFormat === 'A4' ? 210 : thermalWidthMm,
+            pageSize,
+            padding: activeFormat === 'A4' ? undefined : paddingCss,
+          });
+          const result = await window.electronAPI.printReceipt({
+            silent: printerMode !== 'choose-at-print-time',
+            printerName: printerMode === 'saved-printer'
+              ? templateSettings?.defaultPrinter || undefined
+              : undefined,
+            pageSize,
+            html,
+          });
+          if (!result.ok) {
+            if (['cancelled', 'canceled'].includes(result.error?.toLowerCase() || '')) {
+              return false;
             }
-            await waitPrintSettlingDelay(600);
-          } finally {
-            removePageStyle?.();
+            throw new Error(result.error || 'Shift report could not be printed.');
           }
         } else if (activeFormat !== 'A4') {
           printWithThermalPageSize(pageSize);

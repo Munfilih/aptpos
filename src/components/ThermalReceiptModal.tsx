@@ -11,6 +11,7 @@ import {
 } from '../utils/salesTax';
 import {
   applyThermalPageSize,
+  buildStandaloneThermalPrintHtml,
   measureThermalPageSize,
   printWithThermalPageSize,
   resolveInvoiceMarginsMm,
@@ -136,39 +137,41 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
     document.body.classList.add('receipt-printing');
     try {
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      const isElectron = window.electronAPI?.isElectron === true;
       const thermalWidthMm = activeFormat === '58mm' ? 58 : 80;
+      const printElement = activeFormat === 'A4'
+        ? document.querySelector<HTMLElement>('.thermal-receipt-print-area.paper-a4')
+        : thermalPrintAreaRef.current || document.querySelector<HTMLElement>('.thermal-receipt-print-area:not(.paper-a4)');
+      const paddingCss = `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`;
       const pageSize = activeFormat === 'A4'
         ? { width: 210_000, height: 297_000 }
         : measureThermalPageSize(
-            thermalPrintAreaRef.current || document.querySelector<HTMLElement>('.thermal-receipt-print-area:not(.paper-a4)'),
+            printElement,
             {
               elementWidthMm: thermalWidthMm,
               pageWidthMm: thermalWidthMm,
-              padding: `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`,
+              padding: paddingCss,
               container: document.querySelector('.receipt-print-source'),
             }
           );
       if (window.electronAPI?.isElectron) {
         const printerMode = templateSettings?.printerMode
           || (templateSettings?.defaultPrinter ? 'saved-printer' : 'system-default');
-        const removePageStyle = pageSize ? applyThermalPageSize(pageSize) : undefined;
-        try {
-          const result = await window.electronAPI.printReceipt({
-            silent: printerMode !== 'choose-at-print-time',
-            printerName: printerMode === 'saved-printer' ? templateSettings?.defaultPrinter || undefined : undefined,
-            ...(pageSize ? { pageSize } : {}),
-          });
-          if (!result.ok) {
-            if (result.error?.toLowerCase() === 'cancelled' || result.error?.toLowerCase() === 'canceled') {
-              return false;
-            }
-            throw new Error(result.error || 'Receipt could not be printed.');
+        const html = buildStandaloneThermalPrintHtml(printElement, {
+          widthMm: activeFormat === 'A4' ? 210 : thermalWidthMm,
+          pageSize,
+          padding: activeFormat === 'A4' ? undefined : paddingCss,
+        });
+        const result = await window.electronAPI.printReceipt({
+          silent: printerMode !== 'choose-at-print-time',
+          printerName: printerMode === 'saved-printer' ? templateSettings?.defaultPrinter || undefined : undefined,
+          pageSize,
+          html,
+        });
+        if (!result.ok) {
+          if (result.error?.toLowerCase() === 'cancelled' || result.error?.toLowerCase() === 'canceled') {
+            return false;
           }
-          // Settle delay prevents Chromium spooler race condition when unmounting modal
-          await waitPrintSettlingDelay(600);
-        } finally {
-          removePageStyle?.();
+          throw new Error(result.error || 'Receipt could not be printed.');
         }
       } else {
         if (activeFormat !== 'A4' && pageSize) printWithThermalPageSize(pageSize);

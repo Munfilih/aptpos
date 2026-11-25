@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     silent?: boolean;
     printerName?: string;
     pageSize?: { width: number; height: number };
+    html?: string;
   }) =>
     ipcRenderer.invoke('pos:print-receipt', options || {}),
   exportPdf: (options: { fileName: string }) =>

@@ -107,6 +107,102 @@ export function waitPrintSettlingDelay(ms = 600): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+interface BuildStandalonePrintHtmlOptions {
+  widthMm: number;
+  pageSize: ThermalPageSize;
+  padding?: string;
+}
+
+/**
+ * Builds a self-contained HTML document containing only the print target element
+ * and active app styles so Electron can print it in an isolated hidden window
+ * without any main-window layout, modal, or visibility:hidden displacement.
+ */
+export function buildStandaloneThermalPrintHtml(
+  element: HTMLElement | null,
+  options: BuildStandalonePrintHtmlOptions
+): string {
+  if (!element) throw new Error('The thermal print content is unavailable.');
+
+  const collectedCss: string[] = [];
+  for (const sheet of Array.from(document.styleSheets)) {
+    try {
+      const rules = sheet.cssRules;
+      if (rules) {
+        for (const rule of Array.from(rules)) {
+          collectedCss.push(rule.cssText);
+        }
+      }
+    } catch {
+      // Cross-origin stylesheets (e.g. external fonts) cannot be read via cssRules.
+    }
+  }
+
+  const clone = element.cloneNode(true) as HTMLElement;
+  const isA4 = options.widthMm >= 200;
+
+  clone.style.setProperty('display', 'block', 'important');
+  clone.style.setProperty('position', 'static', 'important');
+  clone.style.setProperty('inset', 'auto', 'important');
+  clone.style.setProperty('width', `${options.widthMm}mm`, 'important');
+  clone.style.setProperty('max-width', isA4 ? 'none' : `${options.widthMm}mm`, 'important');
+  clone.style.setProperty('height', 'auto', 'important');
+  clone.style.setProperty('min-height', '0', 'important');
+  clone.style.setProperty('max-height', 'none', 'important');
+  clone.style.setProperty('margin', '0', 'important');
+  if (isA4) {
+    clone.style.setProperty('padding', '0', 'important');
+  } else if (options.padding) {
+    clone.style.setProperty('padding', options.padding, 'important');
+  }
+  clone.style.setProperty('border', '0', 'important');
+  clone.style.setProperty('box-shadow', 'none', 'important');
+  clone.style.setProperty('box-sizing', 'border-box', 'important');
+  clone.style.setProperty('overflow', 'visible', 'important');
+  clone.style.setProperty('transform', 'none', 'important');
+
+  const pageWidthMm = options.pageSize.width / 1000;
+  const pageHeightMm = options.pageSize.height / 1000;
+  const pageSizeRule = isA4 ? 'A4 portrait' : `${pageWidthMm}mm ${pageHeightMm}mm`;
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>${collectedCss.join('\n')}</style>
+    <style>
+      @page {
+        size: ${pageSizeRule};
+        margin: 0;
+      }
+      *, *::before, *::after {
+        box-sizing: border-box;
+      }
+      html, body {
+        margin: 0 !important;
+        padding: 0 !important;
+        width: ${options.widthMm}mm !important;
+        height: auto !important;
+        min-height: 0 !important;
+        max-height: none !important;
+        background: #ffffff !important;
+        color: #000000 !important;
+        overflow: visible !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+      body * {
+        visibility: visible !important;
+      }
+      .no-print {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>${clone.outerHTML}</body>
+</html>`;
+}
+
 export function printWithThermalPageSize(pageSize: ThermalPageSize): void {
   const removePageStyle = applyThermalPageSize(pageSize);
   const cleanup = () => {

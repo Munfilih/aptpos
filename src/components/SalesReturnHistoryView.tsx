@@ -6,6 +6,7 @@ import { matchesDateBounds, resolveDateBounds, type DateFilter } from '../utils/
 import {
   applyThermalPageSize,
   applyThermalPageWidth,
+  buildStandaloneThermalPrintHtml,
   measureThermalPageSize,
   printWithThermalPageSize,
   resolveInvoiceMarginsMm,
@@ -71,33 +72,34 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
     try {
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       const thermalWidthMm = activeFormat === '58mm' ? 58 : 80;
+      const paddingCss = `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`;
       const pageSize = activeFormat === 'A4'
         ? { width: 210_000, height: 297_000 }
         : measureThermalPageSize(printAreaRef.current, {
             elementWidthMm: thermalWidthMm,
             pageWidthMm: thermalWidthMm,
-            padding: `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`,
+            padding: paddingCss,
             container: document.querySelector('.receipt-print-source'),
           });
 
       if (window.electronAPI?.isElectron) {
         const printerMode = templateSettings?.printerMode
           || (templateSettings?.defaultPrinter ? 'saved-printer' : 'system-default');
-        const removePageStyle = applyThermalPageSize(pageSize);
-        try {
-          const result = await window.electronAPI.printReceipt({
-            silent: printerMode !== 'choose-at-print-time',
-            printerName: printerMode === 'saved-printer'
-              ? templateSettings?.defaultPrinter || undefined
-              : undefined,
-            pageSize,
-          });
-          if (!result.ok) {
-            throw new Error(result.error || 'Return voucher could not be printed.');
-          }
-          await waitPrintSettlingDelay(600);
-        } finally {
-          removePageStyle();
+        const html = buildStandaloneThermalPrintHtml(printAreaRef.current, {
+          widthMm: activeFormat === 'A4' ? 210 : thermalWidthMm,
+          pageSize,
+          padding: activeFormat === 'A4' ? undefined : paddingCss,
+        });
+        const result = await window.electronAPI.printReceipt({
+          silent: printerMode !== 'choose-at-print-time',
+          printerName: printerMode === 'saved-printer'
+            ? templateSettings?.defaultPrinter || undefined
+            : undefined,
+          pageSize,
+          html,
+        });
+        if (!result.ok) {
+          throw new Error(result.error || 'Return voucher could not be printed.');
         }
       } else {
         if (activeFormat !== 'A4') {

@@ -11,6 +11,7 @@ declare global {
         silent?: boolean;
         printerName?: string;
         pageSize?: { width: number; height: number };
+        html?: string;
       }) => Promise<{ ok: boolean; error?: string }>;
       exportPdf: (options: { fileName: string }) => Promise<{ canceled: boolean; filePath?: string }>;
       shareReceiptToWhatsApp: (options: { phone: string; receiptNumber: string }) =>

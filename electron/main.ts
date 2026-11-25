@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, screen, shell, type IpcMainInvokeEvent } from 'electron';
 import electronUpdater from 'electron-updater';
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, readFile, stat, writeFile } from 'fs/promises';
+import { mkdir, readFile, stat, unlink, writeFile } from 'fs/promises';
 import path from 'path';
 import http from 'http';
 import { fileURLToPath, pathToFileURL } from 'url';
@@ -888,11 +888,13 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
     silent?: unknown;
     printerName?: unknown;
     pageSize?: unknown;
+    html?: unknown;
   };
   let pageSize: { width: number; height: number } | undefined;
   if (
     (options.silent !== undefined && typeof options.silent !== 'boolean') ||
-    (options.printerName !== undefined && typeof options.printerName !== 'string')
+    (options.printerName !== undefined && typeof options.printerName !== 'string') ||
+    (options.html !== undefined && typeof options.html !== 'string')
   ) {
     throw new Error('Printer options are invalid.');
   }
@@ -927,24 +929,88 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
     };
   }
   const printerName = typeof options.printerName === 'string' ? options.printerName : undefined;
+  const html = typeof options.html === 'string' && options.html.trim().length > 0
+    ? options.html
+    : undefined;
+
+  const printWithWebContents = async (targetContents: Electron.WebContents): Promise<{ ok: boolean; error?: string }> => {
+    const runAttempt = (useDefaultSize: boolean) =>
+      new Promise<{ ok: boolean; error?: string }>((resolve) => {
+        targetContents.print(
+          {
+            silent: options.silent === true,
+            ...(printerName ? { deviceName: printerName } : {}),
+            ...(!useDefaultSize && pageSize ? { pageSize } : { usePrinterDefaultPageSize: true }),
+            scaleFactor: 100,
+            printBackground: true,
+            margins: { marginType: 'none' },
+          },
+          (success, failureReason) => resolve({ ok: success, error: failureReason })
+        );
+      });
+
+    const firstResult = await runAttempt(false);
+    const errLower = (firstResult.error || '').toLowerCase();
+    const isCancelled = errLower === 'cancelled' || errLower === 'canceled';
+    if (!firstResult.ok && !isCancelled && options.silent === true && pageSize) {
+      // Some Windows thermal drivers reject custom DEVMODE pageSize; retry with driver default.
+      return runAttempt(true);
+    }
+    return firstResult;
+  };
+
+  if (html) {
+    const tempHtmlPath = path.join(
+      app.getPath('temp'),
+      `aptpos-print-${randomBytes(8).toString('hex')}.html`
+    );
+    let printWindow: BrowserWindow | null = null;
+    try {
+      await writeFile(tempHtmlPath, html, 'utf8');
+      printWindow = new BrowserWindow({
+        show: false,
+        width: 800,
+        height: 600,
+        backgroundColor: '#ffffff',
+        webPreferences: {
+          sandbox: true,
+          contextIsolation: true,
+          nodeIntegration: false,
+          javascript: true,
+        },
+      });
+      await printWindow.loadFile(tempHtmlPath);
+      await printWindow.webContents.executeJavaScript(`
+        Promise.all([
+          document.fonts ? document.fonts.ready : Promise.resolve(),
+          ...Array.from(document.images).map((img) =>
+            img.complete
+              ? Promise.resolve()
+              : new Promise((res) => { img.onload = res; img.onerror = res; })
+          ),
+        ])
+      `).catch(() => {});
+
+      const result = await printWithWebContents(printWindow.webContents);
+      const winToClose = printWindow;
+      printWindow = null;
+      setTimeout(() => {
+        if (!winToClose.isDestroyed()) winToClose.close();
+      }, 500);
+      return result;
+    } finally {
+      if (printWindow && !printWindow.isDestroyed()) {
+        printWindow.close();
+      }
+      await unlink(tempHtmlPath).catch(() => {});
+    }
+  }
 
   if (!mainWindow || mainWindow.isDestroyed()) {
     return { ok: false, error: 'Main window is not available.' };
   }
 
-  return new Promise((resolve) => {
-    mainWindow!.webContents.print(
-      {
-        silent: options.silent === true,
-        ...(printerName ? { deviceName: printerName } : {}),
-        ...(pageSize ? { pageSize } : { usePrinterDefaultPageSize: true }),
-        scaleFactor: 100,
-        printBackground: true,
-        margins: { marginType: 'none' },
-      },
-      (success, failureReason) => resolve({ ok: success, error: failureReason })
-    );
-  });
+  return printWithWebContents(mainWindow.webContents);
 });
 
 ipcMain.handle('pos:export-report-pdf', async (event, rawOptions: unknown) => {
