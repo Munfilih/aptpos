@@ -390,6 +390,51 @@ export interface CashierShift {
   closingCash: number | null;
 }
 
+export interface ShiftPaymentSummary {
+  paymentMethod: string;
+  count: number;
+  amount: number;
+}
+
+export interface ShiftBankAccountSummary {
+  accountName: string;
+  count: number;
+  moneyIn: number;
+  moneyOut: number;
+}
+
+export interface CashierShiftReport {
+  shiftId: number;
+  from: string;
+  to: string;
+  transactionCount: number;
+  sales: {
+    count: number;
+    amount: number;
+    byPaymentMethod: ShiftPaymentSummary[];
+  };
+  returns: {
+    count: number;
+    amount: number;
+    byPaymentMethod: ShiftPaymentSummary[];
+  };
+  cashbook: {
+    count: number;
+    countIn: number;
+    countOut: number;
+    moneyIn: number;
+    moneyOut: number;
+  };
+  bank: {
+    count: number;
+    countIn: number;
+    countOut: number;
+    moneyIn: number;
+    moneyOut: number;
+    byAccount: ShiftBankAccountSummary[];
+  };
+}
+
 export interface CreateCashbookEntryInput {
   entryDate: string;
   direction: 'IN' | 'OUT';

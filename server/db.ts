@@ -8,6 +8,7 @@ import type {
   CashbookEntry,
   CashbookOpeningBalance,
   CashierShift,
+  CashierShiftReport,
   CreateCashbookEntryInput,
   AppComponentId,
   InventoryOption,
@@ -1584,6 +1585,35 @@ function parseRegistrationDetails(value: unknown): RegistrationDetails | undefin
   ) {
     throw new Error('Stored registration details are invalid.');
   }
+  const details = value as Record<string, unknown>;
+  const parseAmcDate = (date: unknown, field: string): string | null | undefined => {
+    if (date === undefined || date === null) return date;
+    const parsedDate = typeof date === 'string' ? new Date(`${date}T00:00:00.000Z`) : null;
+    if (
+      typeof date !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+      !parsedDate ||
+      !Number.isFinite(parsedDate.getTime()) ||
+      parsedDate.toISOString().slice(0, 10) !== date
+    ) {
+      throw new Error(`Stored AMC ${field} date is invalid.`);
+    }
+    return date;
+  };
+  const amcStartDate = parseAmcDate(details.amcStartDate, 'start');
+  const amcEndDate = parseAmcDate(details.amcEndDate, 'end');
+  if (
+    (amcStartDate === undefined) !== (amcEndDate === undefined) ||
+    (amcStartDate === null) !== (amcEndDate === null)
+  ) {
+    throw new Error('Stored registration details have incomplete AMC dates.');
+  }
+  if (amcStartDate && amcEndDate && amcStartDate > amcEndDate) {
+    throw new Error('Stored registration details have an AMC end date before its start date.');
+  }
+  if (details.amcNotes !== undefined && typeof details.amcNotes !== 'string') {
+    throw new Error('Stored AMC notes are invalid.');
+  }
   return {
     businessName: value.businessName,
     address: value.address,
@@ -1591,6 +1621,9 @@ function parseRegistrationDetails(value: unknown): RegistrationDetails | undefin
     systemCode: value.systemCode,
     username: value.username,
     appVersion: value.appVersion as RegistrationDetails['appVersion'],
+    ...(amcStartDate !== undefined ? { amcStartDate } : {}),
+    ...(amcEndDate !== undefined ? { amcEndDate } : {}),
+    ...(typeof details.amcNotes === 'string' ? { amcNotes: details.amcNotes } : {}),
   };
 }
 
@@ -2899,6 +2932,131 @@ export async function listCashierShifts(
   return {
     active,
     history: shifts.filter((shift) => shift.closedAt !== null).slice(0, 20),
+  };
+}
+
+export async function getCashierShiftReport(
+  shiftId: unknown,
+  cashierUsername: unknown
+): Promise<CashierShiftReport> {
+  if (typeof shiftId !== 'number' || !Number.isInteger(shiftId) || shiftId <= 0) {
+    throw new Error('A valid shift is required.');
+  }
+  if (typeof cashierUsername !== 'string' || !cashierUsername.trim()) {
+    throw new Error('Cashier username is required.');
+  }
+
+  const database = await getDb();
+  const shiftResult = database.exec(
+    `SELECT id, opened_at, closed_at
+     FROM cashier_shifts
+     WHERE id = ? AND lower(cashier_username) = lower(?)`,
+    [shiftId, cashierUsername.trim()]
+  );
+  const shift = shiftResult[0]?.values[0];
+  if (!shift) throw new Error('Shift not found for this cashier.');
+
+  const from = String(shift[1]);
+  const to = shift[2] === null ? new Date().toISOString() : String(shift[2]);
+  const range = [from, to];
+  const salesResult = database.exec(
+    `SELECT payment_method, COUNT(*), COALESCE(SUM(total), 0)
+     FROM sales
+     WHERE status = 'COMPLETED' AND created_at >= ? AND created_at <= ?
+     GROUP BY payment_method ORDER BY payment_method`,
+    range
+  );
+  const returnsResult = database.exec(
+    `SELECT payment_method, COUNT(*), COALESCE(SUM(refund_amount), 0)
+     FROM sales_return_vouchers
+     WHERE created_at >= ? AND created_at <= ?
+     GROUP BY payment_method ORDER BY payment_method`,
+    range
+  );
+  const cashbookResult = database.exec(
+    `SELECT COUNT(*),
+            COALESCE(SUM(CASE WHEN direction = 'IN' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN direction = 'OUT' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN direction = 'OUT' THEN amount ELSE 0 END), 0)
+     FROM cashbook_entries
+     WHERE created_at >= ? AND created_at <= ?`,
+    range
+  );
+  const bankResult = database.exec(
+    `SELECT COUNT(*),
+            COALESCE(SUM(CASE WHEN direction = 'IN' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN direction = 'OUT' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN direction = 'OUT' THEN amount ELSE 0 END), 0)
+     FROM cashbook_entries
+     WHERE UPPER(COALESCE(payment_type, '')) = 'BANK'
+       AND created_at >= ? AND created_at <= ?`,
+    range
+  );
+  const bankAccountsResult = database.exec(
+    `SELECT COALESCE(NULLIF(TRIM(account_name), ''), 'Unspecified account'),
+            COUNT(*),
+            COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN direction = 'OUT' THEN amount ELSE 0 END), 0)
+     FROM cashbook_entries
+     WHERE UPPER(COALESCE(payment_type, '')) = 'BANK'
+       AND created_at >= ? AND created_at <= ?
+     GROUP BY COALESCE(NULLIF(TRIM(account_name), ''), 'Unspecified account')
+     ORDER BY 1`,
+    range
+  );
+
+  const toPaymentSummary = (rows: unknown[][]) =>
+    rows.map((row) => ({
+      paymentMethod: String(row[0] || 'Unknown'),
+      count: Number(row[1]),
+      amount: Number(row[2]),
+    }));
+  const salesByPaymentMethod = toPaymentSummary(salesResult[0]?.values || []);
+  const returnsByPaymentMethod = toPaymentSummary(returnsResult[0]?.values || []);
+  const salesCount = salesByPaymentMethod.reduce((sum, item) => sum + item.count, 0);
+  const salesAmount = salesByPaymentMethod.reduce((sum, item) => sum + item.amount, 0);
+  const returnsCount = returnsByPaymentMethod.reduce((sum, item) => sum + item.count, 0);
+  const returnsAmount = returnsByPaymentMethod.reduce((sum, item) => sum + item.amount, 0);
+  const cashbook = cashbookResult[0]?.values[0] || [];
+  const bank = bankResult[0]?.values[0] || [];
+
+  return {
+    shiftId,
+    from,
+    to,
+    transactionCount: salesCount + returnsCount + Number(cashbook[0] || 0),
+    sales: {
+      count: salesCount,
+      amount: salesAmount,
+      byPaymentMethod: salesByPaymentMethod,
+    },
+    returns: {
+      count: returnsCount,
+      amount: returnsAmount,
+      byPaymentMethod: returnsByPaymentMethod,
+    },
+    cashbook: {
+      count: Number(cashbook[0] || 0),
+      countIn: Number(cashbook[1] || 0),
+      countOut: Number(cashbook[2] || 0),
+      moneyIn: Number(cashbook[3] || 0),
+      moneyOut: Number(cashbook[4] || 0),
+    },
+    bank: {
+      count: Number(bank[0] || 0),
+      countIn: Number(bank[1] || 0),
+      countOut: Number(bank[2] || 0),
+      moneyIn: Number(bank[3] || 0),
+      moneyOut: Number(bank[4] || 0),
+      byAccount: (bankAccountsResult[0]?.values || []).map((row) => ({
+        accountName: String(row[0]),
+        count: Number(row[1]),
+        moneyIn: Number(row[2]),
+        moneyOut: Number(row[3]),
+      })),
+    },
   };
 }
 

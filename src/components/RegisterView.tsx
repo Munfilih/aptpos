@@ -2052,7 +2052,9 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   const kotPrintArea = (
     <section
       id="kot-print-area"
-      className={`kot-print-area ${kotFormat === 'A4' ? 'paper-a4' : kotFormat === '58mm' ? 'paper-58mm' : ''}`}
+      className={`thermal-receipt-print-area kot-print-area bg-white text-slate-950 font-mono text-xs leading-relaxed ${
+        kotFormat === 'A4' ? 'paper-a4' : kotFormat === '58mm' ? 'paper-58mm' : ''
+      }`}
       aria-label="Kitchen order ticket"
       dir={isRtl ? 'rtl' : 'ltr'}
       style={{
@@ -2061,6 +2063,10 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         '--kot-margin-right': `${kotMarginsMm.right}mm`,
         '--kot-margin-bottom': `${kotMarginsMm.bottom}mm`,
         '--kot-margin-left': `${kotMarginsMm.left}mm`,
+        '--invoice-margin-top': `${kotMarginsMm.top}mm`,
+        '--invoice-margin-right': `${kotMarginsMm.right}mm`,
+        '--invoice-margin-bottom': `${kotMarginsMm.bottom}mm`,
+        '--invoice-margin-left': `${kotMarginsMm.left}mm`,
         width: `${kotPageWidthMm}mm`,
         maxWidth: `${kotPageWidthMm}mm`,
         minHeight: kotFormat === 'A4' ? '297mm' : undefined,
@@ -2069,30 +2075,47 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         margin: '0 auto',
       } as React.CSSProperties}
     >
-      <header className="border-b-2 border-black pb-3 text-center">
-        <h1 className="text-xl font-extrabold">{settings.storeName}</h1>
-        <p className="mt-1 text-lg font-black">KITCHEN ORDER</p>
+      <header className="mb-3 border-b border-dashed border-slate-300 pb-3 text-center">
+        <h1 className="text-sm font-bold uppercase tracking-wide text-slate-950">{settings.storeName}</h1>
+        {settings.storeNameAr && (
+          <p className="mt-0.5 text-xs font-bold text-slate-900" dir="rtl">{settings.storeNameAr}</p>
+        )}
+        <p className="mt-1 text-[10px] font-bold uppercase tracking-widest text-slate-600">
+          {isRtl ? 'طلب المطبخ' : 'Kitchen Order'}
+        </p>
       </header>
-      <div className="space-y-1 border-b border-dashed border-black py-3 text-sm">
-        <p><strong>{isRtl ? 'رقم سند المطبخ:' : 'KOT No:'}</strong> {activeTab.invoiceNumber ? getKotNumberFromInvoice(activeTab.invoiceNumber) : ''}</p>
-        <p><strong>{isRtl ? 'التذكرة:' : 'Ticket:'}</strong> {activeTab.label}</p>
-        <p><strong>{isRtl ? 'الوقت:' : 'Time:'}</strong> {new Date().toLocaleString()}</p>
-        <p><strong>{isRtl ? 'العميل:' : 'Customer:'}</strong> {customerName || defaultCustomerName}</p>
+      <div className="mb-2.5 space-y-0.5 border-b border-dashed border-slate-300 pb-2.5 text-[11px]">
+        <div className="flex justify-between gap-2">
+          <span className="text-slate-600">{isRtl ? 'رقم الطلب:' : 'KOT No:'}</span>
+          <span className="font-semibold">{activeTab.invoiceNumber ? getKotNumberFromInvoice(activeTab.invoiceNumber) : ''}</span>
+        </div>
+        <div className="flex justify-between gap-2">
+          <span className="text-slate-600">{isRtl ? 'التاريخ:' : 'Date:'}</span>
+          <span>{new Date().toLocaleString()}</span>
+        </div>
+        <div className="flex justify-between gap-2">
+          <span className="text-slate-600">{isRtl ? 'العميل:' : 'Customer:'}</span>
+          <span className="text-right font-semibold">{customerName || defaultCustomerName}</span>
+        </div>
       </div>
-      <div className="divide-y divide-dashed divide-black">
+      <div className="divide-y divide-dashed divide-slate-300">
         {cart.map((item) => (
-          <div key={getCartItemLineId(item)} className="flex items-start gap-3 py-3 text-base">
-            <strong className="min-w-10 text-lg">×{item.quantity}</strong>
-            <span className="font-bold">
-              {isRtl && item.product.nameAr ? item.product.nameAr : item.product.name}
-              {item.unitId && item.unitName ? ` (${item.unitName})` : ''}
-            </span>
+          <div key={getCartItemLineId(item)} className="flex items-start gap-2 py-2">
+            <strong className="min-w-8 text-center text-sm text-slate-950">×{item.quantity}</strong>
+            <div className="min-w-0 flex-1">
+              <div className="break-words font-semibold text-slate-950">
+                {isRtl && item.product.nameAr ? item.product.nameAr : item.product.name}
+                {item.unitId && item.unitName ? ` (${item.unitName})` : ''}
+              </div>
+              {item.description?.trim() && (
+                <div className="mt-0.5 whitespace-pre-wrap break-words text-[10px] leading-tight text-slate-600">
+                  {item.description}
+                </div>
+              )}
+            </div>
           </div>
         ))}
       </div>
-      <footer className="border-t-2 border-black pt-2 text-center text-xs font-semibold">
-        {isRtl ? 'عدد الأصناف' : 'Items'}: {cart.reduce((count, item) => count + item.quantity, 0)}
-      </footer>
     </section>
   );
 
@@ -3974,7 +3997,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             </button>
           </header>
           <main className="min-h-0 flex-1 overflow-auto bg-slate-200/80 py-4">
-            <div className="mx-auto w-fit max-w-full bg-white text-black shadow-xl">
+            <div className="kot-print-preview-paper mx-auto w-fit max-w-full bg-white text-black shadow-xl">
               {kotPrintArea}
             </div>
           </main>

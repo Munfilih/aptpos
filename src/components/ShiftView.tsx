@@ -1,6 +1,15 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AlertCircle, Clock3, Eye, FileText, KeyRound, LockKeyhole, Printer, UnlockKeyhole, Wallet, X } from 'lucide-react';
-import type { CashierShift, PaperWidth, StoreSettings, ThemeMode, UserSession } from '../types/pos';
+import type {
+  CashierShift,
+  CashierShiftReport,
+  PaperWidth,
+  ShiftBankAccountSummary,
+  ShiftPaymentSummary,
+  StoreSettings,
+  ThemeMode,
+  UserSession,
+} from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
 import {
   applyThermalPageSize,
@@ -34,6 +43,77 @@ function isCashierShift(value: unknown): value is CashierShift {
   );
 }
 
+function isShiftPaymentSummary(value: unknown): value is ShiftPaymentSummary {
+  if (!value || typeof value !== 'object') return false;
+  const summary = value as Record<string, unknown>;
+  return (
+    typeof summary.paymentMethod === 'string' &&
+    typeof summary.count === 'number' &&
+    typeof summary.amount === 'number'
+  );
+}
+
+function isShiftBankAccountSummary(value: unknown): value is ShiftBankAccountSummary {
+  if (!value || typeof value !== 'object') return false;
+  const summary = value as Record<string, unknown>;
+  return (
+    typeof summary.accountName === 'string' &&
+    typeof summary.count === 'number' &&
+    typeof summary.moneyIn === 'number' &&
+    typeof summary.moneyOut === 'number'
+  );
+}
+
+function isCashierShiftReport(value: unknown): value is CashierShiftReport {
+  if (!value || typeof value !== 'object') return false;
+  const report = value as Record<string, unknown>;
+  if (
+    typeof report.shiftId !== 'number' ||
+    typeof report.from !== 'string' ||
+    typeof report.to !== 'string' ||
+    typeof report.transactionCount !== 'number'
+  ) return false;
+  const isPaymentSection = (section: unknown) =>
+    Boolean(
+      section &&
+      typeof section === 'object' &&
+      'count' in section &&
+      typeof section.count === 'number' &&
+      'amount' in section &&
+      typeof section.amount === 'number' &&
+      'byPaymentMethod' in section &&
+      Array.isArray(section.byPaymentMethod) &&
+      section.byPaymentMethod.every(isShiftPaymentSummary)
+    );
+  const isCashbookSection = (section: unknown) =>
+    Boolean(
+      section &&
+      typeof section === 'object' &&
+      'count' in section &&
+      typeof section.count === 'number' &&
+      'countIn' in section &&
+      typeof section.countIn === 'number' &&
+      'countOut' in section &&
+      typeof section.countOut === 'number' &&
+      'moneyIn' in section &&
+      typeof section.moneyIn === 'number' &&
+      'moneyOut' in section &&
+      typeof section.moneyOut === 'number'
+    );
+  if (!isPaymentSection(report.sales) || !isPaymentSection(report.returns) || !isCashbookSection(report.cashbook)) {
+    return false;
+  }
+  if (
+    !report.bank ||
+    typeof report.bank !== 'object' ||
+    !isCashbookSection(report.bank) ||
+    !('byAccount' in report.bank) ||
+    !Array.isArray(report.bank.byAccount) ||
+    !report.bank.byAccount.every(isShiftBankAccountSummary)
+  ) return false;
+  return true;
+}
+
 function getErrorMessage(payload: unknown, fallback: string): string {
   return typeof payload === 'object' &&
     payload !== null &&
@@ -64,6 +144,9 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
   const [confirmationPassword, setConfirmationPassword] = useState('');
   const [confirmationError, setConfirmationError] = useState<string | null>(null);
   const [selectedShift, setSelectedShift] = useState<CashierShift | null>(null);
+  const [selectedShiftReport, setSelectedShiftReport] = useState<CashierShiftReport | null>(null);
+  const [shiftReportLoading, setShiftReportLoading] = useState(false);
+  const [shiftReportError, setShiftReportError] = useState<string | null>(null);
   const [previewBeforePrint, setPreviewBeforePrint] = useState(false);
   const [showPrintPreview, setShowPrintPreview] = useState(false);
   const [printing, setPrinting] = useState(false);
@@ -106,6 +189,49 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
   useEffect(() => {
     void loadShifts();
   }, [loadShifts]);
+
+  useEffect(() => {
+    if (!selectedShift) {
+      setSelectedShiftReport(null);
+      setShiftReportError(null);
+      setShiftReportLoading(false);
+      return;
+    }
+
+    let active = true;
+    setSelectedShiftReport(null);
+    setShiftReportError(null);
+    setShiftReportLoading(true);
+    void fetch(
+      `/api/shifts/${selectedShift.id}/report?cashierUsername=${encodeURIComponent(cashierUsername)}`
+    )
+      .then(async (response) => {
+        const payload: unknown = await response.json();
+        if (!response.ok) {
+          throw new Error(getErrorMessage(payload, 'Could not load the shift transaction summary.'));
+        }
+        if (!isCashierShiftReport(payload) || payload.shiftId !== selectedShift.id) {
+          throw new Error('Shift report response has an invalid format.');
+        }
+        if (active) setSelectedShiftReport(payload);
+      })
+      .catch((reportError: unknown) => {
+        if (active) {
+          setShiftReportError(
+            reportError instanceof Error
+              ? reportError.message
+              : 'Could not load the shift transaction summary.'
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setShiftReportLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedShift, cashierUsername]);
 
   const requestConfirmation = (action: 'open' | 'close') => {
     setConfirmationPassword('');
@@ -211,8 +337,92 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
     new Date(value).toLocaleString(language === 'ar' ? 'ar-SA' : 'en-US');
   const formatAmount = (amount: number) => `${currency} ${amount.toFixed(2)}`;
 
+  const renderShiftSummary = (compact = false) => {
+    if (!selectedShiftReport) return null;
+    const report = selectedShiftReport;
+    const rowClass = compact
+      ? 'flex justify-between gap-3 border-b border-dashed border-slate-300 py-1 text-[10px]'
+      : 'flex justify-between gap-3 border-b border-slate-200 py-2 text-xs';
+    const headingClass = compact
+      ? 'mb-1 text-xs font-bold uppercase text-slate-900'
+      : 'mb-2 text-sm font-bold text-slate-900';
+
+    return (
+      <section className={compact ? 'mt-4 space-y-3 text-slate-900' : 'space-y-4'}>
+        <div>
+          <h3 className={headingClass}>{isRtl ? 'ملخص جميع المعاملات' : 'All Transactions Summary'}</h3>
+          <div className={rowClass}>
+            <span>{isRtl ? 'إجمالي عدد المعاملات' : 'Total transaction count'}</span>
+            <strong>{report.transactionCount}</strong>
+          </div>
+          <div className={rowClass}>
+            <span>{isRtl ? 'المبيعات' : 'Sales'} ({report.sales.count})</span>
+            <strong>{formatAmount(report.sales.amount)}</strong>
+          </div>
+          <div className={rowClass}>
+            <span>{isRtl ? 'المرتجعات' : 'Sales returns'} ({report.returns.count})</span>
+            <strong>{formatAmount(report.returns.amount)}</strong>
+          </div>
+          <div className={rowClass}>
+            <span>{isRtl ? 'إدخالات دفتر النقدية' : 'Cashbook entries'} ({report.cashbook.count})</span>
+            <strong>
+              {isRtl ? 'داخل' : 'In'} {formatAmount(report.cashbook.moneyIn)} ·{' '}
+              {isRtl ? 'خارج' : 'Out'} {formatAmount(report.cashbook.moneyOut)}
+            </strong>
+          </div>
+        </div>
+
+        {(report.sales.byPaymentMethod.length > 0 || report.returns.byPaymentMethod.length > 0) && (
+          <div>
+            <h3 className={headingClass}>{isRtl ? 'المبيعات والمرتجعات حسب طريقة الدفع' : 'Sales and Returns by Payment Method'}</h3>
+            {report.sales.byPaymentMethod.map((item) => (
+              <div className={rowClass} key={`sale-${item.paymentMethod}`}>
+                <span>{item.paymentMethod} · {isRtl ? 'مبيعات' : 'Sales'} ({item.count})</span>
+                <strong>{formatAmount(item.amount)}</strong>
+              </div>
+            ))}
+            {report.returns.byPaymentMethod.map((item) => (
+              <div className={rowClass} key={`return-${item.paymentMethod}`}>
+                <span>{item.paymentMethod} · {isRtl ? 'مرتجعات' : 'Returns'} ({item.count})</span>
+                <strong>{formatAmount(item.amount)}</strong>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div>
+          <h3 className={headingClass}>{isRtl ? 'ملخص معاملات البنك' : 'Bank Transaction Summary'}</h3>
+          <div className={rowClass}>
+            <span>{isRtl ? 'إجمالي معاملات البنك' : 'Bank transaction count'} ({report.bank.count})</span>
+            <strong>
+              {isRtl ? 'داخل' : 'In'} {formatAmount(report.bank.moneyIn)} ·{' '}
+              {isRtl ? 'خارج' : 'Out'} {formatAmount(report.bank.moneyOut)}
+            </strong>
+          </div>
+          {report.bank.byAccount.map((account) => (
+            <div className={`${rowClass} ${compact ? 'pl-2' : 'pl-3'}`} key={account.accountName}>
+              <span>{account.accountName} ({account.count})</span>
+              <strong>
+                {isRtl ? 'داخل' : 'In'} {formatAmount(account.moneyIn)} ·{' '}
+                {isRtl ? 'خارج' : 'Out'} {formatAmount(account.moneyOut)}
+              </strong>
+            </div>
+          ))}
+        </div>
+      </section>
+    );
+  };
+
   const handlePrintShift = async () => {
     if (!selectedShift) return false;
+    if (!selectedShiftReport || selectedShiftReport.shiftId !== selectedShift.id) {
+      setPrintError(
+        shiftReportLoading
+          ? (isRtl ? 'جارٍ تحميل ملخص الوردية.' : 'The shift summary is still loading.')
+          : (isRtl ? 'تعذر تحميل ملخص الوردية.' : 'The shift summary is unavailable.')
+      );
+      return false;
+    }
     setPrinting(true);
     setPrintError(null);
     try {
@@ -233,14 +443,14 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
         if (window.electronAPI?.isElectron) {
           const printerMode = templateSettings?.printerMode
             || (templateSettings?.defaultPrinter ? 'saved-printer' : 'system-default');
-          const removePageStyle = activeFormat === 'A4' ? undefined : applyThermalPageSize(pageSize);
+          const removePageStyle = applyThermalPageSize(pageSize);
           try {
             const result = await window.electronAPI.printReceipt({
               silent: printerMode !== 'choose-at-print-time',
               printerName: printerMode === 'saved-printer'
                 ? templateSettings?.defaultPrinter || undefined
                 : undefined,
-              ...(activeFormat === 'A4' ? {} : { pageSize }),
+              pageSize,
             });
             if (!result.ok) {
               if (['cancelled', 'canceled'].includes(result.error?.toLowerCase() || '')) {
@@ -667,6 +877,17 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
                   </p>
                 </article>
               </div>
+              {shiftReportLoading && (
+                <p className="text-center text-xs text-slate-500">
+                  {isRtl ? 'جارٍ تحميل ملخص المعاملات...' : 'Loading transaction summary...'}
+                </p>
+              )}
+              {shiftReportError && (
+                <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                  {shiftReportError}
+                </div>
+              )}
+              {renderShiftSummary()}
             </div>
 
             <footer className="no-print flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-5 py-4">
@@ -690,7 +911,7 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
                 <button
                   type="button"
                   onClick={() => void handlePrintAction()}
-                  disabled={printing}
+                  disabled={printing || shiftReportLoading || !selectedShiftReport}
                   className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:cursor-wait disabled:opacity-60"
                 >
                   {previewBeforePrint && !showPrintPreview
@@ -756,6 +977,7 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
                   </span>
                 </div>
               </div>
+              {renderShiftSummary(true)}
               <footer className="mt-6 border-t border-slate-300 pt-2 text-center text-[10px] text-slate-500">
                 {settings.phone ? `${settings.phone} · ` : ''}{settings.address}
               </footer>
@@ -780,7 +1002,7 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
                   <button
                     type="button"
                     onClick={() => void handlePrintShift()}
-                    disabled={printing}
+                    disabled={printing || shiftReportLoading || !selectedShiftReport}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:cursor-wait disabled:opacity-60"
                   >
                     <Printer className="h-3.5 w-3.5" />

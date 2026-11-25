@@ -1030,6 +1030,36 @@
     background: #ffffff;
     box-shadow: 0 8px 28px rgb(0 0 0 / 0.25);
   }
+
+  .kot-print-preview-paper .kot-print-area:not(.paper-a4) {
+    box-sizing: border-box;
+    width: 80mm;
+    max-width: 80mm;
+    margin: 0 auto;
+    padding:
+      var(--invoice-margin-top, 2mm)
+      var(--invoice-margin-right, 2mm)
+      var(--invoice-margin-bottom, 2mm)
+      var(--invoice-margin-left, 2mm);
+    border: 0;
+    background: #ffffff;
+    box-shadow: 0 8px 28px rgb(0 0 0 / 0.25);
+  }
+
+  .kot-print-preview-paper .kot-print-area.paper-58mm {
+    width: 58mm;
+    max-width: 58mm;
+  }
+
+  .kot-print-preview-paper .kot-print-area.paper-a4 {
+    box-sizing: border-box;
+    width: 210mm;
+    max-width: none;
+    min-height: 297mm;
+    margin: 0 auto 12mm;
+    background: #ffffff;
+    box-shadow: 0 8px 28px rgb(0 0 0 / 0.25);
+  }
 }
 
 .purchase-entry-number-input {

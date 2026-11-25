@@ -39,6 +39,7 @@ import {
   beginDemoOfflineGrace,
   clearDemoAccess,
   getCashbookData,
+  getCashierShiftReport,
   getSettings,
   getRegistrationSystemCode,
   importProducts,
@@ -1484,6 +1485,18 @@ async function startServer(): Promise<Server> {
   app.get('/api/shifts', async (req, res) => {
     try {
       res.json(await listCashierShifts(req.query.cashierUsername));
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  app.get('/api/shifts/:id/report', async (req, res) => {
+    try {
+      const cashierUsername = req.query.cashierUsername;
+      if (typeof cashierUsername !== 'string') {
+        return res.status(400).json({ error: 'Cashier username is required.' });
+      }
+      res.json(await getCashierShiftReport(Number(req.params.id), cashierUsername));
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
     }
