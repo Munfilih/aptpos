@@ -1,7 +1,7 @@
 {
   "name": "counterline-pos",
   "private": true,
-  "version": "1.0.34",
+  "version": "1.0.35",
   "description": "aptPOS retail billing and inventory desktop application",
   "author": "aptPOS",
   "type": "module",
