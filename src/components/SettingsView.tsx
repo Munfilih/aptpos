@@ -31,7 +31,6 @@ import type {
   AppVersion,
   InvoiceTemplateSettings,
   PaperWidth,
-  PosScreenLayout,
   PrintJob,
   StoreSettings,
   SettingsSectionId,
@@ -101,6 +100,22 @@ const CARD_DIMENSION_DEFAULTS: Record<CardDimensionField, number> = {
   categoryCardWidthIn: 2,
   categoryCardHeightIn: 3,
 };
+
+const MAX_STORE_LOGO_FILE_SIZE = 1_000_000;
+const STORE_LOGO_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+function readStoreLogoDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result);
+      else reject(new Error('The selected logo could not be read.'));
+    };
+    reader.onerror = () => reject(reader.error || new Error('The selected logo could not be read.'));
+    reader.onabort = () => reject(new Error('Reading the selected logo was cancelled.'));
+    reader.readAsDataURL(file);
+  });
+}
 
 function resolveCardDimension(value: number | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
@@ -259,6 +274,48 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [googleDriveError, setGoogleDriveError] = useState<string | null>(null);
   const [googleDriveNotice, setGoogleDriveNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const storeLogoInputRef = useRef<HTMLInputElement>(null);
+  const [storeLogoError, setStoreLogoError] = useState<string | null>(null);
+
+  const handleStoreLogoChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = '';
+    setStoreLogoError(null);
+    if (!file) return;
+    if (!STORE_LOGO_MIME_TYPES.has(file.type)) {
+      setStoreLogoError(isRtl
+        ? 'اختر صورة بصيغة PNG أو JPEG أو WebP.'
+        : 'Choose a PNG, JPEG, or WebP image.');
+      return;
+    }
+    if (file.size > MAX_STORE_LOGO_FILE_SIZE) {
+      setStoreLogoError(isRtl
+        ? 'يجب ألا يتجاوز حجم الشعار 1 ميجابايت.'
+        : 'The logo must be 1 MB or smaller.');
+      return;
+    }
+
+    try {
+      const dataUrl = await readStoreLogoDataUrl(file);
+      const image = new Image();
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error('The selected file is not a valid image.'));
+        image.src = dataUrl;
+      });
+      if (
+        image.naturalWidth > 4096 ||
+        image.naturalHeight > 4096 ||
+        image.naturalWidth * image.naturalHeight > 16_000_000
+      ) {
+        throw new Error('Choose a logo image no larger than 4096 × 4096 pixels.');
+      }
+      setForm((current) => ({ ...current, storeLogoDataUrl: dataUrl }));
+    } catch (error) {
+      setStoreLogoError(error instanceof Error ? error.message : 'The selected logo could not be loaded.');
+    }
+  };
 
   useEffect(() => {
     const api = window.electronAPI;
@@ -412,6 +469,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     invoiceShowCashierName: current.invoiceShowCashierName,
     invoiceShowTaxDetails: current.invoiceShowTaxDetails,
     invoiceShowStoreAddress: current.invoiceShowStoreAddress,
+    invoiceShowStoreLogo: current.invoiceShowStoreLogo,
     invoiceShowReceiptBarcode: current.invoiceShowReceiptBarcode,
     invoiceShowFooter: current.invoiceShowFooter,
     invoiceShowQrCode: current.invoiceShowQrCode,
@@ -968,19 +1026,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setPaymentMethodError(null);
   };
 
-  const handleSelectLayout = async (layoutId: PosScreenLayout) => {
-    const next = { ...form, posScreenLayout: layoutId };
-    setForm(next);
-    setSaving(true);
-    try {
-      await onSaveSettings(next);
-      setSavedNotice(true);
-      setTimeout(() => setSavedNotice(false), 2500);
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const handleConfirmReset = async () => {
     if (!onResetDatabase) return;
     if (!resetAdminPassword.trim()) {
@@ -1020,30 +1065,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
-  const screenModels: Array<{
-    id: PosScreenLayout;
-    title: string;
-    description: string;
-    badge: string;
-  }> = [
-    {
-      id: 'pos',
-      title: isRtl ? 'POS - نقطة البيع العادية (باركود وجدول)' : 'POS - Standard Retail Terminal',
-      description: isRtl
-        ? 'الواجهة الافتراضية مع ماسح الباركود، والبحث السريع، والجدول المفصل للأصناف الممسوحة والدفع المباشر.'
-        : 'Current standard retail layout optimized for high-speed barcode scanning, fast SKU search, and line item spreadsheet ticket.',
-      badge: isRtl ? 'تجزئة ومحلات' : 'Retail Standard',
-    },
-    {
-      id: 'rpos',
-      title: isRtl ? 'RPOS - نقطة بيع المطاعم والمقاهي (كتالوج ومجموعات)' : 'RPOS - Restaurant & Café Touch POS',
-      description: isRtl
-        ? 'تصميم مخصص للمطاعم والمقاهي: شاشة لمس مع كتالوج مرئي مقسم حسب المجموعات والتصنيفات للاختيار السريع للأطباق والمشروبات.'
-        : 'Touchscreen-ready restaurant layout with visual product catalog categorized by food & beverage groups for instant order entry.',
-      badge: isRtl ? 'مطاعم ومقاهي' : 'Restaurants & Cafés',
-    },
-  ];
-
   const activeTemplateSettings = templateSettings(form, selectedTemplate);
   const activeInvoiceMarginsMm = resolveInvoiceMarginsMm(
     selectedTemplate,
@@ -1062,6 +1083,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     { key: 'invoiceShowCashierName', label: t.showCashierName, desc: 'Cashier operator name on invoice', val: activeTemplateSettings.invoiceShowCashierName !== false },
     { key: 'invoiceShowTaxDetails', label: t.showTaxDetails, desc: 'Subtotal excl. tax & VAT breakdown', val: activeTemplateSettings.invoiceShowTaxDetails !== false },
     { key: 'invoiceShowStoreAddress', label: t.showStoreAddress, desc: 'Store street address & phone number', val: activeTemplateSettings.invoiceShowStoreAddress !== false },
+    { key: 'invoiceShowStoreLogo', label: isRtl ? 'إظهار شعار المتجر' : 'Show store logo', desc: isRtl ? 'إظهار شعار المتجر في معاينة وطباعة الفاتورة' : 'Show the configured store logo on invoice previews and prints', val: activeTemplateSettings.invoiceShowStoreLogo !== false },
     { key: 'invoiceShowFooter', label: t.showFooter, desc: 'Bilingual thank you footer notice', val: activeTemplateSettings.invoiceShowFooter !== false },
     { key: 'invoiceShowQrCode', label: t.showQrCode, desc: 'Include the electronic invoice QR code', val: activeTemplateSettings.invoiceShowQrCode !== false },
   ];
@@ -1285,6 +1307,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                               <dd className="mt-0.5 break-words text-xs font-medium text-slate-800">{value}</dd>
                             </div>
                           ))}
+                          {settings.registrationDetails.licenseNumber?.trim() && (
+                            <div className="min-w-0">
+                              <dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                {isRtl ? 'رقم الترخيص' : 'License number'}
+                              </dt>
+                              <dd className="mt-0.5 break-words text-xs font-medium text-slate-800">
+                                {settings.registrationDetails.licenseNumber}
+                              </dd>
+                            </div>
+                          )}
                           {settings.registrationDetails.amcNotes?.trim() && (
                             <div className="min-w-0 sm:col-span-2">
                               <dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
@@ -1487,6 +1519,32 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             {activeSettingsSection === 'sales' && (
               <div className="space-y-4">
                 <div className="settings-item-list">
+                  <label className="settings-item-row cursor-pointer">
+                    <span className="settings-item-copy">
+                      <span className="block text-sm font-semibold text-slate-700">
+                        {isRtl ? 'السماح بتعديل تاريخ الفاتورة' : 'Allow Invoice Date Editing'}
+                      </span>
+                      <span className="mt-1 block text-xs text-slate-500">
+                        {isRtl
+                          ? 'السماح بتعديل التاريخ في شاشة aptERP.'
+                          : 'Allow changing the invoice date in the aptERP sales-entry screen.'}
+                      </span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      aria-label={isRtl ? 'السماح بتعديل تاريخ الفاتورة' : 'Allow Invoice Date Editing'}
+                      checked={form.allowInvoiceDateEdit === true}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          allowInvoiceDateEdit: event.target.checked,
+                        }))
+                      }
+                      className="peer sr-only"
+                    />
+                    <span className="relative h-5 w-9 shrink-0 rounded-full bg-slate-300 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-blue-600 peer-checked:after:translate-x-4 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-blue-600 rtl:peer-checked:after:-translate-x-4" />
+                  </label>
                   <label className="settings-item-row cursor-pointer">
                     <span className="settings-item-copy">
                       <span className="block text-sm font-semibold text-slate-700">
@@ -1797,59 +1855,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
             )}
 
-            {/* SECTION 2: POS SCREEN MODELS */}
-            {isAppAdmin && activeSettingsSection === 'screen' && (
-              <div className="space-y-4">
-                <div className="px-1">
-                  <h2 className="text-[15px] font-semibold text-[#1f1f1f] flex items-center gap-2">
-                    <Monitor className="w-4 h-4 text-[#0f6cbd]" />
-                    <span>{isRtl ? 'نماذج شاشة نقطة البيع' : 'POS Screen Modes'}</span>
-                  </h2>
-                  <p className="text-xs text-[#666] mt-1">
-                    {isRtl
-                      ? 'اختر بين نموذج POS القياسي ونموذج RPOS للمطاعم.'
-                      : 'Choose the retail or restaurant-friendly interface for your POS workflow.'}
-                  </p>
-                </div>
-
-                <div className="settings-item-list">
-                  {screenModels.map((model) => {
-                    const isSelected = form.posScreenLayout === model.id || (model.id === 'pos' && form.posScreenLayout !== 'rpos');
-                    return (
-                      <button
-                        key={model.id}
-                        type="button"
-                        onClick={() => handleSelectLayout(model.id)}
-                        className={`settings-item-row w-full text-left transition-colors ${
-                          isSelected
-                            ? 'bg-blue-50'
-                            : 'hover:bg-slate-50'
-                        }`}
-                      >
-                        <div className="settings-item-copy">
-                          <span className="block font-semibold text-slate-900">
-                            {model.title}
-                          </span>
-                          <span className="mt-1 block text-xs leading-relaxed text-slate-500">
-                            {model.description}
-                          </span>
-                        </div>
-                        <span className="shrink-0 text-right">
-                          <span className="block text-xs font-semibold text-slate-700">
-                            {model.badge}
-                          </span>
-                          <span className={`mt-1 block text-[11px] font-semibold ${isSelected ? 'text-blue-700' : 'text-slate-400'}`}>
-                            {isSelected ? (isRtl ? 'النموذج النشط' : 'Active') : (isRtl ? 'انقر للتفعيل' : 'Select')}
-                          </span>
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* SECTION 3: STORE & RECEIPT INFO */}
+            {/* SECTION 2: STORE & RECEIPT INFO */}
             {activeSettingsSection === 'store' && (
               <div className="space-y-4">
                 <div className="px-1">
@@ -1863,6 +1869,66 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
 
                 <div className="settings-item-list settings-field-list">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                    <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-white p-2">
+                      {form.storeLogoDataUrl ? (
+                        <img
+                          src={form.storeLogoDataUrl}
+                          alt={isRtl ? 'شعار المتجر' : 'Store logo'}
+                          className="h-full w-full object-contain"
+                        />
+                      ) : (
+                        <Store className="h-8 w-8 text-slate-300" aria-hidden="true" />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium text-slate-700">
+                        {isRtl ? 'شعار المتجر' : 'Store Logo'}
+                      </div>
+                      <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                        {isRtl
+                          ? 'يظهر الشعار في معاينة وطباعة الفواتير وطلبات المطبخ. PNG أو JPEG أو WebP، بحد أقصى 1 ميجابايت.'
+                          : 'Shown on invoice and KOT previews and prints. PNG, JPEG, or WebP; maximum 1 MB.'}
+                      </p>
+                      <input
+                        ref={storeLogoInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        onChange={(event) => void handleStoreLogoChange(event)}
+                        className="hidden"
+                        aria-label={isRtl ? 'اختيار شعار المتجر' : 'Choose store logo'}
+                      />
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => storeLogoInputRef.current?.click()}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          <Upload className="h-3.5 w-3.5" />
+                          {isRtl ? 'رفع الشعار' : 'Upload logo'}
+                        </button>
+                        {form.storeLogoDataUrl && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setForm((current) => ({ ...current, storeLogoDataUrl: '' }));
+                              setStoreLogoError(null);
+                            }}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            {isRtl ? 'إزالة الشعار' : 'Remove logo'}
+                          </button>
+                        )}
+                      </div>
+                      {storeLogoError && (
+                        <p role="alert" className="mt-2 text-xs font-medium text-red-700">
+                          {storeLogoError}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
                   <div>
                     <label className="block font-medium text-slate-700 mb-1">Store Name (English) *</label>
                     <input
@@ -2250,13 +2316,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     {invoiceOptions.map((opt) => (
                       <label
                         key={opt.key}
-                        className="settings-item-row cursor-pointer transition-colors hover:bg-slate-50"
+                        className="settings-item-row relative cursor-pointer transition-colors hover:bg-slate-50"
                       >
                         <input
                           type="checkbox"
                           checked={opt.val}
                           onChange={(e) => updateTemplateSettings(opt.key, e.target.checked)}
-                          className="peer sr-only"
+                          className="peer absolute end-4 top-1/2 z-10 h-5 w-9 -translate-y-1/2 cursor-pointer opacity-0"
                         />
                         <div className="settings-item-copy">
                           <div className="font-semibold text-slate-800">{opt.label}</div>

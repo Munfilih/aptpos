@@ -51,6 +51,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
     return () => closeRequestListeners.delete(listener);
   },
+  onLaunchModeRequested: (listener: (mode: 'pos' | 'rpos' | 'erp') => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, mode: 'pos' | 'rpos' | 'erp') =>
+      listener(mode);
+    ipcRenderer.on('pos:app:launch-mode-requested', handler);
+    return () => ipcRenderer.removeListener('pos:app:launch-mode-requested', handler);
+  },
   openExternal: (url: string) => ipcRenderer.invoke('pos:open-external', url),
   onUpdateStatus: (listener: (status: UpdateStatus) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => listener(status);

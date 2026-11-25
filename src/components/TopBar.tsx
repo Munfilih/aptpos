@@ -15,13 +15,14 @@ import {
   Files,
 } from 'lucide-react';
 import { APP_COMPONENTS } from '../types/pos';
-import type { AppComponentId, SettingsSectionId, UserSession } from '../types/pos';
+import type { AppComponentId, AppScreenMode, SettingsSectionId, UserSession } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
 import { SettingsSectionTabs } from './SettingsView';
 import { LauncherAppArt } from './LauncherAppArt';
 
 export type NavTab =
   | 'register'
+  | 'sales-entry'
   | 'inventory'
   | 'purchases'
   | 'purchase-history'
@@ -40,6 +41,8 @@ export type NavTab =
   | 'unavailable';
 
 interface TopBarProps {
+  appName: string;
+  appScreenMode: AppScreenMode;
   activeTab: NavTab;
   activeSettingsSection: SettingsSectionId;
   showSettingsComponent: boolean;
@@ -118,6 +121,8 @@ interface HubModule {
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
+  appName,
+  appScreenMode,
   activeTab,
   activeSettingsSection,
   showSettingsComponent,
@@ -248,7 +253,9 @@ export const TopBar: React.FC<TopBarProps> = ({
     onLauncherOpened?.();
   }, [openLauncherOnMount, onLauncherOpened]);
 
-  const navItems: TopNavItem[] = [
+  const navItems: TopNavItem[] = appScreenMode === 'erp' ? [
+    { id: 'sales-entry', label: language === 'ar' ? 'إدخال المبيعات' : 'Sales Entry', icon: FileText },
+  ] : [
     { id: 'register', label: t.navRegister, icon: ShoppingBag },
     {
       id: 'return-register',
@@ -296,7 +303,10 @@ export const TopBar: React.FC<TopBarProps> = ({
       .filter((navItem): navItem is TopNavGroup => 'children' in navItem)
       .flatMap((group) => group.children)
       .find((child) => child.id === tabId);
-    const requiredPermission = item?.permission || groupChild?.permission;
+    const requiredPermission =
+      tabId === 'sales-entry'
+        ? 'register'
+        : item?.permission || groupChild?.permission;
     if (currentUser.role === 'admin') return true;
     if (requiredPermission === 'sales-return' && currentUser.permissions?.includes('manage-sales-returns')) {
       return true;
@@ -384,9 +394,13 @@ export const TopBar: React.FC<TopBarProps> = ({
   ];
 
   const visibleHubModules = hubModules
+    .filter((module) => appScreenMode !== 'erp' || module.id === 'sales')
     .map((module) => ({
       ...module,
-      destinations: module.destinations.filter(
+      tab: appScreenMode === 'erp' && module.id === 'sales' ? 'sales-entry' : module.tab,
+      destinations: (appScreenMode === 'erp' && module.id === 'sales'
+        ? [{ ...module.destinations[0], label: 'Sales Entry', labelAr: 'إدخال المبيعات', tab: 'sales-entry' as NavTab }]
+        : module.destinations).filter(
         (destination) => destination.comingSoon || (destination.tab && hasTabPermission(destination.tab))
       ),
     }))
@@ -415,7 +429,7 @@ export const TopBar: React.FC<TopBarProps> = ({
     { id: 'organization-shift', label: 'Shift', labelAr: 'الورديات', icon: Wallet, tab: 'shift' },
     { id: 'cashbook', label: 'Cash Book', labelAr: 'دفتر النقدية', icon: Wallet, tab: 'accounts', action: 'open-cashbook' },
   ];
-  const visibleMenuShortcuts = menuShortcuts.filter(
+  const visibleMenuShortcuts = (appScreenMode === 'erp' ? [] : menuShortcuts).filter(
     (item) =>
       (!item.componentId || !disabledAppComponents.includes(item.componentId)) &&
       (item.comingSoon || !item.tab || hasTabPermission(item.tab))
@@ -533,13 +547,13 @@ export const TopBar: React.FC<TopBarProps> = ({
           <button
             type="button"
             onClick={() => {
-              handleSelectNavigationTab('register');
+              handleSelectNavigationTab(appScreenMode === 'erp' ? 'sales-entry' : 'register');
               onSettingsLauncherChange(false);
               onSettingsComponentChange(false);
             }}
             className="font-display text-base sm:text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 rounded flex items-center gap-1.5"
           >
-            <span>apt<span className="text-blue-700">POS</span></span>
+            <span>apt<span className={appName === 'aptERP' ? 'text-violet-700' : 'text-blue-700'}>{appName.slice(3)}</span></span>
           </button>
           {activePageLabel && (
             <span className="border-l border-slate-200 pl-2 text-xs font-medium text-slate-600 sm:pl-3">

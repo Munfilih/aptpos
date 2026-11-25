@@ -73,6 +73,8 @@ export type UserRole = 'admin' | 'cashier' | 'custom';
 
 export type TaxType = 'inclusive' | 'exclusive';
 
+export type AppScreenMode = 'pos' | 'rpos' | 'erp';
+
 export type PosScreenLayout = 'pos' | 'rpos';
 
 export interface UserSession {
@@ -230,6 +232,7 @@ export interface Sale {
   receiptNumber: string;
   kotNumber?: string;
   createdAt: string;
+  invoiceDate?: string;
   cashierName: string;
   customerName: string;
   customerId?: number | null;
@@ -467,6 +470,7 @@ export interface InvoiceTemplateSettings {
   invoiceShowCashierName?: boolean;
   invoiceShowTaxDetails?: boolean;
   invoiceShowStoreAddress?: boolean;
+  invoiceShowStoreLogo?: boolean;
   invoiceShowReceiptBarcode?: boolean;
   invoiceShowFooter?: boolean;
   invoiceShowQrCode?: boolean;
@@ -476,6 +480,7 @@ export interface RegistrationDetails {
   businessName: string;
   address: string;
   mobileNumber: string;
+  licenseNumber?: string;
   systemCode: string;
   username: string;
   appVersion: AppVersion;
@@ -487,6 +492,7 @@ export interface RegistrationDetails {
 export interface StoreSettings {
   storeName: string;
   storeNameAr?: string; // اسم المتجر / الشركة بالعربية
+  storeLogoDataUrl?: string;
   crNumber?: string; // السجل التجاري (Commercial Registration)
   address: string;
   buildingNo?: string; // رقم المبنى (Building No.)
@@ -523,6 +529,7 @@ export interface StoreSettings {
   receiptBarcodeEnabled: boolean;
   enableStockAlertsOnCheckout: boolean;
   defaultCustomer: string;
+  allowInvoiceDateEdit?: boolean;
   paymentMethods?: string[];
   kotPrinter?: string;
   enableKot?: boolean;
@@ -537,6 +544,7 @@ export interface StoreSettings {
   invoiceShowCashierName?: boolean;
   invoiceShowTaxDetails?: boolean;
   invoiceShowStoreAddress?: boolean;
+  invoiceShowStoreLogo?: boolean;
   invoiceShowReceiptBarcode?: boolean;
   invoiceShowFooter?: boolean;
   invoiceShowQrCode?: boolean;

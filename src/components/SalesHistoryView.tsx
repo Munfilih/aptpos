@@ -3,14 +3,18 @@ import {
   AlertTriangle,
   Edit2,
   Printer,
-  Receipt,
   RotateCcw,
   Search,
   Trash2,
 } from 'lucide-react';
 import type { PaymentMethod, Sale, SalesReturnVoucher, StoreSettings } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
-import { matchesDateBounds, resolveDateBounds, type DateFilter } from '../utils/dateFilters';
+import {
+  getInvoiceDateTime,
+  matchesDateBounds,
+  resolveDateBounds,
+  type DateFilter,
+} from '../utils/dateFilters';
 
 interface SalesHistoryViewProps {
   sales: Sale[];
@@ -87,7 +91,7 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
     return sales.filter((s) => {
       if (statusFilter === 'COMPLETED' && s.status !== 'COMPLETED') return false;
       if (statusFilter === 'RETURNED' && !s.returnStatus) return false;
-      if (!matchesDateBounds(s.createdAt, dateBounds)) return false;
+      if (!matchesDateBounds(s.invoiceDate || s.createdAt, dateBounds)) return false;
       if (search.trim() !== '') {
         const q = search.trim().toLowerCase();
         return (
@@ -101,7 +105,7 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
   }, [sales, statusFilter, search, dateBounds]);
 
   const formatSaleDate = (sale: Sale) =>
-    new Date(sale.createdAt).toLocaleString(isRtl ? 'ar-SA' : 'en-US', {
+    getInvoiceDateTime(sale.invoiceDate, sale.createdAt).toLocaleString(isRtl ? 'ar-SA' : 'en-US', {
       month: 'short',
       day: '2-digit',
       hour: '2-digit',
@@ -214,23 +218,7 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
   return (
     <div className="flex-1 min-h-0 overflow-y-auto bg-slate-50 p-3 lg:p-6">
       <div className="mx-auto max-w-[1440px] space-y-3 lg:space-y-5">
-        <header className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-700 text-white shadow-sm shadow-blue-900/15 lg:h-12 lg:w-12 lg:rounded-2xl">
-              <Receipt className="h-5 w-5 lg:h-6 lg:w-6" />
-            </div>
-            <div>
-              <h1 className="text-lg font-bold tracking-tight text-slate-900 lg:text-xl">
-                {isRtl ? 'سجل المبيعات' : 'Sales History'}
-              </h1>
-              <p className="mt-0.5 text-xs text-slate-500 lg:text-sm">
-                {isRtl
-                  ? 'راجع الفواتير والمدفوعات وحالة كل عملية.'
-                  : 'Review receipts, payments, and transaction status.'}
-              </p>
-            </div>
-          </div>
-          <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center lg:justify-end">
+        <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
             <div className="relative w-full sm:flex-1 sm:min-w-[220px] sm:max-w-sm xl:flex-none">
               <Search className={`pointer-events-none absolute top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 ${isRtl ? 'right-3' : 'left-3'}`} />
               <input
@@ -323,8 +311,7 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
                 </div>
               )}
             </div>
-          </div>
-        </header>
+        </div>
 
         <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="flex items-center justify-between gap-3 border-b border-slate-200 p-3 lg:p-5">

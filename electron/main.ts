@@ -23,7 +23,42 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PRODUCTION_PORT = 43187;
 const LEGACY_APP_NAME = 'Counterline POS';
+type AppScreenMode = 'pos' | 'rpos' | 'erp';
+
+function parseAppScreenMode(value: string | undefined): AppScreenMode | null {
+  switch (value?.toLowerCase()) {
+    case 'pos':
+    case 'aptpos':
+      return 'pos';
+    case 'rpos':
+    case 'aptrpos':
+      return 'rpos';
+    case 'erp':
+    case 'apterp':
+      return 'erp';
+    default:
+      return null;
+  }
+}
+
+function getAppScreenMode(args: readonly string[]): AppScreenMode {
+  const screenArgument = args.find((argument) => argument.startsWith('--screen='));
+  return parseAppScreenMode(screenArgument?.slice('--screen='.length)) || 'pos';
+}
+
+function getAppProductName(mode: AppScreenMode): string {
+  return mode === 'rpos' ? 'aptRPOS' : mode === 'erp' ? 'aptERP' : 'aptPOS';
+}
+
+function getAppIconPath(mode: AppScreenMode): string {
+  const iconFile = mode === 'rpos' ? 'aptrpos.ico' : mode === 'erp' ? 'apterp.ico' : 'aptpos.ico';
+  return app.isPackaged
+    ? path.join(process.resourcesPath, iconFile)
+    : path.resolve(__dirname, '..', 'build-resources', iconFile);
+}
+
 const isDev = !app.isPackaged && !!process.env.ELECTRON_START_URL;
+let currentScreenMode = getAppScreenMode(process.argv);
 
 app.setName(LEGACY_APP_NAME);
 app.setAppUserModelId('com.counterline.pos');
@@ -762,11 +797,9 @@ function waitForServer(url: string, retries = 30): Promise<void> {
   });
 }
 
-function createWindow(targetUrl: string): void {
-  const iconPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'aptpos.ico')
-    : path.resolve(__dirname, '../build-resources/aptpos.ico');
-
+function createWindow(targetUrl: string, screenMode: AppScreenMode): void {
+  currentScreenMode = screenMode;
+  const iconPath = getAppIconPath(screenMode);
   const { workArea } = screen.getPrimaryDisplay();
   trustedOrigin = new URL(targetUrl).origin;
   mainWindow = new BrowserWindow({
@@ -776,7 +809,7 @@ function createWindow(targetUrl: string): void {
     height: workArea.height,
     minWidth: 900,
     minHeight: 640,
-    title: 'aptPOS',
+    title: getAppProductName(screenMode),
     icon: iconPath,
     backgroundColor: '#f8fafc',
     autoHideMenuBar: true,
@@ -811,6 +844,18 @@ function createWindow(targetUrl: string): void {
     }
   });
 
+  mainWindow.webContents.on('did-navigate', (_event, url) => {
+    try {
+      const screenMode = parseAppScreenMode(new URL(url).searchParams.get('aptposMode') || undefined);
+      if (!screenMode) return;
+      currentScreenMode = screenMode;
+      mainWindow?.setTitle(getAppProductName(screenMode));
+      mainWindow?.setIcon(getAppIconPath(screenMode));
+    } catch (error) {
+      console.error('Failed to apply app screen branding:', error);
+    }
+  });
+
   mainWindow.webContents.on('before-input-event', (_event, input) => {
     if (!mainWindow) return;
     if (input.type === 'keyDown' && input.key === 'F11') {
@@ -835,7 +880,9 @@ function createWindow(targetUrl: string): void {
   });
 
   if (isDev) mainWindow.webContents.openDevTools({ mode: 'detach' });
-  void mainWindow.loadURL(targetUrl);
+  const launchUrl = new URL(targetUrl);
+  launchUrl.searchParams.set('aptposMode', screenMode);
+  void mainWindow.loadURL(launchUrl.toString());
 }
 
 ipcMain.handle('pos:choose-product-image', async (event) => {
@@ -1312,8 +1359,12 @@ app.on('window-all-closed', () => {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, commandLine) => {
     if (!mainWindow) return;
+    const requestedScreenMode = getAppScreenMode(commandLine);
+    if (requestedScreenMode !== currentScreenMode) {
+      mainWindow.webContents.send('pos:app:launch-mode-requested', requestedScreenMode);
+    }
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
   });
@@ -1326,7 +1377,7 @@ if (!app.requestSingleInstanceLock()) {
         ? process.env.ELECTRON_START_URL!
         : `http://127.0.0.1:${port}`;
       await waitForServer(`${new URL(targetUrl).origin}/api/health`);
-      createWindow(targetUrl);
+      createWindow(targetUrl, currentScreenMode);
       if (app.isPackaged) {
         setTimeout(() => {
           void checkForUpdates();
@@ -1346,7 +1397,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0 && trustedOrigin) {
-      createWindow(trustedOrigin);
+      createWindow(trustedOrigin, currentScreenMode);
     }
   });
 }

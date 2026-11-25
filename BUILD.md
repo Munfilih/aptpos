@@ -38,13 +38,15 @@ Runs in sequence:
 2. `electron:compile` — TypeScript → `dist-electron/` + esbuild server bundle
 3. `electron-builder --win nsis --x64` — packages and creates the NSIS installer
 
-Output: `release\aptPOS-Setup-<version>.exe` (version is read from `package.json`; current: `1.0.29`)
+Output: `release\aptPOS-Setup-<version>.exe` (version is read from `package.json`; current: `1.0.36`)
+
+The installer creates aptPOS, aptRPOS, and aptERP shortcuts in the installation folder. aptPOS is the default desktop shortcut; the other shortcuts launch the same app in their respective modes and can be copied to the desktop.
 
 ## Thermal receipt sizing
 
-Thermal jobs use a content-measured page height and a fixed 58 mm or 80 mm width. Electron receives dimensions in microns (58,000 or 80,000 wide); the height is converted from the rendered CSS-pixel height with a 1 mm trailing allowance. Printing uses 100% scale and no software margins. A driver option such as Epson's “Roll Paper 80 x 3276 mm” is a maximum roll length, not the height used for each receipt.
+Thermal jobs use a content-measured page height and a fixed 58 mm or 80 mm width. Electron receives dimensions in microns (58,000 or 80,000 wide); the height is converted from the rendered CSS-pixel height with a 4 mm safety allowance. Printing uses 100% scale and no software margins. A driver option such as Epson's “Roll Paper 80 x 3276 mm” is a maximum roll length, not the height used for each receipt.
 
-The Sale Complete window has a per-receipt “Preview before printing” option. When enabled, it shows the rendered invoice in an in-app preview before sending the job using the configured printer mode. A4 print output uses the same page layout as the preview. When disabled, the configured print flow is unchanged.
+The Sale Complete window has a per-receipt “Preview before printing” option. Thermal preview and print use the same standalone receipt document; printing from the preview reuses that exact document. A4 print output uses the same page layout as the preview. When disabled, the configured print flow is unchanged.
 
 ## Rebuild after source changes
 

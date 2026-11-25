@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { TopBar, type NavTab } from './components/TopBar';
 import { RegisterView } from './components/RegisterView';
+import { ErpSalesView } from './components/ErpSalesView';
 import { InventoryView } from './components/InventoryView';
 import { PurchasesView } from './components/PurchasesView';
 import {
@@ -22,6 +23,7 @@ import { DemoRegistrationWindow } from './components/DemoRegistrationWindow';
 import { LanguageProvider, useLanguage } from './i18n/LanguageContext';
 import type {
   AppComponentId,
+  AppScreenMode,
   AppVersion,
   CashbookEntry,
   CashbookOpeningBalance,
@@ -35,7 +37,6 @@ import type {
   Product,
   PurchaseEntry,
   PurchaseReturnVoucher,
-  PosScreenLayout,
   Sale,
   SalesReturnVoucher,
   StoreSettings,
@@ -47,6 +48,11 @@ import type {
 } from './types/pos';
 import { APP_COMPONENTS, APP_VERSIONS } from './types/pos';
 import { parseVersionComponentPolicies } from './utils/versionComponentPolicies';
+import {
+  APP_SCREEN_MODE_QUERY_PARAM,
+  getAppProductName,
+  getAppScreenModeFromLocation,
+} from './utils/appScreenMode';
 
 const RPOS_TICKET_WIDTH_KEY = 'counterline_rpos_ticket_width';
 const DEFAULT_RPOS_TICKET_WIDTH = 320;
@@ -92,6 +98,7 @@ const DEFAULT_SETTINGS: StoreSettings = {
   receiptBarcodeEnabled: true,
   enableStockAlertsOnCheckout: true,
   defaultCustomer: 'Walk-in Customer / عميل نقدي',
+  allowInvoiceDateEdit: false,
   paymentMethods: ['Cash', 'Card', 'Split'],
   kotPrinter: '',
   enableKot: false,
@@ -260,6 +267,7 @@ function isNavigableComponent(
 }
 
 export function App() {
+  const launchScreenMode = getAppScreenModeFromLocation();
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => {
     try {
       const stored = sessionStorage.getItem('counterline_user');
@@ -514,12 +522,10 @@ export function App() {
   const handleLoginSuccess = (user: UserSession) => {
     setCurrentUser(user);
     const demoVersion = user.appVersion;
-    const demoScreenType = user.demoScreenType;
-    if (user.demoMode && demoVersion && demoScreenType) {
+    if (user.demoMode && demoVersion) {
       setSettings((current) => ({
         ...current,
         appVersion: demoVersion,
-        posScreenLayout: demoScreenType,
       }));
     }
     setLoginDemoRegistration(null);
@@ -564,19 +570,18 @@ export function App() {
       !response.ok ||
       typeof payload !== 'object' ||
       payload === null ||
-      !('appVersion' in payload) ||
-      !('posScreenLayout' in payload)
+      !('appVersion' in payload)
     ) {
       throw new Error('Could not load the approved demo settings.');
     }
     const updatedSettings = payload as StoreSettings;
-    if (
-      updatedSettings.appVersion !== activation.appVersion ||
-      updatedSettings.posScreenLayout !== activation.screenType
-    ) {
-      throw new Error('The approved demo version and screen could not be synchronized.');
+    if (updatedSettings.appVersion !== activation.appVersion) {
+      throw new Error('The approved demo version could not be synchronized.');
     }
-    setSettings(updatedSettings);
+    setSettings((current) => ({
+      ...updatedSettings,
+      posScreenLayout: current.posScreenLayout,
+    }));
     handleLoginSuccess({
       ...loginDemoRegistration.user,
       username: activation.username,
@@ -587,7 +592,6 @@ export function App() {
       registeredSystem: false,
       demoExpiresAt: activation.expiresAt,
       appVersion: activation.appVersion,
-      demoScreenType: activation.screenType,
     });
   };
 
@@ -726,12 +730,6 @@ export function App() {
             'appVersion' in payload
               ? APP_VERSIONS.find((version) => version === payload.appVersion)
               : undefined;
-          const screenType: PosScreenLayout | undefined =
-            'screenType' in payload && payload.screenType === 'pos'
-              ? 'pos'
-              : 'screenType' in payload && payload.screenType === 'rpos'
-                ? 'rpos'
-                : undefined;
           const rawPermissions =
             'permissions' in payload && Array.isArray(payload.permissions)
               ? payload.permissions
@@ -740,12 +738,11 @@ export function App() {
             rawPermissions?.filter((permission): permission is string => typeof permission === 'string') || [];
           if (
             !appVersion ||
-            !screenType ||
             !rawPermissions ||
             permissions.length !== rawPermissions.length
           ) {
             handleLogout();
-            setLoginError('The active demo returned an invalid version or screen configuration.');
+            setLoginError('The active demo returned an invalid version or permission configuration.');
             return;
           }
 
@@ -754,20 +751,13 @@ export function App() {
             throw new Error('Could not refresh the active demo configuration.');
           }
           const updatedSettings: StoreSettings = await settingsResponse.json();
-          if (
-            updatedSettings.appVersion !== appVersion ||
-            updatedSettings.posScreenLayout !== screenType
-          ) {
-            throw new Error('The active demo configuration could not be synchronized.');
+          if (updatedSettings.appVersion !== appVersion) {
+            throw new Error('The active demo version could not be synchronized.');
           }
-          setSettings((current) =>
-            current.appVersion === updatedSettings.appVersion &&
-            current.posScreenLayout === updatedSettings.posScreenLayout &&
-            JSON.stringify(current.disabledAppComponents) ===
-              JSON.stringify(updatedSettings.disabledAppComponents)
-              ? current
-              : updatedSettings
-          );
+          setSettings((current) => ({
+            ...updatedSettings,
+            posScreenLayout: current.posScreenLayout,
+          }));
 
           const permissionsChanged =
             JSON.stringify([...(currentUser.permissions || [])].sort()) !==
@@ -775,14 +765,12 @@ export function App() {
           if (
             currentUser.demoExpiresAt !== expiresAt ||
             currentUser.appVersion !== appVersion ||
-            currentUser.demoScreenType !== screenType ||
             permissionsChanged
           ) {
             const updatedUser = {
               ...currentUser,
               demoExpiresAt: expiresAt,
               appVersion,
-              demoScreenType: screenType,
               permissions,
             };
             setCurrentUser(updatedUser);
@@ -1183,10 +1171,32 @@ export function App() {
     isAdmin || currentUser?.permissions?.includes('manage-sales-returns') === true;
   const canDeleteSales = isAdmin || currentUser?.permissions?.includes('delete-sales') === true;
   const isAppAdmin = currentUser?.username.toLowerCase() === 'aptadmin';
-  const isRposMode = settings.posScreenLayout === 'rpos';
+  const effectiveScreenMode: AppScreenMode =
+    launchScreenMode || (settings.posScreenLayout === 'rpos' ? 'rpos' : 'pos');
+  const isRposMode = effectiveScreenMode === 'rpos';
+  const isErpMode = effectiveScreenMode === 'erp';
+  const appName = getAppProductName(effectiveScreenMode);
+
+  useEffect(() => {
+    document.title = `${appName} — Retail Billing & Inventory`;
+  }, [appName]);
+
+  useEffect(() => {
+    const unsubscribe = window.electronAPI?.onLaunchModeRequested((mode) => {
+      if (mode === effectiveScreenMode) return;
+      if (!window.confirm(`Switch to ${getAppProductName(mode)}? The app will reload.`)) return;
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.set(APP_SCREEN_MODE_QUERY_PARAM, mode);
+      window.location.assign(nextUrl.toString());
+    });
+    return unsubscribe;
+  }, [effectiveScreenMode]);
 
   const hasPermission = (tabId: NavTab) => {
     if (!currentUser) return false;
+    if (tabId === 'sales-entry') {
+      return isAdmin || currentUser.permissions?.includes('register') === true;
+    }
     if (
       tabId !== 'unavailable' &&
       (!isAppAdmin || settings.registeredSystem === true) &&
@@ -1218,9 +1228,11 @@ export function App() {
     .map((component) => component.id)
     .filter(isNavigableComponent)
     .filter((tab) => hasPermission(tab));
-  const effectiveTab: NavTab = hasPermission(activeTab)
-    ? activeTab
-    : fallbackTabs[0] || (hasPermission('settings') ? 'settings' : 'unavailable');
+  const effectiveTab: NavTab = isErpMode
+    ? (hasPermission('sales-entry') ? 'sales-entry' : 'unavailable')
+    : hasPermission(activeTab)
+      ? activeTab
+      : fallbackTabs[0] || (hasPermission('settings') ? 'settings' : 'unavailable');
   const nextPurchaseVoucherId = purchases.length
     ? purchases.reduce((latest, purchase) => purchase.id > latest.id ? purchase : latest).id + 1
     : 1;
@@ -1254,6 +1266,7 @@ export function App() {
         {!currentUser ? (
           <>
             <LoginForm
+              appScreenMode={effectiveScreenMode}
               onLoginSuccess={handleLoginSuccess}
               onDemoRegistrationRequested={handleDemoRegistrationRequested}
               initialError={loginError}
@@ -1274,6 +1287,8 @@ export function App() {
           >
           {!loading && (
           <TopBar
+            appName={appName}
+            appScreenMode={effectiveScreenMode}
             activeTab={effectiveTab}
             activeSettingsSection={settingsSection}
             showSettingsComponent={showSettingsComponent}
@@ -1305,6 +1320,14 @@ export function App() {
             </main>
           ) : (
             <main className="win11-app-content flex-1 flex min-h-0 overflow-hidden">
+          {effectiveTab === 'sales-entry' && (
+            <ErpSalesView
+              products={products}
+              customers={customers}
+              settings={settings}
+              onSaleCompleted={handleSaleCompleted}
+            />
+          )}
           {effectiveTab === 'register' && (
             <div
               style={isRposMode
@@ -1319,7 +1342,7 @@ export function App() {
                 <RegisterView
                   products={products}
                   customers={customers}
-                  settings={settings}
+                  settings={{ ...settings, posScreenLayout: isRposMode ? 'rpos' : 'pos' }}
                   rposTicketWidth={rposTicketWidth}
                   onRposTicketWidthChange={setRposTicketWidth}
                   onSaleCompleted={handleSaleCompleted}

@@ -1,5 +1,5 @@
 /**
- * Generates build-resources/aptpos.ico, installerHeader.bmp, installerSidebar.bmp
+ * Generates mode-specific app icons and installer artwork.
  * from logo/logo.png using the supplied aptPOS mark and brand palette.
  * Run: node scripts/gen-installer-assets.cjs
  */
@@ -91,13 +91,13 @@ async function blendSvg(canvas, width, height, svg) {
 
 // ── ICO ───────────────────────────────────────────────────────────────────────
 
-async function generateIco() {
+async function generateIco(fileName, hue = 0) {
   const sizes = [16, 24, 32, 48, 64, 128, 256];
-  const pngs = await Promise.all(
-    sizes.map(s =>
-      sharp(LOGO).resize(s, s, { fit: 'cover', position: 'centre' }).png().toBuffer()
-    )
-  );
+  const pngs = await Promise.all(sizes.map((size) => {
+    let image = sharp(LOGO);
+    if (hue !== 0) image = image.modulate({ hue });
+    return image.resize(size, size, { fit: 'cover', position: 'centre' }).png().toBuffer();
+  }));
 
   const headerSize = 6 + sizes.length * 16;
   let offset = headerSize;
@@ -125,8 +125,8 @@ async function generateIco() {
   });
 
   pngs.forEach((png, i) => png.copy(buf, entries[i].offset));
-  fs.writeFileSync(path.join(OUT, 'aptpos.ico'), buf);
-  console.log('wrote aptpos.ico sizes:', sizes.join(', '));
+  fs.writeFileSync(path.join(OUT, fileName), buf);
+  console.log('wrote', fileName, 'sizes:', sizes.join(', '));
 }
 
 // ── Header BMP 150×57 ─────────────────────────────────────────────────────────
@@ -217,7 +217,9 @@ async function generateSidebar() {
 
 (async () => {
   try {
-    await generateIco();
+    await generateIco('aptpos.ico');
+    await generateIco('aptrpos.ico', -30);
+    await generateIco('apterp.ico', 60);
     await generateHeader();
     await generateSidebar();
     console.log('Done.');

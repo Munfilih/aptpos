@@ -20,6 +20,10 @@ asarUnpack:
 extraResources:
   - from: build-resources/aptpos.ico
     to: aptpos.ico
+  - from: build-resources/aptrpos.ico
+    to: aptrpos.ico
+  - from: build-resources/apterp.ico
+    to: apterp.ico
 
 win:
   icon: build-resources/aptpos.ico

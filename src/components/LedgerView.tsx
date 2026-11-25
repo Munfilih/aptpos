@@ -224,7 +224,7 @@ export const LedgerView: React.FC<LedgerViewProps> = ({
         ...customerSales
           .filter((sale) => String(sale.paymentMethod).toUpperCase() === 'CREDIT')
           .map((sale) => ({
-            date: new Date(sale.createdAt).toISOString().slice(0, 10),
+            date: sale.invoiceDate || new Date(sale.createdAt).toISOString().slice(0, 10),
             reference: sale.receiptNumber,
             particulars: 'Credit sale',
             debit: sale.total,

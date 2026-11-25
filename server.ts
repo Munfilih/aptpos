@@ -424,6 +424,9 @@ function parseRegistrationDetails(value: unknown): RegistrationDetails | undefin
   const appVersion = APP_VERSIONS.find((version) => version === value.appVersion);
   if (!appVersion) throw new Error('The Auth API returned an invalid business registration version.');
   const details = value as Record<string, unknown>;
+  if (details.licenseNumber !== undefined && typeof details.licenseNumber !== 'string') {
+    throw new Error('The Auth API returned an invalid license number.');
+  }
   const parseAmcDate = (date: unknown, field: string): string | null | undefined => {
     if (date === undefined || date === null) return date;
     const parsedDate = typeof date === 'string' ? new Date(`${date}T00:00:00.000Z`) : null;
@@ -456,6 +459,7 @@ function parseRegistrationDetails(value: unknown): RegistrationDetails | undefin
     businessName: value.businessName,
     address: value.address,
     mobileNumber: value.mobileNumber,
+    ...(typeof details.licenseNumber === 'string' ? { licenseNumber: details.licenseNumber } : {}),
     systemCode: value.systemCode,
     username: value.username,
     appVersion,
@@ -474,6 +478,7 @@ function sameRegistrationDetails(
     current.businessName === next.businessName &&
     current.address === next.address &&
     current.mobileNumber === next.mobileNumber &&
+    current.licenseNumber === next.licenseNumber &&
     current.systemCode === next.systemCode &&
     current.username === next.username &&
     current.appVersion === next.appVersion &&

@@ -11,6 +11,7 @@ import type {
   CashierShiftReport,
   CreateCashbookEntryInput,
   AppComponentId,
+  AppScreenMode,
   InventoryOption,
   InventoryOptionType,
   ProductAdditionalBarcode,
@@ -514,6 +515,8 @@ function initSchema(database: Database): void {
     'ALTER TABLE sale_items ADD COLUMN tax_amount REAL',
     'ALTER TABLE sale_items ADD COLUMN discount_amount REAL',
     'ALTER TABLE sales ADD COLUMN tax_type TEXT',
+    'ALTER TABLE sales ADD COLUMN customer_id INTEGER',
+    'ALTER TABLE sales ADD COLUMN invoice_date TEXT',
     'ALTER TABLE inventory_options ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE sale_returns ADD COLUMN voucher_id INTEGER',
     'ALTER TABLE sale_returns ADD COLUMN tax_refund_amount REAL NOT NULL DEFAULT 0',
@@ -1586,6 +1589,9 @@ function parseRegistrationDetails(value: unknown): RegistrationDetails | undefin
     throw new Error('Stored registration details are invalid.');
   }
   const details = value as Record<string, unknown>;
+  if (details.licenseNumber !== undefined && typeof details.licenseNumber !== 'string') {
+    throw new Error('Stored registration license number is invalid.');
+  }
   const parseAmcDate = (date: unknown, field: string): string | null | undefined => {
     if (date === undefined || date === null) return date;
     const parsedDate = typeof date === 'string' ? new Date(`${date}T00:00:00.000Z`) : null;
@@ -1618,6 +1624,7 @@ function parseRegistrationDetails(value: unknown): RegistrationDetails | undefin
     businessName: value.businessName,
     address: value.address,
     mobileNumber: value.mobileNumber,
+    ...(typeof details.licenseNumber === 'string' ? { licenseNumber: details.licenseNumber } : {}),
     systemCode: value.systemCode,
     username: value.username,
     appVersion: value.appVersion as RegistrationDetails['appVersion'],
@@ -1683,6 +1690,7 @@ export async function getSettings(): Promise<StoreSettings> {
   return {
     storeName: map.storeName || 'aptPOS Retail',
     storeNameAr: map.storeNameAr || 'ابت بوس للتجزئة',
+    storeLogoDataUrl: map.storeLogoDataUrl || undefined,
     crNumber: map.crNumber || '1010123456',
     address: map.address || 'King Fahd Road, Al Olaya, Riyadh, Saudi Arabia',
     buildingNo: map.buildingNo || '1234',
@@ -1702,6 +1710,7 @@ export async function getSettings(): Promise<StoreSettings> {
     printerOnline: map.printerOnline !== 'false',
     cashierName: map.cashierName || 'Cashier / الكاشير',
     posScreenLayout: map.posScreenLayout === 'rpos' ? 'rpos' : 'pos',
+    allowInvoiceDateEdit: map.allowInvoiceDateEdit === 'true',
     productCardWidthIn: positiveDimension('productCardWidthIn', 2),
     productCardHeightIn: positiveDimension('productCardHeightIn', 3),
     categoryCardWidthIn: positiveDimension('categoryCardWidthIn', 2),
@@ -1727,6 +1736,7 @@ export async function getSettings(): Promise<StoreSettings> {
     invoiceShowCashierName: map.invoiceShowCashierName !== 'false',
     invoiceShowTaxDetails: map.invoiceShowTaxDetails !== 'false',
     invoiceShowStoreAddress: map.invoiceShowStoreAddress !== 'false',
+    invoiceShowStoreLogo: map.invoiceShowStoreLogo !== 'false',
     invoiceShowReceiptBarcode: map.invoiceShowReceiptBarcode !== 'false',
     invoiceShowFooter: map.invoiceShowFooter !== 'false',
     invoiceShowQrCode: map.invoiceShowQrCode !== 'false',
@@ -1744,6 +1754,18 @@ export async function getSettings(): Promise<StoreSettings> {
 export async function updateSettings(
   partial: Partial<StoreSettings>
 ): Promise<StoreSettings> {
+  if (partial.storeLogoDataUrl !== undefined) {
+    const logo = partial.storeLogoDataUrl;
+    if (
+      typeof logo !== 'string' ||
+      (logo !== '' &&
+        (logo.length > 1_400_000 ||
+          !/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(logo)))
+    ) {
+      throw new Error('Store logo must be a PNG, JPEG, or WebP image no larger than 1 MB.');
+    }
+  }
+
   const database = await getDb();
   const stmt = database.prepare(
     'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)'
@@ -1806,7 +1828,7 @@ export async function listSales(): Promise<Sale[]> {
     `SELECT id, receipt_number, created_at, cashier_name, customer_name,
             subtotal, discount_type, discount_value, discount_amount,
             tax_rate, tax_amount, total, payment_method,
-            amount_tendered, change_due, status, tax_type
+            amount_tendered, change_due, status, tax_type, customer_id, invoice_date
      FROM sales ORDER BY id DESC`
   );
 
@@ -1902,6 +1924,8 @@ export async function listSales(): Promise<Sale[]> {
       createdAt: String(row[2]),
       cashierName: String(row[3]),
       customerName: String(row[4]),
+      customerId: row[17] === null || row[17] === undefined ? null : Number(row[17]),
+      invoiceDate: String(row[18] || String(row[2]).slice(0, 10)),
       subtotal: Number(row[5]),
       discountType: String(row[6]) === 'percent' ? 'percent' : 'fixed',
       discountValue: Number(row[7]),
@@ -1933,6 +1957,9 @@ export async function listSales(): Promise<Sale[]> {
 
 export interface CreateSaleInput {
   customerName?: string;
+  customerId?: number | null;
+  appScreenMode?: AppScreenMode;
+  invoiceDate?: string;
   invoiceNumber?: string;
   discountType: 'percent' | 'fixed';
   discountValue: number;
@@ -1956,6 +1983,9 @@ export async function createSale(input: CreateSaleInput): Promise<{
 
   if (!input.items || input.items.length === 0) {
     throw new Error('Cart cannot be empty.');
+  }
+  if (typeof input.paymentMethod !== 'string' || !input.paymentMethod.trim()) {
+    throw new Error('Payment method is required.');
   }
 
   const resolvedItems: Array<{
@@ -2046,19 +2076,66 @@ export async function createSale(input: CreateSaleInput): Promise<{
     total = Number((Math.round(total * 20) / 20).toFixed(2));
   }
 
+  const createdAt = new Date();
+  const now = createdAt.toISOString();
+  const todayDate = [
+    createdAt.getFullYear(),
+    String(createdAt.getMonth() + 1).padStart(2, '0'),
+    String(createdAt.getDate()).padStart(2, '0'),
+  ].join('-');
+  const invoiceDate = input.invoiceDate ?? todayDate;
+  if (input.invoiceDate !== undefined) {
+    if (input.appScreenMode !== 'erp') {
+      throw new Error('Invoice date can only be edited in aptERP.');
+    }
+    if (!settings.allowInvoiceDateEdit) {
+      throw new Error('Invoice date editing is disabled in Settings → Vouchers.');
+    }
+    const parsedDate = new Date(`${input.invoiceDate}T00:00:00.000Z`);
+    if (
+      typeof input.invoiceDate !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(input.invoiceDate) ||
+      !Number.isFinite(parsedDate.getTime()) ||
+      parsedDate.toISOString().slice(0, 10) !== input.invoiceDate
+    ) {
+      throw new Error('Invoice date must be a valid calendar date.');
+    }
+  }
+  let customerId: number | null = null;
+  let customerName = (input.customerName || '').trim() || 'Walk-in Customer';
+  if (input.customerId !== undefined && input.customerId !== null) {
+    if (!Number.isInteger(input.customerId) || input.customerId <= 0) {
+      throw new Error('Selected customer is invalid.');
+    }
+    const customerRes = database.exec(
+      'SELECT id, name FROM customers WHERE id = ?',
+      [input.customerId]
+    );
+    if (!customerRes[0]?.values[0]) {
+      throw new Error('Selected customer was not found.');
+    }
+    customerId = Number(customerRes[0].values[0][0]);
+    customerName = String(customerRes[0].values[0][1]);
+  }
+  const isCreditInvoice = input.paymentMethod.toUpperCase() === 'CREDIT';
+  if (isCreditInvoice && customerId === null) {
+    throw new Error('Select a customer for a credit invoice.');
+  }
   const amountTendered =
-    input.paymentMethod === 'Cash'
+    isCreditInvoice
+      ? 0
+      : input.paymentMethod === 'Cash'
       ? Math.max(total, Number(input.amountTendered || total))
       : total;
   const changeDue =
-    input.paymentMethod === 'Cash'
+    isCreditInvoice
+      ? 0
+      : input.paymentMethod === 'Cash'
       ? Number(Math.max(0, amountTendered - total).toFixed(2))
       : 0;
 
-  const now = new Date().toISOString();
   const requestedInvoiceNumber =
     typeof input.invoiceNumber === 'string' ? input.invoiceNumber.trim() : '';
-  const customerName = (input.customerName || '').trim() || 'Walk-in Customer';
   const discountValue = Number(input.discountValue || 0);
   let receiptNumber = requestedInvoiceNumber;
   if (receiptNumber) {
@@ -2071,7 +2148,8 @@ export async function createSale(input: CreateSaleInput): Promise<{
     }
     const existingSale = database.exec(
       `SELECT id, customer_name, subtotal, discount_type, discount_value, discount_amount,
-              tax_rate, tax_amount, total, payment_method, amount_tendered, change_due, status, tax_type
+              tax_rate, tax_amount, total, payment_method, amount_tendered, change_due, status, tax_type,
+              customer_id, invoice_date, created_at
        FROM sales WHERE receipt_number = ?`,
       [receiptNumber]
     );
@@ -2110,6 +2188,8 @@ export async function createSale(input: CreateSaleInput): Promise<{
         Number(row[11]) === changeDue &&
         String(row[12]) === 'COMPLETED' &&
         String(row[13]) === settings.taxType &&
+        (row[14] === null || row[14] === undefined ? null : Number(row[14])) === customerId &&
+        String(row[15] || String(row[16]).slice(0, 10)) === invoiceDate &&
         sameItems;
       if (sameRequest) {
         const sale = (await listSales()).find((entry) => entry.id === saleId);
@@ -2145,16 +2225,18 @@ export async function createSale(input: CreateSaleInput): Promise<{
 
   database.run(
     `INSERT INTO sales (
-      receipt_number, created_at, cashier_name, customer_name,
+      receipt_number, created_at, cashier_name, customer_name, customer_id, invoice_date,
       subtotal, discount_type, discount_value, discount_amount,
       tax_rate, tax_type, tax_amount, total, payment_method,
       amount_tendered, change_due, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED')`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED')`,
     [
       receiptNumber,
       now,
       settings.cashierName,
       customerName,
+      customerId,
+      invoiceDate,
       subtotal,
       input.discountType,
       discountValue,
@@ -2244,6 +2326,8 @@ export async function createSale(input: CreateSaleInput): Promise<{
     createdAt: now,
     cashierName: settings.cashierName,
     customerName,
+    customerId,
+    invoiceDate,
     subtotal,
     discountType: input.discountType,
     discountValue,
@@ -4757,7 +4841,29 @@ export async function updateSale(
     throw new Error('Sales with returns cannot be voided.');
   }
 
-  const newCustomerName = input.customerName !== undefined ? input.customerName : target.customerName;
+  let newCustomerName = input.customerName !== undefined ? input.customerName : target.customerName;
+  let newCustomerId =
+    input.customerId !== undefined
+      ? input.customerId
+      : input.customerName !== undefined
+        ? null
+        : target.customerId ?? null;
+  if (newCustomerId !== null) {
+    if (!Number.isInteger(newCustomerId) || newCustomerId <= 0) {
+      throw new Error('Selected customer is invalid.');
+    }
+    const customerRes = database.exec(
+      'SELECT id, name FROM customers WHERE id = ?',
+      [newCustomerId]
+    );
+    if (!customerRes[0]?.values[0]) {
+      throw new Error('Selected customer was not found.');
+    }
+    newCustomerId = Number(customerRes[0].values[0][0]);
+    if (input.customerId !== undefined) {
+      newCustomerName = String(customerRes[0].values[0][1]);
+    }
+  }
   const newCashierName = input.cashierName !== undefined ? input.cashierName : target.cashierName;
   const newPaymentMethod = input.paymentMethod !== undefined ? input.paymentMethod : target.paymentMethod;
   const newStatus = input.status !== undefined ? input.status : target.status;
@@ -4782,8 +4888,10 @@ export async function updateSale(
   }
 
   database.run(
-    `UPDATE sales SET customer_name = ?, cashier_name = ?, payment_method = ?, status = ? WHERE id = ?`,
-    [newCustomerName, newCashierName, newPaymentMethod, newStatus, saleId]
+    `UPDATE sales
+     SET customer_name = ?, customer_id = ?, cashier_name = ?, payment_method = ?, status = ?
+     WHERE id = ?`,
+    [newCustomerName, newCustomerId, newCashierName, newPaymentMethod, newStatus, saleId]
   );
 
   saveDatabase();
@@ -4803,6 +4911,32 @@ export async function updateSaleInvoice(
   if (!input.items?.length) throw new Error('Invoice cannot be empty.');
 
   const settings = await getSettings();
+  let customerName = (input.customerName || '').trim() || target.customerName;
+  let customerId =
+    input.customerId !== undefined
+      ? input.customerId
+      : input.customerName !== undefined && input.customerName.trim() !== target.customerName
+        ? null
+        : target.customerId ?? null;
+  if (customerId !== null) {
+    if (!Number.isInteger(customerId) || customerId <= 0) {
+      throw new Error('Selected customer is invalid.');
+    }
+    const customerRes = database.exec(
+      'SELECT id, name FROM customers WHERE id = ?',
+      [customerId]
+    );
+    if (!customerRes[0]?.values[0]) {
+      throw new Error('Selected customer was not found.');
+    }
+    customerId = Number(customerRes[0].values[0][0]);
+    if (input.customerId !== undefined) {
+      customerName = String(customerRes[0].values[0][1]);
+    }
+  }
+  if (input.paymentMethod.toUpperCase() === 'CREDIT' && customerId === null) {
+    throw new Error('Select a customer for a credit invoice.');
+  }
   const previousQuantities = new Map<number, number>();
   for (const item of target.items) {
     previousQuantities.set(
@@ -4913,12 +5047,17 @@ export async function updateSaleInvoice(
     total = Number((Math.round(total * 20) / 20).toFixed(2));
   }
 
-  const amountTendered = input.paymentMethod === 'Cash'
-    ? Math.max(total, Number(input.amountTendered || total))
-    : total;
-  const changeDue = input.paymentMethod === 'Cash'
-    ? Number(Math.max(0, amountTendered - total).toFixed(2))
-    : 0;
+  const isCreditInvoice = input.paymentMethod.toUpperCase() === 'CREDIT';
+  const amountTendered = isCreditInvoice
+    ? 0
+    : input.paymentMethod === 'Cash'
+      ? Math.max(total, Number(input.amountTendered || total))
+      : total;
+  const changeDue = isCreditInvoice
+    ? 0
+    : input.paymentMethod === 'Cash'
+      ? Number(Math.max(0, amountTendered - total).toFixed(2))
+      : 0;
   const now = new Date().toISOString();
   let queuedOfflinePrint = false;
 
@@ -4969,13 +5108,14 @@ export async function updateSaleInvoice(
 
     database.run(
       `UPDATE sales
-       SET cashier_name = ?, customer_name = ?, subtotal = ?, discount_type = ?, discount_value = ?,
+       SET cashier_name = ?, customer_name = ?, customer_id = ?, subtotal = ?, discount_type = ?, discount_value = ?,
            discount_amount = ?, tax_rate = ?, tax_type = ?, tax_amount = ?, total = ?, payment_method = ?,
            amount_tendered = ?, change_due = ?, status = 'COMPLETED'
        WHERE id = ?`,
       [
         target.cashierName,
-        (input.customerName || '').trim() || 'Walk-in Customer',
+        customerName,
+        customerId,
         subtotal,
         input.discountType,
         discountValue,

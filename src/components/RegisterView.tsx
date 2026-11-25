@@ -2057,7 +2057,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   const kotPrintArea = (
     <section
       id="kot-print-area"
-      className={`thermal-receipt-print-area kot-print-area bg-white text-slate-950 font-mono text-xs leading-relaxed ${
+      className={`thermal-receipt-print-area kot-print-area bg-white text-slate-950 font-sans text-xs leading-relaxed ${
         kotFormat === 'A4' ? 'paper-a4' : kotFormat === '58mm' ? 'paper-58mm' : ''
       }`}
       aria-label="Kitchen order ticket"
@@ -2080,28 +2080,47 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         margin: '0 auto',
       } as React.CSSProperties}
     >
-      <header className="mb-3 border-b border-dashed border-slate-300 pb-3 text-center">
-        <h1 className="text-sm font-bold uppercase tracking-wide text-slate-950">{settings.storeName}</h1>
+      <header className="mb-3 border-b-2 border-slate-900 pb-3 text-center">
+        <div className="mb-1 text-[8px] font-bold uppercase tracking-wider text-slate-500">
+          {isRtl ? 'بيانات المتجر' : 'Store Details'}
+        </div>
+        {settings.storeLogoDataUrl && (
+          <img
+            src={settings.storeLogoDataUrl}
+            alt="Store logo"
+            className="mx-auto mb-1 h-10 w-10 object-contain"
+          />
+        )}
+        <h1 className="text-sm font-black uppercase tracking-wide text-slate-950">{settings.storeName}</h1>
         {settings.storeNameAr && (
           <p className="mt-0.5 text-xs font-bold text-slate-900" dir="rtl">{settings.storeNameAr}</p>
         )}
-        <p className="mt-1 text-[10px] font-bold uppercase tracking-widest text-slate-600">
+        {(settings.address || settings.phone) && (
+          <p className="mt-1 break-words text-[9px] leading-snug text-slate-600">
+            {[settings.address, settings.phone].filter(Boolean).join(' · ')}
+          </p>
+        )}
+        <p className="mt-2 text-sm font-extrabold uppercase tracking-wide text-slate-900">
           {isRtl ? 'طلب المطبخ' : 'Kitchen Order'}
         </p>
+        <p className="mt-0.5 text-[10px] font-semibold text-slate-700">
+          {activeTab.invoiceNumber ? getKotNumberFromInvoice(activeTab.invoiceNumber) : ''}
+        </p>
       </header>
-      <div className="mb-2.5 space-y-0.5 border-b border-dashed border-slate-300 pb-2.5 text-[11px]">
-        <div className="flex justify-between gap-2">
-          <span className="text-slate-600">{isRtl ? 'رقم الطلب:' : 'KOT No:'}</span>
-          <span className="font-semibold">{activeTab.invoiceNumber ? getKotNumberFromInvoice(activeTab.invoiceNumber) : ''}</span>
+      <div className="mb-2.5 space-y-1 border-b border-dashed border-slate-300 pb-2.5 text-[10px]">
+        <div className="mb-1 border-b border-dashed border-slate-300 pb-1 text-[8px] font-bold uppercase tracking-wider text-slate-500">
+          {isRtl ? 'تفاصيل الطلب' : 'Order Details'}
         </div>
-        <div className="flex justify-between gap-2">
-          <span className="text-slate-600">{isRtl ? 'التاريخ:' : 'Date:'}</span>
-          <span>{new Date().toLocaleString()}</span>
-        </div>
-        <div className="flex justify-between gap-2">
-          <span className="text-slate-600">{isRtl ? 'العميل:' : 'Customer:'}</span>
-          <span className="text-right font-semibold">{customerName || defaultCustomerName}</span>
-        </div>
+        {[
+          [isRtl ? 'رقم الطلب:' : 'KOT No:', activeTab.invoiceNumber ? getKotNumberFromInvoice(activeTab.invoiceNumber) : ''],
+          [isRtl ? 'التاريخ:' : 'Date:', new Date().toLocaleString()],
+          [isRtl ? 'العميل:' : 'Customer:', customerName || defaultCustomerName],
+        ].map(([label, value]) => (
+          <div key={label} className="flex justify-between gap-2 border-b border-dashed border-slate-200 pb-1 last:border-0 last:pb-0">
+            <span className="shrink-0 text-slate-600">{label}</span>
+            <span className="min-w-0 break-words text-right font-semibold">{value}</span>
+          </div>
+        ))}
       </div>
       <div className="divide-y divide-dashed divide-slate-300">
         {cart.map((item) => (
@@ -2313,32 +2332,44 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   <LayoutGrid className={`h-4 w-4 ${isBrowsingCategories ? 'text-white' : 'text-blue-600'}`} />
                   <span>{getGroupDisplayName('All')}</span>
                 </button>
-                <div className="relative min-w-0 flex-1">
-                  <Search className={`absolute top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 ${isRtl ? 'right-3' : 'left-3'}`} />
-                  <input
-                    type="text"
-                    value={catalogSearch}
-                    onChange={(event) => {
-                      setCatalogSearch(event.target.value);
-                      setIsBrowsingCategories(false);
-                    }}
-                    placeholder={
-                      catalogCategory === 'All'
-                        ? (isRtl ? 'بحث في جميع المنتجات...' : 'Search all products...')
-                        : isRtl
-                          ? `بحث في ${getGroupDisplayName(catalogCategory)}...`
-                          : `Search ${getGroupDisplayName(catalogCategory)}...`
-                    }
-                    className={`w-full rounded-lg border border-slate-300 bg-slate-50 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 ${isRtl ? 'pr-9 pl-9' : 'pl-9 pr-9'}`}
-                  />
-                  {catalogSearch && (
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <div className="relative min-w-0 flex-1">
+                    <Search className={`absolute top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 ${isRtl ? 'right-3' : 'left-3'}`} />
+                    <input
+                      type="text"
+                      value={catalogSearch}
+                      onChange={(event) => {
+                        setCatalogSearch(event.target.value);
+                        setIsBrowsingCategories(false);
+                      }}
+                      placeholder={
+                        catalogCategory === 'All'
+                          ? (isRtl ? 'بحث في جميع المنتجات...' : 'Search all products...')
+                          : isRtl
+                            ? `بحث في ${getGroupDisplayName(catalogCategory)}...`
+                            : `Search ${getGroupDisplayName(catalogCategory)}...`
+                      }
+                      className={`w-full rounded-lg border border-slate-300 bg-slate-50 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 ${isRtl ? 'pr-9 pl-9' : 'pl-9 pr-9'}`}
+                    />
+                    {catalogSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setCatalogSearch('')}
+                        className={`absolute top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700 ${isRtl ? 'left-2' : 'right-2'}`}
+                        aria-label={isRtl ? 'مسح البحث' : 'Clear search'}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  {onOpenSalesHistory && (
                     <button
                       type="button"
-                      onClick={() => setCatalogSearch('')}
-                      className={`absolute top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700 ${isRtl ? 'left-2' : 'right-2'}`}
-                      aria-label={isRtl ? 'مسح البحث' : 'Clear search'}
+                      onClick={onOpenSalesHistory}
+                      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:border-blue-500 hover:bg-blue-50 hover:text-blue-700"
                     >
-                      <X className="h-3.5 w-3.5" />
+                      <HistoryIcon className="h-4 w-4" />
+                      {isRtl ? 'سجل المبيعات' : 'Sales History'}
                     </button>
                   )}
                 </div>

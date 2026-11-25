@@ -10,13 +10,13 @@ import {
   getSalesTaxCategorySummaries,
 } from '../utils/salesTax';
 import {
-  applyThermalPageSize,
   buildStandaloneThermalPrintHtml,
   measureThermalPageSize,
   printWithThermalPageSize,
   resolveInvoiceMarginsMm,
-  waitPrintSettlingDelay,
 } from '../utils/thermalPrinting';
+import { getInvoiceDateTime } from '../utils/dateFilters';
+import type { ThermalPageSize } from '../utils/thermalPrinting';
 
 const A4_ITEMS_PER_PAGE = 13;
 
@@ -78,6 +78,8 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const [previewBeforePrint, setPreviewBeforePrint] = useState(false);
   const [showPrintPreview, setShowPrintPreview] = useState(false);
   const [isPrintingReceipt, setIsPrintingReceipt] = useState(false);
+  const [previewHtml, setPreviewHtml] = useState('');
+  const [previewPageSize, setPreviewPageSize] = useState<ThermalPageSize | null>(null);
   const thermalPrintAreaRef = useRef<HTMLDivElement>(null);
 
   // Generate the electronic invoice QR code payload.
@@ -87,7 +89,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
     const vat = settings.taxId || '300000000000003';
     const total = sale.total;
     const tax = printedTaxBreakdown.taxAmount;
-    const time = sale.createdAt;
+    const time = getInvoiceDateTime(sale.invoiceDate, sale.createdAt).toISOString();
 
     try {
       const tlvPayload = generateZatcaTlvBase64({
@@ -123,7 +125,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const primaryActionBtnRef = useRef<HTMLButtonElement>(null);
 
   const c = settings.currencySymbol || 'SAR';
-  const formattedDate = new Date(sale.createdAt).toLocaleString('en-US', {
+  const formattedDate = getInvoiceDateTime(sale.invoiceDate, sale.createdAt).toLocaleString('en-US', {
     year: 'numeric',
     month: 'short',
     day: '2-digit',
@@ -136,31 +138,15 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
     setIsPrintingReceipt(true);
     document.body.classList.add('receipt-printing');
     try {
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      const thermalWidthMm = activeFormat === '58mm' ? 58 : 80;
-      const printElement = activeFormat === 'A4'
-        ? document.querySelector<HTMLElement>('.thermal-receipt-print-area.paper-a4')
-        : thermalPrintAreaRef.current || document.querySelector<HTMLElement>('.thermal-receipt-print-area:not(.paper-a4)');
-      const paddingCss = `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`;
-      const pageSize = activeFormat === 'A4'
-        ? { width: 210_000, height: 297_000 }
-        : measureThermalPageSize(
-            printElement,
-            {
-              elementWidthMm: thermalWidthMm,
-              pageWidthMm: thermalWidthMm,
-              padding: paddingCss,
-              container: document.querySelector('.receipt-print-source'),
-            }
-          );
+      const { pageSize, html } = showPrintPreview
+        && activeFormat !== 'A4'
+        && previewHtml
+        && previewPageSize
+        ? { pageSize: previewPageSize, html: previewHtml }
+        : await createReceiptPrintJob();
       if (window.electronAPI?.isElectron) {
         const printerMode = templateSettings?.printerMode
           || (templateSettings?.defaultPrinter ? 'saved-printer' : 'system-default');
-        const html = buildStandaloneThermalPrintHtml(printElement, {
-          widthMm: activeFormat === 'A4' ? 210 : thermalWidthMm,
-          pageSize,
-          padding: activeFormat === 'A4' ? undefined : paddingCss,
-        });
         const result = await window.electronAPI.printReceipt({
           silent: printerMode !== 'choose-at-print-time',
           printerName: printerMode === 'saved-printer' ? templateSettings?.defaultPrinter || undefined : undefined,
@@ -190,8 +176,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
 
   const handlePrintAndClose = async () => {
     if (previewBeforePrint && !showPrintPreview) {
-      setPrintError(null);
-      setShowPrintPreview(true);
+      await openPrintPreview();
       return;
     }
     const success = await handlePrint();
@@ -246,6 +231,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const showCashier = (templateSettings?.invoiceShowCashierName ?? settings.invoiceShowCashierName) !== false;
   const showTax = (templateSettings?.invoiceShowTaxDetails ?? settings.invoiceShowTaxDetails) !== false;
   const showAddress = (templateSettings?.invoiceShowStoreAddress ?? settings.invoiceShowStoreAddress) !== false;
+  const showStoreLogo = (templateSettings?.invoiceShowStoreLogo ?? settings.invoiceShowStoreLogo) !== false;
   const showFooter = (templateSettings?.invoiceShowFooter ?? settings.invoiceShowFooter) !== false;
   const showQr = (templateSettings?.invoiceShowQrCode ?? settings.invoiceShowQrCode) !== false;
   const invoiceMarginsMm = resolveInvoiceMarginsMm(activeFormat, templateSettings?.invoiceMarginsMm);
@@ -284,6 +270,50 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
       minute: '2-digit',
     });
 
+  const createReceiptPrintJob = async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const isA4 = activeFormat === 'A4';
+    const thermalWidthMm = activeFormat === '58mm' ? 58 : 80;
+    const printElement = isA4
+      ? document.querySelector<HTMLElement>('.thermal-receipt-print-area.paper-a4')
+      : thermalPrintAreaRef.current
+        || document.querySelector<HTMLElement>('.thermal-receipt-print-area:not(.paper-a4)');
+    const paddingCss = `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`;
+    const pageSize = isA4
+      ? { width: 210_000, height: 297_000 }
+      : measureThermalPageSize(printElement, {
+          elementWidthMm: thermalWidthMm,
+          pageWidthMm: thermalWidthMm,
+          padding: paddingCss,
+          container: document.querySelector('.receipt-print-source'),
+        });
+
+    return {
+      pageSize,
+      html: buildStandaloneThermalPrintHtml(printElement, {
+        widthMm: isA4 ? 210 : thermalWidthMm,
+        pageSize,
+        padding: isA4 ? undefined : paddingCss,
+      }),
+    };
+  };
+
+  const openPrintPreview = async () => {
+    setPrintError(null);
+    setIsPrintingReceipt(true);
+    try {
+      const { html, pageSize } = await createReceiptPrintJob();
+      setPreviewHtml(html);
+      setPreviewPageSize(pageSize);
+      setShowPrintPreview(true);
+    } catch (error) {
+      console.error('Failed to prepare receipt preview:', error);
+      setPrintError((error as Error).message || 'Receipt preview could not be opened.');
+    } finally {
+      setIsPrintingReceipt(false);
+    }
+  };
+
   return (
     <div
       className="invoice-print-modal fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5"
@@ -291,7 +321,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
       aria-modal="true"
       aria-labelledby="tender-modal-title"
     >
-      <div className={`invoice-print-dialog bg-white border border-slate-200 rounded-2xl w-full max-w-lg max-h-[92vh] overflow-hidden shadow-2xl flex flex-col${showPrintPreview ? ' receipt-preview-open' : ''}`}>
+      <div className={`invoice-print-dialog bg-white border border-slate-200 rounded-2xl w-full max-w-lg max-h-[92vh] overflow-hidden shadow-2xl flex flex-col${showPrintPreview && activeFormat === 'A4' ? ' receipt-preview-open' : ''}`}>
         <div className="no-print px-5 py-4 border-b border-slate-200 flex items-start justify-between gap-3 shrink-0 bg-white">
           <div className="flex items-center gap-2 min-w-0">
             <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
@@ -428,13 +458,13 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
 
         </div>
 
-        <div className={`receipt-print-source${showPrintPreview ? ' receipt-print-preview-active' : ''}`}>
+        <div className={`receipt-print-source${showPrintPreview && activeFormat === 'A4' ? ' receipt-print-preview-active' : ''}`}>
           {activeFormat === 'A4' ? (
             /* ======================================================== */
             /* A4 FORMAT TAX INVOICE                                    */
             /* ======================================================== */
             <div
-              className="thermal-receipt-print-area paper-a4"
+              className="thermal-receipt-print-area paper-a4 font-sans"
               style={{
                 '--invoice-margin-top': `${invoiceMarginsMm.top}mm`,
                 '--invoice-margin-right': `${invoiceMarginsMm.right}mm`,
@@ -444,46 +474,60 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
             >
               {a4ItemPages.map((pageItems, pageIndex) => (
                 <section className="a4-invoice-page" key={`invoice-page-${pageIndex + 1}`}>
-              {/* Header Box: Store Information & Invoice Title */}
-              <div className="border-b-2 border-slate-900 pb-3 flex flex-col sm:flex-row justify-between items-start gap-3">
-                <div className="space-y-0.5">
-                  <div className="text-lg font-black text-slate-950 uppercase tracking-tight">
-                    {settings.storeName}
-                  </div>
-                  {settings.storeNameAr && (
-                    <div className="text-sm font-bold text-slate-800 font-arabic" dir="rtl">
-                      {settings.storeNameAr}
+                  <header className="grid grid-cols-2 items-start gap-4 border-b-2 border-slate-900 pb-3">
+                    <div className="flex min-w-0 items-start gap-3">
+                      {showStoreLogo && settings.storeLogoDataUrl && (
+                        <img
+                          src={settings.storeLogoDataUrl}
+                          alt="Store logo"
+                          className="h-14 w-14 shrink-0 object-contain"
+                        />
+                      )}
+                      <div className="min-w-0 space-y-0.5">
+                        <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                          Store Details / بيانات المتجر
+                        </div>
+                        <div className="text-lg font-black tracking-tight text-slate-950">
+                          {settings.storeName}
+                        </div>
+                        {settings.storeNameAr && (
+                          <div className="text-sm font-bold text-slate-800 font-arabic" dir="rtl">
+                            {settings.storeNameAr}
+                          </div>
+                        )}
+                        {showAddress && (
+                          <div className="max-w-sm pt-0.5 text-[10px] leading-snug text-slate-600">
+                            {settings.address}
+                            {settings.phone && <span> · Tel: {settings.phone}</span>}
+                          </div>
+                        )}
+                        <div className="flex flex-wrap gap-x-3 gap-y-0.5 pt-0.5 text-[10px] text-slate-700">
+                          {settings.taxId && <span><strong>VAT ID / الرقم الضريبي:</strong> {settings.taxId}</span>}
+                          {settings.crNumber && <span><strong>CR / السجل:</strong> {settings.crNumber}</span>}
+                        </div>
+                      </div>
                     </div>
-                  )}
-                  {showAddress && (
-                    <div className="text-[10px] text-slate-600 max-w-sm pt-0.5 leading-snug">
-                      {settings.address}
-                      {settings.phone && <span> · Tel: {settings.phone}</span>}
-                    </div>
-                  )}
-                  <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] font-mono text-slate-700 pt-0.5">
-                    {settings.taxId && <span><strong>VAT ID / الرقم الضريبي:</strong> {settings.taxId}</span>}
-                    {settings.crNumber && <span><strong>CR / السجل:</strong> {settings.crNumber}</span>}
-                  </div>
-                </div>
 
-                <div className="sm:text-right space-y-0.5 shrink-0">
-                  <div className="inline-block px-2.5 py-0.5 bg-slate-900 text-white text-[11px] font-bold uppercase tracking-wider rounded">
-                    Tax Invoice / فاتورة ضريبية
-                  </div>
-                  <div className="font-mono text-xs font-bold text-slate-900 pt-0.5">
-                    #{sale.receiptNumber}
-                  </div>
-                  <div className="text-[10px] text-slate-500 font-mono">
-                    Date / التاريخ: {formattedDate}
-                  </div>
-                  {showCashier && (
-                    <div className="text-[10px] text-slate-500">
-                      Cashier / الكاشير: <span className="font-medium text-slate-800">{sale.cashierName}</span>
+                    <div className="space-y-0.5 text-right">
+                      <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                        Invoice Details / بيانات الفاتورة
+                      </div>
+                      <div className="inline-block rounded bg-slate-900 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wider text-white">
+                        Tax Invoice / فاتورة ضريبية
+                      </div>
+                      <div className="pt-0.5 text-xs font-bold text-slate-900">
+                        #{sale.receiptNumber}
+                      </div>
+                      <div className="text-[10px] text-slate-500">
+                        Date / التاريخ: {formattedDate}
+                      </div>
+                      {showCashier && (
+                        <div className="text-[10px] text-slate-500">
+                          Cashier / الكاشير: <span className="font-medium text-slate-800">{sale.cashierName}</span>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              </div>
+                  </header>
 
               {/* Customer & Transaction Ledger Section */}
               {showCustomer && (
@@ -731,7 +775,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
             /* ======================================================== */
             <div
               ref={thermalPrintAreaRef}
-              className={`thermal-receipt-print-area bg-white text-slate-950 font-mono border border-slate-200 shadow-sm ${
+              className={`thermal-receipt-print-area thermal-receipt bg-white text-slate-950 font-sans border border-slate-200 shadow-sm ${
                 activeFormat === '58mm'
                   ? 'w-[220px] max-w-[220px] paper-58mm p-2 text-[10px] leading-snug'
                   : 'w-[310px] max-w-[310px] p-3.5 text-xs leading-relaxed'
@@ -744,8 +788,18 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               } as React.CSSProperties}
             >
               {/* Thermal Header */}
-              <div className="text-center border-b border-dashed border-slate-300 pb-2.5 mb-2.5">
-                <div className={`${activeFormat === '58mm' ? 'text-xs' : 'text-sm'} font-bold uppercase tracking-wide text-slate-950 break-words`}>
+              <div className="thermal-receipt-header text-center border-b-2 border-double border-slate-800 pb-2.5 mb-2.5">
+                <div className="mb-1 text-[8px] font-bold uppercase tracking-wider text-slate-500">
+                  Store Details / بيانات المتجر
+                </div>
+                {showStoreLogo && settings.storeLogoDataUrl && (
+                  <img
+                    src={settings.storeLogoDataUrl}
+                    alt="Store logo"
+                    className={`${activeFormat === '58mm' ? 'h-10 w-10' : 'h-12 w-12'} mx-auto mb-1 object-contain`}
+                  />
+                )}
+                <div className={`${activeFormat === '58mm' ? 'text-sm' : 'text-base'} font-black tracking-wide text-slate-950 break-words`}>
                   {settings.storeName}
                 </div>
                 {settings.storeNameAr && (
@@ -753,7 +807,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                     {settings.storeNameAr}
                   </div>
                 )}
-                <div className="text-[9px] font-bold text-slate-600 uppercase tracking-widest mt-1">
+                <div className="inline-block border-y border-slate-700 px-2 py-0.5 text-[8px] font-bold text-slate-800 uppercase tracking-wider mt-1">
                   Simplified Tax Invoice / فاتورة ضريبية مبسطة
                 </div>
                 {settings.crNumber && (
@@ -777,10 +831,13 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               </div>
 
               {/* Receipt Metadata */}
-              <div className="space-y-0.5 text-[10px] sm:text-[11px] border-b border-dashed border-slate-300 pb-2 mb-2">
+              <div className="thermal-receipt-meta space-y-0.5 text-[10px] sm:text-[11px] border border-slate-300 rounded px-2 py-1.5 mb-2">
+                <div className="mb-1 border-b border-dashed border-slate-300 pb-1 text-[8px] font-bold uppercase tracking-wider text-slate-500">
+                  Invoice Details / بيانات الفاتورة
+                </div>
                 <div className="flex justify-between gap-1">
-                  <span className="text-slate-600 shrink-0">Receipt:</span>
-                  <span className="font-semibold break-all text-right">{sale.receiptNumber}</span>
+                  <span className="text-slate-600 shrink-0 font-semibold">Receipt #</span>
+                  <span className="font-bold font-mono break-all text-right">{sale.receiptNumber}</span>
                 </div>
                 <div className="flex justify-between gap-1">
                   <span className="text-slate-600 shrink-0">Date:</span>
@@ -807,7 +864,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               )}
 
               {/* Line Items */}
-              <div className="border-b border-dashed border-slate-300 pb-2 mb-2">
+              <div className="thermal-receipt-items border-b border-dashed border-slate-400 pb-2 mb-2">
                 {activeFormat === '58mm' ? (
                   /* --- 58mm COMPACT 2-LINE FORMAT (Zero horizontal overflow) --- */
                   <div className="divide-y divide-dashed divide-slate-200">
@@ -847,20 +904,16 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                     ))}
                   </div>
                 ) : (
-                  /* --- 80mm TABULAR FORMAT --- */
+                  /* --- 80mm ITEMIZED FORMAT --- */
                   <div>
-                    <div className={`grid ${showTax ? 'grid-cols-[0.45fr_0.55fr_1.15fr_0.45fr_1.1fr_1.1fr]' : 'grid-cols-[0.5fr_0.6fr_1.3fr_1.3fr_1.3fr]'} gap-0.5 border-b border-slate-300 pb-1 text-[8px] font-bold text-slate-600`}>
-                      <span className="text-center">Qty</span>
-                      <span className="text-center">Unit</span>
-                      <span className="text-right">Unit Price<br />Excl. Tax</span>
-                      {showTax && <span className="text-right">Tax %</span>}
-                      <span className="text-right">Subtotal<br />Excl. Tax</span>
-                      <span className="text-right">Item Total<br />Incl. Tax</span>
+                    <div className="flex justify-between border-b border-slate-300 pb-1 text-[8px] font-bold text-slate-600 uppercase tracking-wider">
+                      <span>Item</span>
+                      <span>Total</span>
                     </div>
                     {sale.items.map((item, index) => (
                       <div key={item.id} className="border-b border-dashed border-slate-200 py-1.5 last:border-0">
                         {showNameEn && (
-                          <div className="font-medium text-slate-900 break-words">{item.productName}</div>
+                          <div className="font-semibold text-slate-950 break-words">{item.productName}</div>
                         )}
                         {item.description && (
                           <div className="mt-0.5 whitespace-pre-wrap break-words text-[10px] text-slate-600">
@@ -877,14 +930,19 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                             SKU: {item.sku}
                           </div>
                         )}
-                        <div className={`grid ${showTax ? 'grid-cols-[0.45fr_0.55fr_1.15fr_0.45fr_1.1fr_1.1fr]' : 'grid-cols-[0.5fr_0.6fr_1.3fr_1.3fr_1.3fr]'} gap-0.5 text-[8px] text-slate-700`}>
-                          <span className="text-center">{item.quantity}</span>
-                          <span className="text-center break-words">{item.unitName || '—'}</span>
-                          <span className="text-right break-all">{c}{unitPricesWithoutTax[index].toFixed(2)}</span>
-                          {showTax && <span className="text-right">{item.taxRate ?? sale.taxRate}%</span>}
-                          <span className="text-right break-all">{c}{invoiceLineBreakdown.lines[index].subtotal.toFixed(2)}</span>
-                          <span className="text-right font-semibold break-all">{c}{invoiceLineBreakdown.lines[index].total.toFixed(2)}</span>
+                        <div className="flex justify-between items-baseline gap-2 text-[9px] text-slate-700">
+                          <span className="font-mono">
+                            {item.quantity} × {c}{unitPricesWithoutTax[index].toFixed(2)}{item.unitName ? ` / ${item.unitName}` : ''}
+                          </span>
+                          <span className="shrink-0 font-bold font-mono text-slate-950">
+                            {c}{invoiceLineBreakdown.lines[index].total.toFixed(2)}
+                          </span>
                         </div>
+                        {showTax && (
+                          <div className="text-[8px] text-slate-500 text-right">
+                            {item.taxRate ?? sale.taxRate}% VAT · Excl. {c}{invoiceLineBreakdown.lines[index].subtotal.toFixed(2)}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -929,7 +987,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                     )}
                   </React.Fragment>
                 ))}
-                <div className={`flex justify-between gap-1 ${activeFormat === '58mm' ? 'text-xs' : 'text-sm'} font-bold text-slate-950 pt-1 border-t border-slate-200`}>
+                <div className={`thermal-receipt-total flex justify-between gap-1 ${activeFormat === '58mm' ? 'text-xs' : 'text-sm'} font-black text-slate-950 px-2 py-1.5 border-y-2 border-double border-slate-800 mt-1`}>
                   <span>TOTAL / الإجمالي</span>
                   <span className="font-mono tabular-nums">
                     {c} {sale.total.toFixed(settings.decimalPoints ?? 2)}
@@ -1075,6 +1133,22 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
           </div>
         </div>
       </div>
+      {showPrintPreview && activeFormat !== 'A4' && previewHtml && previewPageSize && (
+      <div className="receipt-standalone-preview no-print fixed inset-0 z-[60] flex items-start justify-center overflow-auto bg-slate-950/80 px-3 pt-5 pb-24">
+        <iframe
+          title={language === 'ar' ? 'معاينة نسخة الطباعة' : 'Exact receipt print preview'}
+          srcDoc={previewHtml}
+          sandbox=""
+          className="max-w-full shrink-0 bg-white shadow-2xl"
+          style={{
+            width: `${activeFormat === '58mm' ? 58 : 80}mm`,
+            height: `${previewPageSize.height / 1000}mm`,
+            maxHeight: 'calc(100vh - 120px)',
+            border: 0,
+          }}
+        />
+      </div>
+      )}
       {showPrintPreview && (
         <div className="receipt-preview-controls no-print fixed bottom-4 left-1/2 z-[70] flex w-[min(94vw,480px)] -translate-x-1/2 items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-xl">
           <div className="min-w-0">

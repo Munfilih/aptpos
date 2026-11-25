@@ -48,8 +48,32 @@ export function matchesDateBounds(
   bounds: DateBounds
 ): boolean {
   if (!bounds.start && !bounds.end) return true;
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return false;
-  const dateKey = toLocalDateKey(date);
+  const dateKey = /^\d{4}-\d{2}-\d{2}$/.test(dateString)
+    ? dateString
+    : toLocalDateKey(new Date(dateString));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return false;
   return (!bounds.start || dateKey >= bounds.start) && (!bounds.end || dateKey <= bounds.end);
+}
+
+export function getInvoiceDateTime(invoiceDate: string | undefined, createdAt: string): Date {
+  const date = new Date(createdAt);
+  if (!invoiceDate || !/^\d{4}-\d{2}-\d{2}$/.test(invoiceDate)) return date;
+  const [year, month, day] = invoiceDate.split('-').map(Number);
+  const invoiceDateTime = new Date(
+    year,
+    month - 1,
+    day,
+    date.getHours(),
+    date.getMinutes(),
+    date.getSeconds(),
+    date.getMilliseconds()
+  );
+  if (
+    invoiceDateTime.getFullYear() !== year ||
+    invoiceDateTime.getMonth() !== month - 1 ||
+    invoiceDateTime.getDate() !== day
+  ) {
+    return date;
+  }
+  return invoiceDateTime;
 }

@@ -1,4 +1,5 @@
 import type { UpdateStatus } from '../../electron/updateStatus';
+import type { AppScreenMode } from './pos';
 
 declare global {
   interface Window {
@@ -41,6 +42,7 @@ declare global {
       disconnectGoogleDrive: () => Promise<{ clientId: string; connected: boolean }>;
       resolveCloseRequest: (shouldClose: boolean) => Promise<boolean>;
       onCloseRequested: (listener: () => void) => () => void;
+      onLaunchModeRequested: (listener: (mode: AppScreenMode) => void) => () => void;
       onUpdateStatus: (listener: (status: UpdateStatus) => void) => () => void;
     };
   }

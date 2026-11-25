@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { AlertCircle, Lock, User, ShoppingBag, Sparkles, Globe, ArrowRight, ReceiptText, BarChart3, PackageCheck, BadgeCheck } from 'lucide-react';
-import type { DemoAccessStatus, UserSession } from '../types/pos';
+import type { AppScreenMode, DemoAccessStatus, UserSession } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
 import { parseDemoActivationResult } from '../utils/demoActivation';
+import { getAppProductName } from '../utils/appScreenMode';
 
 function getDemoCredentialError(username: string, password: string, isRtl: boolean): string | null {
   if (!username || !/^[A-Za-z0-9._-]+$/.test(username) || username.toLowerCase() === 'aptadmin') {
@@ -19,17 +20,21 @@ function getDemoCredentialError(username: string, password: string, isRtl: boole
 }
 
 interface LoginFormProps {
+  appScreenMode: AppScreenMode;
   onLoginSuccess: (user: UserSession) => void;
   onDemoRegistrationRequested: (user: UserSession, status: DemoAccessStatus) => void;
   initialError?: string | null;
 }
 
 export const LoginForm: React.FC<LoginFormProps> = ({
+  appScreenMode,
   onLoginSuccess,
   onDemoRegistrationRequested,
   initialError = null,
 }) => {
   const { t, language, toggleLanguage, isRtl } = useLanguage();
+  const appName = getAppProductName(appScreenMode);
+  const appNameSuffix = appName.slice(3);
   const usernameRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
   const [username, setUsername] = useState('');
@@ -481,7 +486,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({
 
             {/* POS Name */}
             <h1 className="font-display text-4xl sm:text-5xl font-black tracking-tight text-white mb-2">
-              apt<span className="text-blue-400">POS</span>
+              apt<span className={appScreenMode === 'erp' ? 'text-violet-300' : 'text-blue-400'}>{appNameSuffix}</span>
             </h1>
             <p className="text-sm sm:text-base font-medium text-slate-400 max-w-xs">
               {isRtl ? 'نظام نقاط البيع وإدارة المخزون والتجزئة' : 'Retail Point-of-Sale & Inventory Management'}
@@ -517,7 +522,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({
           >
             <h2 id="startup-mode-title" className="text-xl font-bold text-white">
               {startupMode === 'choice'
-                ? (isRtl ? 'اختر طريقة الاستخدام' : 'Choose how to use aptPOS')
+                ? (isRtl ? 'اختر طريقة الاستخدام' : `Choose how to use ${appName}`)
                 : startupMode === 'demo'
                   ? (isRtl ? 'تفعيل النسخة التجريبية' : 'Activate Demo')
                   : (isRtl ? 'تسجيل النظام' : 'Register System')}
@@ -774,7 +779,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({
             : 'opacity-100 translate-y-0 scale-100'
         }`}
       >
-        <aside className="login-brand-panel" aria-label="aptPOS">
+        <aside className="login-brand-panel" aria-label={appName}>
           <div className="login-brand-glow" />
           <div className="relative z-10">
             <button
@@ -784,7 +789,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({
                 setStartupMessage(null);
                 setStartupMode('choice');
               }}
-              aria-label={language === 'ar' ? 'تسجيل الدخول إلى aptPOS' : 'Sign in to aptPOS'}
+              aria-label={language === 'ar' ? `تسجيل الدخول إلى ${appName}` : `Sign in to ${appName}`}
               className="login-brand-mark cursor-pointer transition-transform hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300"
             >
               <ShoppingBag className="h-7 w-7 text-violet-100" />
@@ -793,7 +798,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({
               {isRtl ? 'منصة البيع الذكية' : 'SMART RETAIL PLATFORM'}
             </p>
             <h1 className="font-display text-4xl font-extrabold tracking-tight text-white">
-              apt<span className="text-violet-300">POS</span>
+              apt<span className={appScreenMode === 'erp' ? 'text-violet-300' : 'text-blue-400'}>{appNameSuffix}</span>
             </h1>
             <p className="mt-3 max-w-xs text-sm leading-6 text-slate-300">
               {t.loginSubtitle}
@@ -825,13 +830,13 @@ export const LoginForm: React.FC<LoginFormProps> = ({
                 setStartupMessage(null);
                 setStartupMode('choice');
               }}
-              aria-label={language === 'ar' ? 'تسجيل الدخول إلى aptPOS' : 'Sign in to aptPOS'}
+              aria-label={language === 'ar' ? `تسجيل الدخول إلى ${appName}` : `Sign in to ${appName}`}
               className="login-logo-badge flex h-12 w-12 cursor-pointer items-center justify-center rounded-xl transition-transform hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300"
             >
               <ShoppingBag className="h-6 w-6 text-violet-100" />
             </button>
             <span className="font-display text-xl font-extrabold text-white">
-              apt<span className="text-violet-300">POS</span>
+              apt<span className={appScreenMode === 'erp' ? 'text-violet-300' : 'text-blue-400'}>{appNameSuffix}</span>
             </span>
           </div>
 

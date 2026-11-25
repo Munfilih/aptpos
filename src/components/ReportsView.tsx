@@ -20,7 +20,13 @@ import type {
   StoreSettings,
 } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
-import { matchesDateBounds, resolveDateBounds, toLocalDateKey, type DateFilter } from '../utils/dateFilters';
+import {
+  getInvoiceDateTime,
+  matchesDateBounds,
+  resolveDateBounds,
+  toLocalDateKey,
+  type DateFilter,
+} from '../utils/dateFilters';
 import { getPaymentMethods } from '../utils/paymentMethods';
 
 type ReportTab = 'DAILY_SUMMARY' | 'DETAILED_SALES' | 'DATEWISE_SUMMARY' | 'TAX' | 'SALES_TAX' | 'CASHBOOK';
@@ -131,7 +137,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       sales.filter(
         (sale) =>
           sale.status === 'COMPLETED' &&
-          matchesDateBounds(sale.createdAt, dateBounds)
+          matchesDateBounds(sale.invoiceDate || sale.createdAt, dateBounds)
       ),
     [sales, dateBounds]
   );
@@ -183,7 +189,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       [
         ...sales
           .filter((sale) => sale.status === 'COMPLETED' && sale.paymentMethod === 'Cash')
-          .map((sale) => dateKeyFor(sale.createdAt)),
+          .map((sale) => dateKeyFor(sale.invoiceDate || sale.createdAt)),
         ...returnVouchers
           .filter((voucher) => voucher.paymentMethod === 'Cash')
           .map((voucher) => dateKeyFor(voucher.createdAt)),
@@ -203,7 +209,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     for (const sale of completedSales) {
       if (sale.paymentMethod === 'Cash') {
         movements.push({
-          date: dateKeyFor(sale.createdAt),
+          date: dateKeyFor(sale.invoiceDate || sale.createdAt),
           direction: 'IN',
           source: 'Cash sale',
           description: `Cash sale ${sale.receiptNumber}`,
@@ -270,7 +276,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
 
   const dailyCashRows = useMemo<DailyCashSummary[]>(() => {
     const eventKeys = [
-      ...completedSales.map((sale) => dateKeyFor(sale.createdAt)),
+      ...completedSales.map((sale) => dateKeyFor(sale.invoiceDate || sale.createdAt)),
       ...filteredReturns.map((voucher) => dateKeyFor(voucher.createdAt)),
       ...filteredCashbookEntries.map((entry) => entry.entryDate),
     ].filter(Boolean);
@@ -295,7 +301,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         Boolean(date) && date < start && (!notBeforeDate || date >= notBeforeDate);
       const priorCashSales = sales
         .filter((sale) => {
-          const date = dateKeyFor(sale.createdAt);
+          const date = dateKeyFor(sale.invoiceDate || sale.createdAt);
           return sale.status === 'COMPLETED' && sale.paymentMethod === 'Cash' && inPriorPeriod(date);
         })
         .reduce((sum, sale) => sum + sale.total, 0);
@@ -460,7 +466,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   const taxRows = useMemo(() => {
     const days = new Map<string, { collected: number; refunded: number }>();
     for (const sale of completedSales) {
-      const day = toLocalDateKey(new Date(sale.createdAt));
+      const day = dateKeyFor(sale.invoiceDate || sale.createdAt);
       const row = days.get(day) || { collected: 0, refunded: 0 };
       row.collected += sale.taxAmount;
       days.set(day, row);
@@ -523,7 +529,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     };
 
     for (const sale of completedSales) {
-      const day = getDay(dateKeyFor(sale.createdAt));
+      const day = getDay(dateKeyFor(sale.invoiceDate || sale.createdAt));
       day.sales += sale.total;
       day.transactions += 1;
       day.taxCollected += sale.taxAmount;
@@ -649,7 +655,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         XLSX.utils.json_to_sheet(
           filteredDetailedSales.map((sale) => ({
             Invoice: sale.receiptNumber,
-            Date: sale.createdAt,
+            Date: sale.invoiceDate || sale.createdAt,
             Customer: sale.customerName,
             'Payment method': sale.paymentMethod,
             Cashier: sale.cashierName,
@@ -1283,7 +1289,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                   : ['Invoice', 'Date / time', 'Customer', 'Payment type', 'Cashier', 'Subtotal', 'Discount', 'VAT', 'Total', 'Amount tendered', 'Change due', 'Returns']}
                 rows={filteredDetailedSales.map((sale) => [
                   sale.receiptNumber,
-                  new Date(sale.createdAt).toLocaleString(isRtl ? 'ar-SA' : 'en-GB'),
+                  getInvoiceDateTime(sale.invoiceDate, sale.createdAt).toLocaleString(isRtl ? 'ar-SA' : 'en-GB'),
                   sale.customerName,
                   sale.paymentMethod,
                   sale.cashierName,
