@@ -44,6 +44,7 @@ import {
   measureThermalPageSize,
   printWithThermalPageSize,
   resolveInvoiceMarginsMm,
+  waitPrintSettlingDelay,
 } from '../utils/thermalPrinting';
 
 export interface InvoiceTab {
@@ -744,6 +745,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             throw new Error(result.error || 'Kitchen order ticket could not be printed.');
           }
           setFeedback({ type: 'info', text: `KOT ${kotNumber} sent.` });
+          await waitPrintSettlingDelay(600);
         } finally {
           removePageStyle();
         }

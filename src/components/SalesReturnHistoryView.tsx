@@ -9,6 +9,7 @@ import {
   measureThermalPageSize,
   printWithThermalPageSize,
   resolveInvoiceMarginsMm,
+  waitPrintSettlingDelay,
 } from '../utils/thermalPrinting';
 
 interface SalesReturnHistoryViewProps {
@@ -65,47 +66,51 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
     setPrintError(null);
     setPrintingVoucher(voucher);
     setIsPrinting(true);
+    document.body.classList.add('receipt-printing');
 
     try {
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       const thermalWidthMm = activeFormat === '58mm' ? 58 : 80;
       const pageSize = activeFormat === 'A4'
         ? { width: 210_000, height: 297_000 }
-        : undefined;
+        : measureThermalPageSize(printAreaRef.current, {
+            elementWidthMm: thermalWidthMm,
+            pageWidthMm: thermalWidthMm,
+            padding: `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`,
+            container: document.querySelector('.receipt-print-source'),
+          });
 
       if (window.electronAPI?.isElectron) {
         const printerMode = templateSettings?.printerMode
           || (templateSettings?.defaultPrinter ? 'saved-printer' : 'system-default');
-        const removePageStyle = activeFormat === 'A4'
-          ? applyThermalPageSize({ width: 210_000, height: 297_000 })
-          : applyThermalPageWidth(thermalWidthMm);
+        const removePageStyle = applyThermalPageSize(pageSize);
         try {
           const result = await window.electronAPI.printReceipt({
             silent: printerMode !== 'choose-at-print-time',
             printerName: printerMode === 'saved-printer'
               ? templateSettings?.defaultPrinter || undefined
               : undefined,
-            ...(pageSize ? { pageSize } : {}),
+            pageSize,
           });
           if (!result.ok) {
             throw new Error(result.error || 'Return voucher could not be printed.');
           }
+          await waitPrintSettlingDelay(600);
         } finally {
           removePageStyle();
         }
       } else {
-        const browserPageSize = pageSize || measureThermalPageSize(printAreaRef.current, {
-          elementWidthMm: thermalWidthMm,
-          pageWidthMm: thermalWidthMm,
-          padding: `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`,
-          container: document.querySelector('.receipt-print-source'),
-        });
-        printWithThermalPageSize(browserPageSize);
+        if (activeFormat !== 'A4') {
+          printWithThermalPageSize(pageSize);
+        } else {
+          window.print();
+        }
       }
     } catch (error) {
       console.error('Failed to print sales return voucher:', error);
       setPrintError(error instanceof Error ? error.message : 'Return voucher could not be printed.');
     } finally {
+      document.body.classList.remove('receipt-printing');
       setIsPrinting(false);
       setPrintingVoucher(null);
     }

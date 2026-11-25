@@ -16,6 +16,7 @@ import {
   measureThermalPageSize,
   printWithThermalPageSize,
   resolveInvoiceMarginsMm,
+  waitPrintSettlingDelay,
 } from '../utils/thermalPrinting';
 
 interface ShiftViewProps {
@@ -458,6 +459,7 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
               }
               throw new Error(result.error || 'Shift report could not be printed.');
             }
+            await waitPrintSettlingDelay(600);
           } finally {
             removePageStyle?.();
           }

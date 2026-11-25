@@ -1113,6 +1113,15 @@
     visibility: visible !important;
   }
 
+  body.receipt-printing * {
+    visibility: hidden !important;
+  }
+
+  body.receipt-printing .thermal-receipt-print-area,
+  body.receipt-printing .thermal-receipt-print-area * {
+    visibility: visible !important;
+  }
+
   body.shift-printing * {
     visibility: hidden !important;
   }
@@ -1154,6 +1163,13 @@
 
   .kot-print-source {
     display: block !important;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    z-index: 99999 !important;
   }
 
   body.kot-printing .kot-print-area,
@@ -1162,18 +1178,17 @@
   }
 
   body.kot-printing .kot-print-area {
-    position: fixed !important;
-    inset: 0 auto auto 0 !important;
+    position: static !important;
     width: var(--kot-paper-width, 80mm) !important;
     max-width: var(--kot-paper-width, 80mm) !important;
     height: auto !important;
     min-height: 0 !important;
     margin: 0 !important;
     padding:
-      var(--kot-margin-top, 3mm)
-      var(--kot-margin-right, 3mm)
-      var(--kot-margin-bottom, 3mm)
-      var(--kot-margin-left, 3mm) !important;
+      var(--kot-margin-top, 0mm)
+      var(--kot-margin-right, 2mm)
+      var(--kot-margin-bottom, 2mm)
+      var(--kot-margin-left, 2mm) !important;
     box-sizing: border-box !important;
     transform: none !important;
     background: #ffffff !important;
@@ -1259,10 +1274,13 @@
 
   .receipt-print-source {
     display: block !important;
-    position: static !important;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
     width: 100% !important;
     margin: 0 !important;
     padding: 0 !important;
+    z-index: 99999 !important;
   }
 
   body.shift-printing .shift-report-modal {
@@ -1281,9 +1299,10 @@
 
   body.shift-printing .shift-print-source {
     display: block !important;
-    position: fixed !important;
-    inset: 0 auto auto 0 !important;
-    z-index: 9999 !important;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    z-index: 99999 !important;
     width: 100% !important;
     margin: 0 !important;
     padding: 0 !important;
@@ -1298,7 +1317,7 @@
     min-height: 0 !important;
     margin: 0 !important;
     padding:
-      var(--invoice-margin-top, 2mm)
+      var(--invoice-margin-top, 0mm)
       var(--invoice-margin-right, 2mm)
       var(--invoice-margin-bottom, 2mm)
       var(--invoice-margin-left, 2mm) !important;
@@ -1307,6 +1326,7 @@
     color: #000000 !important;
     box-shadow: none !important;
     border: none !important;
+    box-sizing: border-box !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
@@ -1314,6 +1334,11 @@
   body.shift-printing .shift-print-page.paper-58mm {
     width: 58mm !important;
     max-width: 58mm !important;
+    padding:
+      var(--invoice-margin-top, 0mm)
+      var(--invoice-margin-right, 1mm)
+      var(--invoice-margin-bottom, 2mm)
+      var(--invoice-margin-left, 1mm) !important;
   }
 
   body.shift-printing .shift-print-page.paper-a4 {
@@ -1371,8 +1396,9 @@
     min-height: 0 !important;
     max-height: none !important;
     margin: 0 !important;
+    box-sizing: border-box !important;
     padding:
-      var(--invoice-margin-top, 2mm)
+      var(--invoice-margin-top, 0mm)
       var(--invoice-margin-right, 2mm)
       var(--invoice-margin-bottom, 2mm)
       var(--invoice-margin-left, 2mm) !important;
@@ -1389,6 +1415,11 @@
   .thermal-receipt-print-area.paper-58mm {
     width: 58mm !important;
     max-width: 58mm !important;
+    padding:
+      var(--invoice-margin-top, 0mm)
+      var(--invoice-margin-right, 1mm)
+      var(--invoice-margin-bottom, 2mm)
+      var(--invoice-margin-left, 1mm) !important;
   }
 
   /* A4 pages flow separately so every item is paginated without clipping. */

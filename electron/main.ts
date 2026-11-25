@@ -928,12 +928,16 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
   }
   const printerName = typeof options.printerName === 'string' ? options.printerName : undefined;
 
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return { ok: false, error: 'Main window is not available.' };
+  }
+
   return new Promise((resolve) => {
     mainWindow!.webContents.print(
       {
         silent: options.silent === true,
         ...(printerName ? { deviceName: printerName } : {}),
-        ...(pageSize ? { pageSize } : {}),
+        ...(pageSize ? { pageSize } : { usePrinterDefaultPageSize: true }),
         scaleFactor: 100,
         printBackground: true,
         margins: { marginType: 'none' },

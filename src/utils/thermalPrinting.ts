@@ -6,8 +6,8 @@ export interface ThermalPageSize {
 }
 
 export const MINIMUM_INVOICE_MARGIN_MM: Record<PaperWidth, number> = {
-  '80mm': 3,
-  '58mm': 2,
+  '80mm': 2,
+  '58mm': 1,
   A4: 5,
 };
 
@@ -22,10 +22,10 @@ export function resolveInvoiceMarginsMm(
       : marginMinimum;
 
   return {
-    top: resolveMargin(configured?.top, format === '80mm' ? 0 : minimum),
-    right: resolveMargin(configured?.right),
-    bottom: resolveMargin(configured?.bottom),
-    left: resolveMargin(configured?.left),
+    top: resolveMargin(configured?.top, 0),
+    right: resolveMargin(configured?.right, minimum),
+    bottom: resolveMargin(configured?.bottom, minimum),
+    left: resolveMargin(configured?.left, minimum),
   };
 }
 
@@ -67,7 +67,9 @@ export function measureThermalPageSize(
 
     return {
       width: Math.round(options.pageWidthMm * 1000),
-      height: Math.ceil((heightPx * 25_400) / 96) + 1000,
+      // 4000 microns (4mm) safety margin prevents Chromium from splitting into a 2nd page
+      // due to DPI rounding, font metrics differences, or cutter distance
+      height: Math.ceil((heightPx * 25_400) / 96) + 4000,
     };
   } finally {
     if (originalElementStyle === null) element.removeAttribute('style');
@@ -84,6 +86,7 @@ export function applyThermalPageSize(pageSize: ThermalPageSize): () => void {
   const widthMm = pageSize.width / 1000;
   const heightMm = pageSize.height / 1000;
   const pageStyle = document.createElement('style');
+  pageStyle.id = 'thermal-page-style';
   pageStyle.textContent = `@page { size: ${widthMm}mm ${heightMm}mm; margin: 0; }`;
   document.head.appendChild(pageStyle);
 
@@ -92,10 +95,16 @@ export function applyThermalPageSize(pageSize: ThermalPageSize): () => void {
 
 export function applyThermalPageWidth(widthMm: 58 | 80): () => void {
   const pageStyle = document.createElement('style');
-  pageStyle.textContent = `@page { size: ${widthMm}mm auto; margin: 0; }`;
+  pageStyle.id = 'thermal-page-style';
+  // CSS @page size does not support "<length> auto". Default to continuous roll height.
+  pageStyle.textContent = `@page { size: ${widthMm}mm 297mm; margin: 0; }`;
   document.head.appendChild(pageStyle);
 
   return () => pageStyle.remove();
+}
+
+export function waitPrintSettlingDelay(ms = 600): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function printWithThermalPageSize(pageSize: ThermalPageSize): void {

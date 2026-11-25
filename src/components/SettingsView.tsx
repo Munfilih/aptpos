@@ -2188,8 +2188,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </label>
                   <p className="text-[11px] text-slate-500">
                     {isRtl
-                      ? 'الحد الأدنى للهوامش الجانبية والسفلية: ٣ مم للرول الحراري و٥ مم لورق A4. يمكن جعل الهامش العلوي لرول ٨٠ مم صفراً.'
-                      : `Minimum safe margins are ${MINIMUM_INVOICE_MARGIN_MM[selectedTemplate]} mm for this format. The top margin for 80mm paper can be 0 mm.`}
+                      ? 'الحد الأدنى للهوامش الجانبية والسفلية: ١-٢ مم للرول الحراري و٥ مم لورق A4. يمكن جعل الهامش العلوي لرول ٨٠ مم و٥٨ مم صفراً.'
+                      : `Minimum safe margins are ${MINIMUM_INVOICE_MARGIN_MM[selectedTemplate]} mm for this format. The top margin for 80mm and 58mm thermal rolls can be 0 mm.`}
                   </p>
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                     {([
@@ -2199,7 +2199,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       { key: 'left', label: 'Left' },
                     ] as const).map(({ key, label }) => {
                       const minimumMargin =
-                        key === 'top' && selectedTemplate === '80mm'
+                        key === 'top' && selectedTemplate !== 'A4'
                           ? 0
                           : MINIMUM_INVOICE_MARGIN_MM[selectedTemplate];
                       return (
