@@ -1010,7 +1010,7 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
       const pdfBuffer = await printWindow.webContents.printToPDF({
         printBackground: true,
         pageSize: { width: widthIn, height: heightIn },
-        margins: { marginType: 'none' },
+        margins: { top: 0, bottom: 0, left: 0, right: 0 },
         preferCSSPageSize: false,
       });
 
@@ -1065,7 +1065,7 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
             ...(!useDefaultSize && pageSize ? { pageSize } : { usePrinterDefaultPageSize: true }),
             scaleFactor: 100,
             printBackground: true,
-            margins: { marginType: 'none' },
+            margins: { top: 0, bottom: 0, left: 0, right: 0 },
           },
           (success, failureReason) => resolve({ ok: success, error: failureReason })
         );
@@ -1150,7 +1150,7 @@ ipcMain.handle('pos:share-receipt-whatsapp', async (event, rawOptions: unknown) 
 
   const pdf = await mainWindow!.webContents.printToPDF({
     printBackground: true,
-    margins: { marginType: 'none' },
+    margins: { top: 0, bottom: 0, left: 0, right: 0 },
     preferCSSPageSize: true,
   });
   await writeFile(filePath, pdf);
