@@ -88,6 +88,7 @@ import type {
 
 const translationCache = new Map<string, string>();
 const inFlightTranslations = new Map<string, Promise<string>>();
+const DEFAULT_DEMO_PORTAL_API_URL = 'https://aptpos-admin-api.onrender.com';
 
 class TranslationProviderError extends Error {
   constructor(message: string, readonly status?: number) {
@@ -206,7 +207,7 @@ async function postToDemoPortal(
   body: Record<string, unknown>,
   timeoutMs = 60000
 ): Promise<Record<string, unknown>> {
-  const configuredUrl = process.env.DEMO_PORTAL_API_URL || 'http://127.0.0.1:3002';
+  const configuredUrl = process.env.DEMO_PORTAL_API_URL || DEFAULT_DEMO_PORTAL_API_URL;
   let endpoint: URL;
   try {
     endpoint = new URL(pathname, configuredUrl.endsWith('/') ? configuredUrl : `${configuredUrl}/`);
@@ -257,7 +258,7 @@ async function postToDemoPortal(
 }
 
 async function requestVersionControlPortal(): Promise<{ versionComponentPolicies: VersionComponentPolicies; updatedAt: string | null }> {
-  const configuredUrl = process.env.DEMO_PORTAL_API_URL || 'http://127.0.0.1:3002';
+  const configuredUrl = process.env.DEMO_PORTAL_API_URL || DEFAULT_DEMO_PORTAL_API_URL;
   let endpoint: URL;
   try {
     endpoint = new URL(
@@ -319,7 +320,7 @@ async function postToRegistrationPortal(
   pathname: string,
   body: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
-  const configuredUrl = process.env.DEMO_PORTAL_API_URL || 'http://127.0.0.1:3002';
+  const configuredUrl = process.env.DEMO_PORTAL_API_URL || DEFAULT_DEMO_PORTAL_API_URL;
   let endpoint: URL;
   try {
     endpoint = new URL(pathname, configuredUrl.endsWith('/') ? configuredUrl : `${configuredUrl}/`);
