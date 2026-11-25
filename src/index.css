@@ -1134,12 +1134,17 @@
   body.kot-printing .kot-print-area {
     position: fixed !important;
     inset: 0 auto auto 0 !important;
-    width: 100% !important;
-    max-width: 72mm !important;
+    width: var(--kot-paper-width, 80mm) !important;
+    max-width: var(--kot-paper-width, 80mm) !important;
     height: auto !important;
     min-height: 0 !important;
     margin: 0 !important;
-    padding: 3mm !important;
+    padding:
+      var(--kot-margin-top, 3mm)
+      var(--kot-margin-right, 3mm)
+      var(--kot-margin-bottom, 3mm)
+      var(--kot-margin-left, 3mm) !important;
+    box-sizing: border-box !important;
     transform: none !important;
     background: #ffffff !important;
     color: #000000 !important;
@@ -1147,6 +1152,13 @@
     border: none !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
+  }
+
+  body.kot-printing .kot-print-area.paper-a4 {
+    page: invoice-a4;
+    position: static !important;
+    inset: auto !important;
+    min-height: 297mm !important;
   }
 
   .report-print-area {

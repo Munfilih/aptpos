@@ -2056,10 +2056,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   <div className="settings-item-copy">
                     <h3 className="text-sm font-semibold text-slate-900">KOT Printer</h3>
                     <p className="mt-1 text-xs text-slate-600">
-                      Print kitchen order tickets to a dedicated printer. System Default is used when none is selected.
+                      KOT uses the selected invoice paper width and margins. Choose a dedicated printer or leave this blank to follow invoice printer settings.
                     </p>
                     <p className="mt-2 text-xs font-medium text-slate-700">
-                      Selected: {form.kotPrinter || 'System Default'}
+                      Selected: {form.kotPrinter || 'Invoice printer settings'}
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-4">

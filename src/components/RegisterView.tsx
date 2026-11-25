@@ -19,6 +19,7 @@ import {
   PackageCheck,
   CreditCard,
   Banknote,
+  Eye,
   Printer,
   History as HistoryIcon,
 } from 'lucide-react';
@@ -27,6 +28,7 @@ import type {
   Customer,
   InventoryOption,
   PaymentMethod,
+  PaperWidth,
   Product,
   ProductCategory,
   Sale,
@@ -38,9 +40,10 @@ import { getPaymentMethods } from '../utils/paymentMethods';
 import { getKotNumberFromInvoice } from '../utils/documentNumbers';
 import { calculateSalesTax } from '../utils/salesTax';
 import {
-  applyThermalPageWidth,
+  applyThermalPageSize,
   measureThermalPageSize,
   printWithThermalPageSize,
+  resolveInvoiceMarginsMm,
 } from '../utils/thermalPrinting';
 
 export interface InvoiceTab {
@@ -634,6 +637,8 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   const [isTenderModalOpen, setIsTenderModalOpen] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'error' | 'info'; text: string } | null>(null);
   const [isPrintingKot, setIsPrintingKot] = useState(false);
+  const [isPreparingKotPreview, setIsPreparingKotPreview] = useState(false);
+  const [isKotPreviewOpen, setIsKotPreviewOpen] = useState(false);
 
   const issueInvoiceNumber = async (): Promise<string> => {
     const response = await fetch('/api/invoice-numbers', { method: 'POST' });
@@ -664,48 +669,87 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     return invoiceNumber;
   };
 
-  const handlePrintKot = async () => {
-    if (cart.length === 0 || isPrintingKot || settings.enableKot !== true) return;
+  const kotFormat: PaperWidth = settings.paperWidth || '80mm';
+  const kotPageWidthMm = kotFormat === 'A4' ? 210 : kotFormat === '58mm' ? 58 : 80;
+  const kotMarginsMm = resolveInvoiceMarginsMm(
+    kotFormat,
+    settings.invoiceTemplates?.[kotFormat]?.invoiceMarginsMm
+  );
+
+  const handlePreviewKot = async () => {
+    if (
+      cart.length === 0 ||
+      isPrintingKot ||
+      isPreparingKotPreview ||
+      settings.enableKot !== true
+    ) return;
 
     setFeedback(null);
+    setIsPreparingKotPreview(true);
+    try {
+      await ensureActiveInvoiceNumber();
+      setIsKotPreviewOpen(true);
+    } catch (error) {
+      setFeedback({
+        type: 'error',
+        text: error instanceof Error ? error.message : 'KOT preview could not be opened.',
+      });
+    } finally {
+      setIsPreparingKotPreview(false);
+    }
+  };
+
+  const handlePrintKot = async () => {
+    if (
+      cart.length === 0 ||
+      isPrintingKot ||
+      isPreparingKotPreview ||
+      settings.enableKot !== true
+    ) return;
+
+    setFeedback(null);
+    setIsKotPreviewOpen(false);
     try {
       const invoiceNumber = await ensureActiveInvoiceNumber();
       const kotNumber = getKotNumberFromInvoice(invoiceNumber);
       setIsPrintingKot(true);
       document.body.classList.add('kot-printing');
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+      const pageSize = kotFormat === 'A4'
+        ? { width: 210_000, height: 297_000 }
+        : measureThermalPageSize(document.getElementById('kot-print-area'), {
+            elementWidthMm: kotPageWidthMm,
+            pageWidthMm: kotPageWidthMm,
+            padding: `${kotMarginsMm.top}mm ${kotMarginsMm.right}mm ${kotMarginsMm.bottom}mm ${kotMarginsMm.left}mm`,
+            container: document.querySelector('.kot-print-source'),
+          });
+      const template = settings.invoiceTemplates?.[kotFormat];
+      const printerMode =
+        template?.printerMode || (template?.defaultPrinter ? 'saved-printer' : 'system-default');
+      const printerName =
+        settings.kotPrinter ||
+        (printerMode === 'saved-printer' ? template?.defaultPrinter || undefined : undefined);
+      const silent = Boolean(settings.kotPrinter) || printerMode !== 'choose-at-print-time';
+
       if (window.electronAPI?.isElectron) {
-        const removePageStyle = applyThermalPageWidth(80);
+        const removePageStyle = applyThermalPageSize(pageSize);
         try {
           const result = await window.electronAPI.printReceipt({
-            silent: true,
-            printerName: settings.kotPrinter || undefined,
+            silent,
+            printerName,
+            pageSize,
           });
           if (!result.ok) {
             throw new Error(result.error || 'Kitchen order ticket could not be printed.');
           }
-          setFeedback({
-            type: 'info',
-            text: `KOT ${kotNumber} sent.`,
-          });
+          setFeedback({ type: 'info', text: `KOT ${kotNumber} sent.` });
         } finally {
           removePageStyle();
         }
       } else {
-        const kotPageSize = measureThermalPageSize(
-          document.getElementById('kot-print-area'),
-          {
-            elementWidthMm: 72,
-            pageWidthMm: 80,
-            padding: '3mm',
-            container: document.querySelector('.kot-print-source'),
-          }
-        );
-        printWithThermalPageSize(kotPageSize);
-        setFeedback({
-          type: 'info',
-          text: `KOT ${kotNumber} print dialog opened.`,
-        });
+        printWithThermalPageSize(pageSize);
+        setFeedback({ type: 'info', text: `KOT ${kotNumber} print dialog opened.` });
       }
     } catch (error) {
       console.error('Failed to print KOT:', error);
@@ -1042,6 +1086,15 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         return;
       }
 
+      if (isKotPreviewOpen) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          setIsKotPreviewOpen(false);
+        }
+        return;
+      }
+
       if (receiptModalOpen) return;
 
       if (isSaleConfirmationOpen) {
@@ -1100,6 +1153,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     isSaleConfirmationOpen,
     isCancelConfirmationOpen,
     isTenderModalOpen,
+    isKotPreviewOpen,
     confirmCancelCart,
     cancelCurrentTicket,
     cart,
@@ -1993,6 +2047,53 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     pendingPriceItem && getCartItemLineId(pendingPriceItem) === editingTicketItemId
       ? pendingPriceItem
       : undefined
+  );
+
+  const kotPrintArea = (
+    <section
+      id="kot-print-area"
+      className={`kot-print-area ${kotFormat === 'A4' ? 'paper-a4' : kotFormat === '58mm' ? 'paper-58mm' : ''}`}
+      aria-label="Kitchen order ticket"
+      dir={isRtl ? 'rtl' : 'ltr'}
+      style={{
+        '--kot-paper-width': `${kotPageWidthMm}mm`,
+        '--kot-margin-top': `${kotMarginsMm.top}mm`,
+        '--kot-margin-right': `${kotMarginsMm.right}mm`,
+        '--kot-margin-bottom': `${kotMarginsMm.bottom}mm`,
+        '--kot-margin-left': `${kotMarginsMm.left}mm`,
+        width: `${kotPageWidthMm}mm`,
+        maxWidth: `${kotPageWidthMm}mm`,
+        minHeight: kotFormat === 'A4' ? '297mm' : undefined,
+        boxSizing: 'border-box',
+        padding: `${kotMarginsMm.top}mm ${kotMarginsMm.right}mm ${kotMarginsMm.bottom}mm ${kotMarginsMm.left}mm`,
+        margin: '0 auto',
+      } as React.CSSProperties}
+    >
+      <header className="border-b-2 border-black pb-3 text-center">
+        <h1 className="text-xl font-extrabold">{settings.storeName}</h1>
+        <p className="mt-1 text-lg font-black">KITCHEN ORDER</p>
+      </header>
+      <div className="space-y-1 border-b border-dashed border-black py-3 text-sm">
+        <p><strong>{isRtl ? 'رقم سند المطبخ:' : 'KOT No:'}</strong> {activeTab.invoiceNumber ? getKotNumberFromInvoice(activeTab.invoiceNumber) : ''}</p>
+        <p><strong>{isRtl ? 'التذكرة:' : 'Ticket:'}</strong> {activeTab.label}</p>
+        <p><strong>{isRtl ? 'الوقت:' : 'Time:'}</strong> {new Date().toLocaleString()}</p>
+        <p><strong>{isRtl ? 'العميل:' : 'Customer:'}</strong> {customerName || defaultCustomerName}</p>
+      </div>
+      <div className="divide-y divide-dashed divide-black">
+        {cart.map((item) => (
+          <div key={getCartItemLineId(item)} className="flex items-start gap-3 py-3 text-base">
+            <strong className="min-w-10 text-lg">×{item.quantity}</strong>
+            <span className="font-bold">
+              {isRtl && item.product.nameAr ? item.product.nameAr : item.product.name}
+              {item.unitId && item.unitName ? ` (${item.unitName})` : ''}
+            </span>
+          </div>
+        ))}
+      </div>
+      <footer className="border-t-2 border-black pt-2 text-center text-xs font-semibold">
+        {isRtl ? 'عدد الأصناف' : 'Items'}: {cart.reduce((count, item) => count + item.quantity, 0)}
+      </footer>
+    </section>
   );
 
   return (
@@ -3807,22 +3908,35 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                 {isRtl ? 'رجوع للتذكرة' : 'Back to Ticket'}
               </button>
               {settings.enableKot === true && (
-                <button
-                  type="button"
-                  onClick={() => void handlePrintKot()}
-                  disabled={cart.length === 0 || isSubmitting || isPrintingKot}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-red-600 px-4 py-3 text-sm font-bold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
-                >
-                  <Printer className="h-5 w-5" />
-                  {isPrintingKot
-                    ? (isRtl ? 'جارٍ طباعة KOT...' : 'Printing KOT...')
-                    : (isRtl ? 'طباعة KOT' : 'KOT')}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void handlePreviewKot()}
+                    disabled={cart.length === 0 || isSubmitting || isPrintingKot || isPreparingKotPreview}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
+                  >
+                    <Eye className="h-5 w-5" />
+                    {isPreparingKotPreview
+                      ? (isRtl ? 'جارٍ تجهيز المعاينة...' : 'Preparing preview...')
+                      : (isRtl ? 'معاينة KOT' : 'Preview KOT')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handlePrintKot()}
+                    disabled={cart.length === 0 || isSubmitting || isPrintingKot || isPreparingKotPreview}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-red-600 px-4 py-3 text-sm font-bold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
+                  >
+                    <Printer className="h-5 w-5" />
+                    {isPrintingKot
+                      ? (isRtl ? 'جارٍ طباعة KOT...' : 'Printing KOT...')
+                      : (isRtl ? 'طباعة KOT' : 'KOT')}
+                  </button>
+                </>
               )}
               <button
                 type="button"
                 onClick={() => void handleCompleteSale()}
-                disabled={!canCompleteSale || isPrintingKot}
+                disabled={!canCompleteSale || isPrintingKot || isPreparingKotPreview || isKotPreviewOpen}
                 className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-3 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
               >
                 <CheckCircle2 className="h-5 w-5" />
@@ -3837,34 +3951,51 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         </div>
       )}
 
-      {isPrintingKot && (
-        <div className="kot-print-source">
-          <section id="kot-print-area" className="kot-print-area" aria-label="Kitchen order ticket">
-            <header className="border-b-2 border-black pb-3 text-center">
-              <h1 className="text-xl font-extrabold">{settings.storeName}</h1>
-              <p className="mt-1 text-lg font-black">KITCHEN ORDER</p>
-            </header>
-            <div className="space-y-1 border-b border-dashed border-black py-3 text-sm">
-              <p><strong>{isRtl ? 'رقم سند المطبخ:' : 'KOT No:'}</strong> {activeTab.invoiceNumber ? getKotNumberFromInvoice(activeTab.invoiceNumber) : ''}</p>
-              <p><strong>{isRtl ? 'التذكرة:' : 'Ticket:'}</strong> {activeTab.label}</p>
-              <p><strong>{isRtl ? 'الوقت:' : 'Time:'}</strong> {new Date().toLocaleString()}</p>
-              <p><strong>{isRtl ? 'العميل:' : 'Customer:'}</strong> {customerName || defaultCustomerName}</p>
+      {isPrintingKot && <div className="kot-print-source">{kotPrintArea}</div>}
+
+      {isKotPreviewOpen && (
+        <div
+          className="fixed inset-0 z-[70] flex flex-col bg-slate-900/80 p-3 sm:p-5"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="kot-preview-title"
+        >
+          <header className="mx-auto flex w-full max-w-4xl items-center justify-between gap-3 rounded-t-xl border border-slate-200 bg-white px-4 py-3">
+            <h2 id="kot-preview-title" className="text-sm font-bold text-slate-900">
+              {isRtl ? 'معاينة KOT' : 'KOT Preview'}
+            </h2>
+            <button
+              type="button"
+              onClick={() => setIsKotPreviewOpen(false)}
+              className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+              aria-label={isRtl ? 'إغلاق المعاينة' : 'Close preview'}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </header>
+          <main className="min-h-0 flex-1 overflow-auto bg-slate-200/80 py-4">
+            <div className="mx-auto w-fit max-w-full bg-white text-black shadow-xl">
+              {kotPrintArea}
             </div>
-            <div className="divide-y divide-dashed divide-black">
-              {cart.map((item) => (
-                <div key={getCartItemLineId(item)} className="flex items-start gap-3 py-3 text-base">
-                  <strong className="min-w-10 text-lg">×{item.quantity}</strong>
-                  <span className="font-bold">
-                    {isRtl && item.product.nameAr ? item.product.nameAr : item.product.name}
-                    {item.unitId && item.unitName ? ` (${item.unitName})` : ''}
-                  </span>
-                </div>
-              ))}
-            </div>
-            <footer className="border-t-2 border-black pt-2 text-center text-xs font-semibold">
-              {isRtl ? 'عدد الأصناف' : 'Items'}: {cart.reduce((count, item) => count + item.quantity, 0)}
-            </footer>
-          </section>
+          </main>
+          <footer className="mx-auto flex w-full max-w-4xl justify-end gap-2 rounded-b-xl border border-slate-200 bg-white px-4 py-3">
+            <button
+              type="button"
+              onClick={() => setIsKotPreviewOpen(false)}
+              className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              {isRtl ? 'رجوع' : 'Back'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handlePrintKot()}
+              disabled={isPrintingKot}
+              className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+            >
+              <Printer className="h-3.5 w-3.5" />
+              {isRtl ? 'طباعة KOT' : 'Print KOT'}
+            </button>
+          </footer>
         </div>
       )}
 

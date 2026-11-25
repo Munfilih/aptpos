@@ -56,7 +56,7 @@ The application uses the existing `com.counterline.pos` app identity and `Counte
 
 The Windows app checks the public `Munfilih/aptpos` GitHub Releases feed from Settings and displays the release notes when an update is found. Install version 1.0.6 manually over installations that cannot start (including version 1.0.4); working updater versions can install it from Settings once the release is published. To publish an update, increment the version in `package.json` and `package-lock.json`, push a matching `v<version>` tag, and let `.github/workflows/publish-release.yml` build and publish the installer, blockmap, update metadata, and generated release notes.
 
-Invoice numbers use the fixed `RCP-` prefix, sales-return vouchers use `SR-`, and KOT numbers use the trailing sequence from their invoice number. Invoice design settings allow per-format top, right, bottom, and left print margins, and KOT printing can be enabled or disabled. There is no separate order-number or document-prefix settings system.
+Invoice numbers use the fixed `RCP-` prefix, sales-return vouchers use `SR-`, and KOT numbers use the trailing sequence from their invoice number. Invoice design settings allow per-format top, right, bottom, and left print margins. KOT printing can be enabled or disabled, previews the current ticket before printing, and uses the selected invoice paper width and margins. A dedicated KOT printer can be selected; otherwise KOT follows the invoice printer setting. There is no separate order-number or document-prefix settings system.
 
 ## Project structure
 
