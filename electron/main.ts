@@ -5,8 +5,18 @@ import { mkdir, readFile, stat, unlink, writeFile } from 'fs/promises';
 import path from 'path';
 import http from 'http';
 import { fileURLToPath, pathToFileURL } from 'url';
+import { createRequire } from 'node:module';
 import type { Server } from 'http';
 import type { UpdateStatus } from './updateStatus.js';
+
+// pdf-to-printer is CommonJS — load via createRequire to stay compatible with ESM Electron main
+const _require = createRequire(import.meta.url);
+const { print: pdfPrint } = _require('pdf-to-printer') as {
+  print: (
+    pdf: string,
+    options?: { printer?: string; scale?: string; silent?: boolean; sumatraPdfPath?: string }
+  ) => Promise<void>;
+};
 
 const { autoUpdater } = electronUpdater;
 const __filename = fileURLToPath(import.meta.url);
@@ -923,22 +933,134 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
     ) {
       throw new Error('Printer page size is invalid.');
     }
-    pageSize = {
-      width,
-      height,
-    };
+    pageSize = { width, height };
   }
   const printerName = typeof options.printerName === 'string' ? options.printerName : undefined;
   const html = typeof options.html === 'string' && options.html.trim().length > 0
     ? options.html
     : undefined;
+  const isSilent = options.silent === true;
 
+  // Determine if this is a thermal job (non-A4 pageSize supplied)
+  const isThermal = !!pageSize && !(pageSize.width === 210000 && pageSize.height === 297000);
+
+  // --- SumatraPDF path (unpacked from asar in production) ---
+  const sumatraPdfPath = app.isPackaged
+    ? path.join(
+        process.resourcesPath,
+        'app.asar.unpacked',
+        'node_modules',
+        'pdf-to-printer',
+        'dist',
+        'SumatraPDF-3.4.6-32.exe'
+      )
+    : path.join(__dirname, '..', 'node_modules', 'pdf-to-printer', 'dist', 'SumatraPDF-3.4.6-32.exe');
+
+  // Helper: build a hidden BrowserWindow, load HTML, wait for fonts/images, return it.
+  const buildPrintWindow = async (htmlContent: string): Promise<BrowserWindow> => {
+    const tempHtmlPath = path.join(
+      app.getPath('temp'),
+      `aptpos-print-${randomBytes(8).toString('hex')}.html`
+    );
+    await writeFile(tempHtmlPath, htmlContent, 'utf8');
+    const win = new BrowserWindow({
+      show: false,
+      width: 820,
+      height: 1200,
+      backgroundColor: '#ffffff',
+      webPreferences: {
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+        javascript: true,
+      },
+    });
+    await win.loadFile(tempHtmlPath);
+    await win.webContents
+      .executeJavaScript(`
+        Promise.all([
+          document.fonts ? document.fonts.ready : Promise.resolve(),
+          ...Array.from(document.images).map((img) =>
+            img.complete
+              ? Promise.resolve()
+              : new Promise((res) => { img.onload = res; img.onerror = res; })
+          ),
+        ])
+      `)
+      .catch(() => {});
+    await unlink(tempHtmlPath).catch(() => {});
+    return win;
+  };
+
+  // ============================================================
+  // THERMAL PRINTING — printToPDF + pdf-to-printer (SumatraPDF)
+  // Bypasses Chromium GDI path that causes Epson/thermal drivers
+  // to fall back to A4 and shrink content to ~34%.
+  // ============================================================
+  if (isThermal && html && pageSize) {
+    let printWindow: BrowserWindow | null = null;
+    let tempPdfPath: string | null = null;
+    try {
+      printWindow = await buildPrintWindow(html);
+
+      // Convert microns → inches (printToPDF wants inches)
+      const widthIn = pageSize.width / 25400;
+      const heightIn = pageSize.height / 25400;
+
+      const pdfBuffer = await printWindow.webContents.printToPDF({
+        printBackground: true,
+        pageSize: { width: widthIn, height: heightIn },
+        margins: { marginType: 'none' },
+        preferCSSPageSize: false,
+      });
+
+      const winToClose = printWindow;
+      printWindow = null;
+      setTimeout(() => { if (!winToClose.isDestroyed()) winToClose.close(); }, 300);
+
+      tempPdfPath = path.join(
+        app.getPath('temp'),
+        `aptpos-receipt-${randomBytes(8).toString('hex')}.pdf`
+      );
+      await writeFile(tempPdfPath, pdfBuffer);
+
+      if (isSilent) {
+        // Send silently via SumatraPDF
+        await pdfPrint(tempPdfPath, {
+          ...(printerName ? { printer: printerName } : {}),
+          scale: 'noscale',
+          silent: true,
+          sumatraPdfPath,
+        });
+        return { ok: true };
+      } else {
+        // Non-silent: open SumatraPDF print dialog
+        await pdfPrint(tempPdfPath, {
+          ...(printerName ? { printer: printerName } : {}),
+          scale: 'noscale',
+          silent: false,
+          sumatraPdfPath,
+        });
+        return { ok: true };
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: msg };
+    } finally {
+      if (printWindow && !printWindow.isDestroyed()) printWindow.close();
+      if (tempPdfPath) await unlink(tempPdfPath).catch(() => {});
+    }
+  }
+
+  // ============================================================
+  // NON-THERMAL (A4) or no html — use standard webContents.print
+  // ============================================================
   const printWithWebContents = async (targetContents: Electron.WebContents): Promise<{ ok: boolean; error?: string }> => {
     const runAttempt = (useDefaultSize: boolean) =>
       new Promise<{ ok: boolean; error?: string }>((resolve) => {
         targetContents.print(
           {
-            silent: options.silent === true,
+            silent: isSilent,
             ...(printerName ? { deviceName: printerName } : {}),
             ...(!useDefaultSize && pageSize ? { pageSize } : { usePrinterDefaultPageSize: true }),
             scaleFactor: 100,
@@ -952,64 +1074,29 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
     const firstResult = await runAttempt(false);
     const errLower = (firstResult.error || '').toLowerCase();
     const isCancelled = errLower === 'cancelled' || errLower === 'canceled';
-    if (!firstResult.ok && !isCancelled && options.silent === true && pageSize) {
-      // Some Windows thermal drivers reject custom DEVMODE pageSize; retry with driver default.
+    if (!firstResult.ok && !isCancelled && isSilent && pageSize) {
       return runAttempt(true);
     }
     return firstResult;
   };
 
   if (html) {
-    const tempHtmlPath = path.join(
-      app.getPath('temp'),
-      `aptpos-print-${randomBytes(8).toString('hex')}.html`
-    );
     let printWindow: BrowserWindow | null = null;
     try {
-      await writeFile(tempHtmlPath, html, 'utf8');
-      printWindow = new BrowserWindow({
-        show: false,
-        width: 800,
-        height: 600,
-        backgroundColor: '#ffffff',
-        webPreferences: {
-          sandbox: true,
-          contextIsolation: true,
-          nodeIntegration: false,
-          javascript: true,
-        },
-      });
-      await printWindow.loadFile(tempHtmlPath);
-      await printWindow.webContents.executeJavaScript(`
-        Promise.all([
-          document.fonts ? document.fonts.ready : Promise.resolve(),
-          ...Array.from(document.images).map((img) =>
-            img.complete
-              ? Promise.resolve()
-              : new Promise((res) => { img.onload = res; img.onerror = res; })
-          ),
-        ])
-      `).catch(() => {});
-
+      printWindow = await buildPrintWindow(html);
       const result = await printWithWebContents(printWindow.webContents);
       const winToClose = printWindow;
       printWindow = null;
-      setTimeout(() => {
-        if (!winToClose.isDestroyed()) winToClose.close();
-      }, 500);
+      setTimeout(() => { if (!winToClose.isDestroyed()) winToClose.close(); }, 500);
       return result;
     } finally {
-      if (printWindow && !printWindow.isDestroyed()) {
-        printWindow.close();
-      }
-      await unlink(tempHtmlPath).catch(() => {});
+      if (printWindow && !printWindow.isDestroyed()) printWindow.close();
     }
   }
 
   if (!mainWindow || mainWindow.isDestroyed()) {
     return { ok: false, error: 'Main window is not available.' };
   }
-
   return printWithWebContents(mainWindow.webContents);
 });
 
