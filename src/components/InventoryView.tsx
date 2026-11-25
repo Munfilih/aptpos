@@ -25,6 +25,10 @@ import type {
   Product,
   ProductCategory,
   ProductMultiUnit,
+  PurchaseEntry,
+  PurchaseReturnVoucher,
+  Sale,
+  SalesReturnVoucher,
   StoreSettings,
   ThemeMode,
 } from '../types/pos';
@@ -33,6 +37,10 @@ import { ProductImage } from './ProductImage';
 
 interface InventoryViewProps {
   products: Product[];
+  purchases: PurchaseEntry[];
+  purchaseReturnVouchers: PurchaseReturnVoucher[];
+  sales: Sale[];
+  salesReturnVouchers: SalesReturnVoucher[];
   settings: StoreSettings;
   theme: ThemeMode;
   onRefreshProducts: () => Promise<void>;
@@ -118,6 +126,110 @@ const EMPTY_FORM: ProductFormState = {
   reorderLevel: '5',
   unit: 'ea',
 };
+
+type ProductFormTab = 'general' | 'advanced' | 'history' | 'settings';
+type ProductHistoryFilter = 'all' | 'purchases' | 'purchaseReturns' | 'sales' | 'salesReturns';
+
+interface ProductHistoryRow {
+  id: string;
+  type: Exclude<ProductHistoryFilter, 'all'>;
+  date: string;
+  reference: string;
+  party: string;
+  quantity: number;
+  unit: string;
+  rate: number;
+  total: number;
+}
+
+function getProductHistoryRows(
+  product: Product,
+  purchases: PurchaseEntry[],
+  purchaseReturnVouchers: PurchaseReturnVoucher[],
+  sales: Sale[],
+  salesReturnVouchers: SalesReturnVoucher[],
+  isRtl: boolean
+): ProductHistoryRow[] {
+  const rows: ProductHistoryRow[] = [];
+
+  purchases.forEach((purchase) => {
+    purchase.items
+      .filter((item) => item.productId === product.id)
+      .forEach((item) => rows.push({
+        id: `purchase-${purchase.id}-${item.id}`,
+        type: 'purchases',
+        date: purchase.receivedDate || purchase.createdAt,
+        reference: purchase.invoiceNumber,
+        party: purchase.vendorName,
+        quantity: item.quantity,
+        unit: product.unit,
+        rate: item.unitCost,
+        total: item.lineTotal,
+      }));
+  });
+
+  purchaseReturnVouchers.forEach((voucher) => {
+    voucher.items
+      .filter((item) =>
+        item.productId === product.id ||
+        item.sku === product.sku ||
+        item.productName === product.name
+      )
+      .forEach((item) => rows.push({
+        id: `purchase-return-${voucher.id}-${item.id}`,
+        type: 'purchaseReturns',
+        date: voucher.createdAt,
+        reference: voucher.voucherNumber,
+        party: voucher.vendorName,
+        quantity: item.quantity,
+        unit: product.unit,
+        rate: item.unitCost,
+        total: item.lineTotal,
+      }));
+  });
+
+  sales.filter((sale) => sale.status === 'COMPLETED').forEach((sale) => {
+    sale.items
+      .filter((item) => item.productId === product.id)
+      .forEach((item) => rows.push({
+        id: `sale-${sale.id}-${item.id}`,
+        type: 'sales',
+        date: sale.createdAt,
+        reference: sale.receiptNumber,
+        party: sale.customerName || (isRtl ? 'عميل نقدي' : 'Walk-in Customer'),
+        quantity: item.quantity,
+        unit: item.unitName || product.unit,
+        rate: item.unitPrice,
+        total: item.lineTotal - (item.discountAmount || 0),
+      }));
+  });
+
+  const salesById = new Map(sales.map((sale) => [sale.id, sale]));
+  salesReturnVouchers.forEach((voucher) => {
+    voucher.items.forEach((returnItem) => {
+      const sale = salesById.get(returnItem.saleId);
+      const saleItem = sale?.items.find((item) => item.id === returnItem.saleItemId);
+      const matchesProduct = saleItem
+        ? saleItem.productId === product.id
+        : returnItem.sku === product.sku || returnItem.productName === product.name;
+      if (!matchesProduct) return;
+
+      rows.push({
+        id: `sales-return-${voucher.id}-${returnItem.saleItemId}`,
+        type: 'salesReturns',
+        date: voucher.createdAt,
+        reference: voucher.voucherNumber,
+        party: sale?.customerName || (isRtl ? 'عميل نقدي' : 'Walk-in Customer'),
+        quantity: returnItem.quantity,
+        unit: returnItem.unitName || saleItem?.unitName || product.unit,
+        rate: returnItem.quantity > 0 ? returnItem.refundAmount / returnItem.quantity : 0,
+        total: returnItem.refundAmount,
+      });
+    });
+  });
+
+  return rows.sort((left, right) => right.date.localeCompare(left.date));
+}
 
 interface ParsedImportRow {
   sku: string;
@@ -226,6 +338,10 @@ async function translateEnglishToArabic(text: string): Promise<string> {
 
 export const InventoryView: React.FC<InventoryViewProps> = ({
   products,
+  purchases,
+  purchaseReturnVouchers,
+  sales,
+  salesReturnVouchers,
   settings,
   theme,
   onRefreshProducts,
@@ -251,6 +367,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const [pageSize, setPageSize] = useState(50);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [activeProductTab, setActiveProductTab] = useState<ProductFormTab>('general');
+  const [productHistoryFilter, setProductHistoryFilter] = useState<ProductHistoryFilter>('all');
   const [selectedProductDetails, setSelectedProductDetails] = useState<Product | null>(null);
   const [productPendingDelete, setProductPendingDelete] = useState<Product | null>(null);
   const [deleteProductError, setDeleteProductError] = useState<string | null>(null);
@@ -377,6 +495,22 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   }, []);
 
   const c = isRtl ? 'ر.س ' : (settings.currencySymbol || 'SAR ');
+  const productHistoryRows = useMemo(
+    () => editingProduct
+      ? getProductHistoryRows(
+          editingProduct,
+          purchases,
+          purchaseReturnVouchers,
+          sales,
+          salesReturnVouchers,
+          isRtl
+        )
+      : [],
+    [editingProduct, purchases, purchaseReturnVouchers, sales, salesReturnVouchers, isRtl]
+  );
+  const filteredProductHistoryRows = productHistoryFilter === 'all'
+    ? productHistoryRows
+    : productHistoryRows.filter((row) => row.type === productHistoryFilter);
   const categories = useMemo(
     () => [...new Set([...inventoryOptions.filter((option) => option.type === 'category').map((option) => option.value), ...products.map((product) => product.category)])].sort(),
     [inventoryOptions, products]
@@ -695,6 +829,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
   const openCreateModal = (initialBarcode = '') => {
     setEditingProduct(null);
+    setActiveProductTab('general');
+    setProductHistoryFilter('all');
     setForm({
       ...EMPTY_FORM,
       sku: generateNextSku(),
@@ -724,6 +860,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
   const openEditModal = (product: Product) => {
     setEditingProduct(product);
+    setActiveProductTab('general');
+    setProductHistoryFilter('all');
     setProductLookupCode('');
     setProductLookupMessage(null);
     setMultiUnitDrafts((product.multiUnits || []).map((unit) => ({
@@ -2233,7 +2371,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         >
           <div
             data-theme={theme}
-            className="pos-app-shell bg-white border border-slate-200 rounded-xl w-full max-w-3xl max-h-[calc(100dvh-1rem)] overflow-hidden flex flex-col"
+            className="pos-app-shell bg-white border border-slate-200 rounded-xl w-full max-w-3xl h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)] sm:h-[calc(100dvh-2rem)] sm:max-h-[calc(100dvh-2rem)] overflow-hidden flex flex-col"
           >
             <div className="shrink-0 border-b border-slate-200 px-3 py-2.5 sm:px-5 sm:py-3">
               <div className="flex flex-wrap items-center gap-2">
@@ -2318,10 +2456,40 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   {productLookupMessage.message}
                 </p>
               )}
+              <nav
+                className={`mt-3 flex gap-1 overflow-x-auto border-b border-slate-200 ${isRtl ? 'flex-row-reverse' : ''}`}
+                role="tablist"
+                aria-label={isRtl ? 'أقسام نموذج المنتج' : 'Product form sections'}
+              >
+                {([
+                  { id: 'general', label: isRtl ? 'عام' : 'General' },
+                  { id: 'advanced', label: isRtl ? 'متقدم' : 'Advanced' },
+                  { id: 'history', label: isRtl ? 'السجل' : 'History' },
+                  { id: 'settings', label: isRtl ? 'الإعدادات' : 'Settings' },
+                ] as const).map((tab) => (
+                  <button
+                    key={tab.id}
+                    id={`product-form-tab-${tab.id}`}
+                    type="button"
+                    role="tab"
+                    aria-selected={activeProductTab === tab.id}
+                    aria-controls="product-form-panel"
+                    onClick={() => setActiveProductTab(tab.id)}
+                    className={`shrink-0 border-b-2 px-4 py-2 text-xs font-semibold transition-colors ${
+                      activeProductTab === tab.id
+                        ? 'border-blue-700 text-blue-800'
+                        : 'border-transparent text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </nav>
             </div>
 
             <form
               id="product-form"
+              noValidate
               onSubmit={handleSaveProduct}
               className="min-h-0 flex-1 overflow-y-auto p-2 sm:p-4 space-y-1.5 sm:space-y-2.5 text-xs"
             >
@@ -2335,8 +2503,15 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   {formSuccess}
                 </div>
               )}
+              <div
+                id="product-form-panel"
+                role="tabpanel"
+                aria-labelledby={`product-form-tab-${activeProductTab}`}
+                className="space-y-2.5 sm:space-y-3"
+              >
 
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-3">
+              {activeProductTab === 'general' && (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-3">
                 <div>
                   <div className="mb-1 flex min-h-5 items-center">
                     <label className="block font-medium text-slate-700">
@@ -2386,9 +2561,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
                   />
                 </div>
-              </div>
+                </div>
+              )}
 
-              {isRposMode && (
+              {activeProductTab === 'advanced' && isRposMode && (
                 <div className="flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-2.5">
                 <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-white text-slate-400">
                   {productImagePath || productImageData ? (
@@ -2441,6 +2617,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 </div>
               )}
 
+              {activeProductTab === 'general' && (
               <div className="grid grid-cols-2 gap-2 sm:gap-3">
                 <div>
                   <label className="block font-medium text-slate-700 mb-1">{isRtl ? 'الرمز (SKU)' : 'SKU'}</label>
@@ -2486,8 +2663,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   />
                 </div>
               </div>
+              )}
 
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3">
+              {activeProductTab === 'general' && (
+              <div className="grid grid-cols-2 gap-2 sm:gap-3">
                 <div>
                   <label className="mb-1 block font-medium text-slate-700">
                     {isRtl ? `سعر التكلفة (${c})` : `Cost Price (${c})`}
@@ -2522,22 +2701,95 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 font-mono tabular-nums text-slate-900 focus:border-blue-700 focus:outline-none"
                   />
                 </div>
-                <div>
-                  <label className="mb-1 block font-medium text-slate-700">
-                    {isRtl ? 'نسبة الضريبة (%)' : 'Tax Rate (%)'}
-                  </label>
-                  <select
-                    data-product-field="taxRate"
-                    onKeyDown={handleProductFieldEnter}
-                    value={form.taxRate}
-                    onChange={(e) => setForm({ ...form, taxRate: e.target.value })}
-                    className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono tabular-nums text-slate-900 focus:border-blue-700 focus:outline-none"
-                  >
-                    {taxRates.map((rate) => <option key={rate} value={rate}>{rate}%</option>)}
-                  </select>
-                </div>
               </div>
+              )}
 
+              {activeProductTab === 'settings' && (
+                <section className="rounded-lg border border-slate-200 bg-white p-3">
+                  <h3 className="font-semibold text-slate-800">{isRtl ? 'إعدادات المنتج' : 'Product Settings'}</h3>
+                  <p className="mb-3 mt-0.5 text-[10px] text-slate-500">
+                    {isRtl
+                      ? 'إعدادات الضريبة والوحدة وتنبيه المخزون لهذا المنتج.'
+                      : 'Configure this product’s tax, unit, and low-stock threshold.'}
+                  </p>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block font-medium text-slate-700">
+                        {isRtl ? 'نسبة الضريبة (%)' : 'Tax Rate (%)'}
+                      </label>
+                      <select
+                        data-product-field="taxRate"
+                        onKeyDown={handleProductFieldEnter}
+                        value={form.taxRate}
+                        onChange={(e) => setForm({ ...form, taxRate: e.target.value })}
+                        className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono tabular-nums text-slate-900 focus:border-blue-700 focus:outline-none"
+                      >
+                        {taxRates.map((rate) => <option key={rate} value={rate}>{rate}%</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <div className="mb-1 flex items-center justify-between">
+                        <label className="block font-medium text-slate-700">{isRtl ? 'وحدة القياس' : 'Unit'}</label>
+                        <button
+                          type="button"
+                          onClick={() => openProductOptionDialog('unit')}
+                          className="rounded p-0.5 text-blue-700 hover:bg-blue-50"
+                          aria-label={isRtl ? 'إضافة وحدة قياس' : 'Add unit'}
+                          title={isRtl ? 'إضافة وحدة قياس' : 'Add unit'}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      <select
+                        data-product-field="unit"
+                        onKeyDown={handleProductFieldEnter}
+                        value={form.unit}
+                        onChange={(e) => setForm({ ...form, unit: e.target.value })}
+                        className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-slate-900 focus:border-blue-700 focus:outline-none"
+                      >
+                        {units.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
+                      </select>
+                    </div>
+                    {!editingProduct && (
+                      <div>
+                        <label className="mb-1 block font-medium text-slate-700">
+                          {isRtl ? 'المخزون الافتتاحي' : 'Opening Stock'}
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          data-product-field="stock"
+                          onFocus={(event) => event.currentTarget.select()}
+                          onClick={(event) => event.currentTarget.select()}
+                          onKeyDown={handleProductFieldEnter}
+                          value={form.stock}
+                          onChange={(e) => setForm({ ...form, stock: e.target.value })}
+                          className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 font-mono tabular-nums text-slate-900 focus:border-blue-700 focus:outline-none"
+                        />
+                      </div>
+                    )}
+                    <div>
+                      <label className="mb-1 block font-medium text-slate-700">
+                        {isRtl ? 'حد إعادة الطلب' : 'Low Stock Reorder Level'}
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        data-product-field="reorderLevel"
+                        onFocus={(event) => event.currentTarget.select()}
+                        onClick={(event) => event.currentTarget.select()}
+                        onKeyDown={handleProductFieldEnter}
+                        value={form.reorderLevel}
+                        onChange={(e) => setForm({ ...form, reorderLevel: e.target.value })}
+                        className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 font-mono tabular-nums text-slate-900 focus:border-blue-700 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                </section>
+              )}
+
+              {activeProductTab === 'advanced' && (
+              <>
               <section className="rounded-lg border border-slate-200 bg-white p-2.5">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <div>
@@ -2705,7 +2957,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   </div>
                 )}
               </section>
+              </>
+              )}
 
+              {activeProductTab === 'general' && (
               <div className="grid grid-cols-2 gap-2 sm:gap-3">
                 <div>
                   <div className="mb-1 flex items-center justify-between">
@@ -2756,68 +3011,83 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   </select>
                 </div>
               </div>
+              )}
 
-              <div>
-                <div className="mb-1 flex items-center justify-between">
-                  <label className="block font-medium text-slate-700">{isRtl ? 'وحدة القياس' : 'Unit'}</label>
-                  <button
-                    type="button"
-                    onClick={() => openProductOptionDialog('unit')}
-                    className="rounded p-0.5 text-blue-700 hover:bg-blue-50"
-                    aria-label={isRtl ? 'إضافة وحدة قياس' : 'Add unit'}
-                    title={isRtl ? 'إضافة وحدة قياس' : 'Add unit'}
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-                <select
-                  data-product-field="unit"
-                  onKeyDown={handleProductFieldEnter}
-                  value={form.unit}
-                  onChange={(e) => setForm({ ...form, unit: e.target.value })}
-                  className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-slate-900 bg-white focus:outline-none focus:border-blue-700"
-                >
-                  {units.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
-                </select>
-              </div>
-
-              <div className={`grid ${editingProduct ? 'grid-cols-1' : 'grid-cols-2'} gap-2 sm:gap-3`}>
-                {!editingProduct && (
-                  <div>
-                    <label className="block font-medium text-slate-700 mb-1">
-                      {isRtl ? 'المخزون الافتتاحي' : 'Opening Stock'}
+              {activeProductTab === 'history' && editingProduct && (
+                <section className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 p-3">
+                    <div>
+                      <h3 className="font-semibold text-slate-800">{isRtl ? 'سجل المنتج' : 'Product History'}</h3>
+                      <p className="mt-0.5 text-[10px] text-slate-500">
+                        {isRtl ? 'سجل المشتريات والمبيعات والمرتجعات لهذا المنتج.' : 'Purchases, sales, and returns recorded for this product.'}
+                      </p>
+                    </div>
+                    <label className="flex items-center gap-2 text-[11px] font-medium text-slate-600">
+                      <span>{isRtl ? 'النوع' : 'Type'}</span>
+                      <select
+                        value={productHistoryFilter}
+                        onChange={(event) => setProductHistoryFilter(event.target.value as ProductHistoryFilter)}
+                        className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-800 focus:border-blue-600 focus:outline-none"
+                      >
+                        <option value="all">{isRtl ? 'الكل' : 'All activity'}</option>
+                        <option value="purchases">{isRtl ? 'المشتريات' : 'Purchases'}</option>
+                        <option value="purchaseReturns">{isRtl ? 'مرتجعات المشتريات' : 'Purchase Returns'}</option>
+                        <option value="sales">{isRtl ? 'المبيعات' : 'Sales'}</option>
+                        <option value="salesReturns">{isRtl ? 'مرتجعات المبيعات' : 'Sales Returns'}</option>
+                      </select>
                     </label>
-                    <input
-                      type="number"
-                      min={0}
-                      data-product-field="stock"
-                      onFocus={(event) => event.currentTarget.select()}
-                      onClick={(event) => event.currentTarget.select()}
-                      onKeyDown={handleProductFieldEnter}
-                      value={form.stock}
-                      onChange={(e) => setForm({ ...form, stock: e.target.value })}
-                      className="w-full px-2.5 py-1.5 font-mono border border-slate-200 rounded-lg text-slate-900 tabular-nums focus:outline-none focus:border-blue-700"
-                    />
                   </div>
-                )}
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">
-                    {isRtl ? 'حد إعادة الطلب' : 'Low Stock Reorder Level'}
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    data-product-field="reorderLevel"
-                    onFocus={(event) => event.currentTarget.select()}
-                    onClick={(event) => event.currentTarget.select()}
-                    onKeyDown={handleProductFieldEnter}
-                    value={form.reorderLevel}
-                    onChange={(e) => setForm({ ...form, reorderLevel: e.target.value })}
-                    className="w-full px-2.5 py-1.5 font-mono border border-slate-200 rounded-lg text-slate-900 tabular-nums focus:outline-none focus:border-blue-700"
-                  />
-                </div>
-              </div>
+                  <div className="max-h-[55vh] overflow-auto">
+                    {filteredProductHistoryRows.length > 0 ? (
+                      <table className={`w-full min-w-[760px] border-collapse text-[11px] ${isRtl ? 'text-right' : 'text-left'}`}>
+                        <thead className="sticky top-0 bg-slate-50 text-slate-600">
+                          <tr>
+                            <th className="border-b border-slate-200 px-3 py-2 font-semibold">{isRtl ? 'التاريخ' : 'Date'}</th>
+                            <th className="border-b border-slate-200 px-3 py-2 font-semibold">{isRtl ? 'النوع' : 'Type'}</th>
+                            <th className="border-b border-slate-200 px-3 py-2 font-semibold">{isRtl ? 'المرجع' : 'Reference'}</th>
+                            <th className="border-b border-slate-200 px-3 py-2 font-semibold">{isRtl ? 'الجهة' : 'Party'}</th>
+                            <th className="border-b border-slate-200 px-3 py-2 text-right font-semibold">{isRtl ? 'الكمية' : 'Quantity'}</th>
+                            <th className="border-b border-slate-200 px-3 py-2 text-right font-semibold">{isRtl ? 'السعر' : 'Rate'}</th>
+                            <th className="border-b border-slate-200 px-3 py-2 text-right font-semibold">{isRtl ? 'الإجمالي' : 'Total'}</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {filteredProductHistoryRows.map((row) => {
+                            const typeLabel = {
+                              purchases: isRtl ? 'شراء' : 'Purchase',
+                              purchaseReturns: isRtl ? 'مرتجع شراء' : 'Purchase Return',
+                              sales: isRtl ? 'بيع' : 'Sale',
+                              salesReturns: isRtl ? 'مرتجع بيع' : 'Sales Return',
+                            }[row.type];
+                            return (
+                              <tr key={row.id} className="text-slate-700">
+                                <td className="whitespace-nowrap px-3 py-2">{new Date(row.date).toLocaleString(isRtl ? 'ar-SA' : 'en-US')}</td>
+                                <td className="whitespace-nowrap px-3 py-2">{typeLabel}</td>
+                                <td className="whitespace-nowrap px-3 py-2 font-mono">{row.reference || '—'}</td>
+                                <td className="px-3 py-2">{row.party || '—'}</td>
+                                <td className="whitespace-nowrap px-3 py-2 text-right font-mono tabular-nums">{row.quantity} {row.unit}</td>
+                                <td className="whitespace-nowrap px-3 py-2 text-right font-mono tabular-nums">{c}{row.rate.toFixed(2)}</td>
+                                <td className="whitespace-nowrap px-3 py-2 text-right font-mono font-semibold tabular-nums">{c}{row.total.toFixed(2)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <div className="px-4 py-10 text-center text-xs text-slate-500">
+                        {isRtl ? 'لا يوجد سجل لهذا المنتج.' : 'No product history found.'}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )}
 
+              {activeProductTab === 'history' && !editingProduct && (
+                <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-center text-xs text-slate-500">
+                  {isRtl ? 'احفظ المنتج أولاً لعرض سجلّه.' : 'Save the product first to view its history.'}
+                </div>
+              )}
+              </div>
             </form>
           </div>
         </div>,

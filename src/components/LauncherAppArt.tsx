@@ -73,6 +73,15 @@ export const LauncherAppArt: FC<LauncherAppArtProps> = ({ id }) => (
         <path d="m26 42 10 5 10-5" fill="none" stroke="#fff" strokeWidth="1.8" />
       </>
     )}
+    {id === 'purchase-quotation' && (
+      <>
+        <path d="M17 10h24l8 8v36H17z" fill="#fff" />
+        <path d="M41 10v9h8" fill="#dbeafe" />
+        <path d="M24 27h18M24 33h14M24 39h11" stroke="#2563eb" strokeWidth="2.5" strokeLinecap="round" />
+        <circle cx="43" cy="46" r="8" fill="#fbbf24" />
+        <path d="M43 41v10M39.5 43.5c1-2.5 6.5-2.5 7 1 0.5 3-7 2-6.5 5.5.5 2.5 5 2.5 7 0" fill="none" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" />
+      </>
+    )}
     {id === 'goods-delivery' && (
       <>
         <path d="M8 20h29v25H8z" fill="#fff" />
@@ -83,6 +92,19 @@ export const LauncherAppArt: FC<LauncherAppArtProps> = ({ id }) => (
         <circle cx="19" cy="47" r="2" fill="#fff" />
         <circle cx="46" cy="47" r="5" fill="#1e3a8a" />
         <circle cx="46" cy="47" r="2" fill="#fff" />
+      </>
+    )}
+    {id === 'goods-receipt' && (
+      <>
+        <path d="M10 20h27v27H10z" fill="#fff" />
+        <path d="M37 28h10l9 9v10H37z" fill="#dcfce7" />
+        <path d="M40 31h6l6 6h-12z" fill="#fff" />
+        <path d="M15 26h17M15 32h12M15 38h8" stroke="#16a34a" strokeWidth="2.5" strokeLinecap="round" />
+        <circle cx="20" cy="48" r="5" fill="#166534" />
+        <circle cx="20" cy="48" r="2" fill="#fff" />
+        <circle cx="47" cy="48" r="5" fill="#166534" />
+        <circle cx="47" cy="48" r="2" fill="#fff" />
+        <path d="m42 18 4 4 8-9" fill="none" stroke="#22c55e" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
       </>
     )}
     {id === 'sales-settings' && (
@@ -193,6 +215,16 @@ export const LauncherAppArt: FC<LauncherAppArtProps> = ({ id }) => (
         <path d="M34 37a12 12 0 0 1 20 9v6H37v-3a17 17 0 0 0-3-12z" fill="#bfdbfe" />
         <path d="M17 20a7 7 0 0 1 13-2" fill="none" stroke="#7c2d12" strokeWidth="3" strokeLinecap="round" />
         <path d="M39 22a6 6 0 0 1 9-2" fill="none" stroke="#92400e" strokeWidth="2.5" strokeLinecap="round" />
+      </>
+    )}
+    {id === 'salary-process' && (
+      <>
+        <circle cx="24" cy="23" r="8" fill="#fde68a" />
+        <path d="M10 49a14 14 0 0 1 28 0v3H10z" fill="#fff" />
+        <rect x="34" y="14" width="20" height="38" rx="5" fill="#fff" />
+        <rect x="38" y="20" width="12" height="8" rx="2" fill="#22c55e" />
+        <path d="M40 34h8M40 40h8M40 46h5" stroke="#16a34a" strokeWidth="2.5" strokeLinecap="round" />
+        <circle cx="44" cy="24" r="2" fill="#dcfce7" />
       </>
     )}
     {id === 'organization-shift' && (

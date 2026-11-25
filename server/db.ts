@@ -20,6 +20,7 @@ import type {
   ProductCategory,
   ProductMultiUnit,
   RegistrationRequest,
+  RegistrationDetails,
   RegistrationRequestStatus,
   RegistrationRequestType,
   PurchaseReturnVoucher,
@@ -44,6 +45,8 @@ import { getKotNumberFromInvoice } from '../src/utils/documentNumbers';
 
 const DATA_DIR = process.env.POS_DATA_DIR || path.resolve(process.cwd(), 'data');
 const DB_PATH = path.join(DATA_DIR, 'pos.sqlite');
+const DEFAULT_POS_ADMIN_USERNAME = 'aptadmin';
+const DEFAULT_POS_ADMIN_PASSWORD = 'aptpwd123';
 
 let db: Database | null = null;
 let cachedHardwareSystemIdentity: { fingerprint: string; systemCode: string } | null = null;
@@ -240,6 +243,7 @@ function initSchema(database: Database): void {
       sku TEXT NOT NULL,
       product_name TEXT NOT NULL,
       name_ar TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
       quantity INTEGER NOT NULL,
       unit_price REAL NOT NULL,
       line_total REAL NOT NULL,
@@ -501,6 +505,7 @@ function initSchema(database: Database): void {
     'ALTER TABLE vendors ADD COLUMN country TEXT DEFAULT "Saudi Arabia"',
     'ALTER TABLE vendors ADD COLUMN cr_number TEXT DEFAULT ""',
     'ALTER TABLE sale_items ADD COLUMN name_ar TEXT DEFAULT ""',
+    'ALTER TABLE sale_items ADD COLUMN description TEXT NOT NULL DEFAULT ""',
     'ALTER TABLE sale_items ADD COLUMN unit_id TEXT NOT NULL DEFAULT ""',
     'ALTER TABLE sale_items ADD COLUMN unit_name TEXT NOT NULL DEFAULT ""',
     'ALTER TABLE sale_items ADD COLUMN units_per_base INTEGER NOT NULL DEFAULT 1',
@@ -814,8 +819,8 @@ function seedInitialData(database: Database): void {
       'INSERT INTO users (username, password, role, display_name, permissions) VALUES (?, ?, ?, ?, ?)'
     );
     userStmt.run([
-      'aptadmin',
-      'aptpwd123',
+      DEFAULT_POS_ADMIN_USERNAME,
+      DEFAULT_POS_ADMIN_PASSWORD,
       'admin',
       'Company Admin / مدير الشركة',
       'register,inventory,purchases,customers,vendors,accounts,reports,sales,edit-sales,sales-return,manage-sales-returns,delete-sales,settings',
@@ -1560,6 +1565,35 @@ export async function deleteProduct(id: number): Promise<boolean> {
   return true;
 }
 
+function parseRegistrationDetails(value: unknown): RegistrationDetails | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (
+    typeof value !== 'object' ||
+    !('businessName' in value) ||
+    typeof value.businessName !== 'string' ||
+    !('address' in value) ||
+    typeof value.address !== 'string' ||
+    !('mobileNumber' in value) ||
+    typeof value.mobileNumber !== 'string' ||
+    !('systemCode' in value) ||
+    typeof value.systemCode !== 'string' ||
+    !('username' in value) ||
+    typeof value.username !== 'string' ||
+    !('appVersion' in value) ||
+    !APP_VERSIONS.some((version) => version === value.appVersion)
+  ) {
+    throw new Error('Stored registration details are invalid.');
+  }
+  return {
+    businessName: value.businessName,
+    address: value.address,
+    mobileNumber: value.mobileNumber,
+    systemCode: value.systemCode,
+    username: value.username,
+    appVersion: value.appVersion as RegistrationDetails['appVersion'],
+  };
+}
+
 export async function getSettings(): Promise<StoreSettings> {
   const database = await getDb();
   const res = database.exec('SELECT key, value FROM settings');
@@ -1569,6 +1603,10 @@ export async function getSettings(): Promise<StoreSettings> {
       map[String(row[0])] = String(row[1]);
     }
   }
+  const positiveDimension = (key: string, fallback: number): number => {
+    const value = Number(map[key]);
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+  };
 
   const parsedPaymentMethods: unknown = map.paymentMethods
     ? JSON.parse(map.paymentMethods)
@@ -1590,6 +1628,10 @@ export async function getSettings(): Promise<StoreSettings> {
   const parsedVersionComponentPolicies: unknown = map.versionComponentPolicies
     ? JSON.parse(map.versionComponentPolicies)
     : {};
+  const parsedRegistrationDetails: unknown = map.registrationDetails
+    ? JSON.parse(map.registrationDetails)
+    : undefined;
+  const registrationDetails = parseRegistrationDetails(parsedRegistrationDetails);
   const versionComponentPolicies =
     parseVersionComponentPolicies(parsedVersionComponentPolicies) || {};
   const appVersion =
@@ -1627,6 +1669,10 @@ export async function getSettings(): Promise<StoreSettings> {
     printerOnline: map.printerOnline !== 'false',
     cashierName: map.cashierName || 'Cashier / الكاشير',
     posScreenLayout: map.posScreenLayout === 'rpos' ? 'rpos' : 'pos',
+    productCardWidthIn: positiveDimension('productCardWidthIn', 2),
+    productCardHeightIn: positiveDimension('productCardHeightIn', 3),
+    categoryCardWidthIn: positiveDimension('categoryCardWidthIn', 2),
+    categoryCardHeightIn: positiveDimension('categoryCardHeightIn', 3),
     barcodeScanBeep: map.barcodeScanBeep !== 'false',
     allowNegativeStock: map.allowNegativeStock === 'true',
     roundTotalToFiveCents: map.roundTotalToFiveCents === 'true',
@@ -1655,7 +1701,10 @@ export async function getSettings(): Promise<StoreSettings> {
     appVersion,
     disabledAppComponents,
     versionComponentPolicies,
+    demoUsername: map.demoUsername || undefined,
     registeredSystem: map.registeredSystem === 'true',
+    systemCodeBlocked: map.systemCodeBlocked === 'true',
+    registrationDetails,
   };
 }
 
@@ -1675,6 +1724,17 @@ export async function updateSettings(
   stmt.free();
   saveDatabase();
   return getSettings();
+}
+
+export async function clearRegisteredSystemSettings(): Promise<void> {
+  const database = await getDb();
+  database.run(
+    "DELETE FROM settings WHERE key IN ('registeredSystem', 'registrationDetails')"
+  );
+  database.run(
+    "INSERT OR REPLACE INTO settings (key, value) VALUES ('registeredSystem', 'false')"
+  );
+  saveDatabase();
 }
 
 export async function createInvoiceNumber(): Promise<string> {
@@ -1722,7 +1782,8 @@ export async function listSales(): Promise<Sale[]> {
   const itemsRes = database.exec(
     `SELECT si.id, si.sale_id, si.product_id, si.sku, si.product_name, si.quantity,
             si.unit_price, si.line_total, si.name_ar, si.unit_id, si.unit_name,
-            si.units_per_base, si.tax_rate, si.tax_amount, si.discount_amount, p.tax_rate
+            si.units_per_base, si.tax_rate, si.tax_amount, si.discount_amount, p.tax_rate,
+            si.description
      FROM sale_items si
      LEFT JOIN products p ON p.id = si.product_id
      ORDER BY si.id ASC`
@@ -1737,6 +1798,7 @@ export async function listSales(): Promise<Sale[]> {
         productId: Number(row[2]),
         sku: String(row[3]),
         productName: String(row[4]),
+        description: row[16] ? String(row[16]) : undefined,
         quantity: Number(row[5]),
         unitPrice: Number(row[6]),
         lineTotal: Number(row[7]),
@@ -1848,6 +1910,7 @@ export interface CreateSaleInput {
     quantity: number;
     unitId?: string;
     unitPrice?: number;
+    description?: string;
   }>;
 }
 
@@ -1871,9 +1934,13 @@ export async function createSale(input: CreateSaleInput): Promise<{
     unitName: string;
     unitsPerBase: number;
     taxRate: number;
+    description: string;
   }> = [];
 
   for (const reqItem of input.items) {
+    if (reqItem.description !== undefined && typeof reqItem.description !== 'string') {
+      throw new Error('Product description must be text.');
+    }
     const prodRes = database.exec(
       `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units
        FROM products WHERE id = ?`,
@@ -1913,6 +1980,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
       unitName: multiUnit?.name || product.unit,
       unitsPerBase,
       taxRate: product.taxRate ?? getDefaultInventoryTaxRate(database),
+      description: reqItem.description ?? '',
     });
   }
 
@@ -1978,7 +2046,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
       const row = existingSale[0].values[0];
       const saleId = Number(row[0]);
       const existingItems = database.exec(
-        'SELECT product_id, quantity, unit_price, unit_id, units_per_base, tax_rate FROM sale_items WHERE sale_id = ? ORDER BY id ASC',
+        'SELECT product_id, quantity, unit_price, unit_id, units_per_base, tax_rate, description FROM sale_items WHERE sale_id = ? ORDER BY id ASC',
         [saleId]
       )[0]?.values || [];
       const sameItems =
@@ -1991,7 +2059,8 @@ export async function createSale(input: CreateSaleInput): Promise<{
             Math.abs(Number(existingItem[2]) - item.unitPrice) < 0.005 &&
             String(existingItem[3] || '') === item.unitId &&
             Number(existingItem[4] || 1) === item.unitsPerBase &&
-            Number(existingItem[5]) === item.taxRate
+            Number(existingItem[5]) === item.taxRate &&
+            String(existingItem[6] || '') === item.description
           );
         });
       const sameRequest =
@@ -2075,9 +2144,9 @@ export async function createSale(input: CreateSaleInput): Promise<{
     const taxLine = taxBreakdown.lines[itemIndex];
     database.run(
       `INSERT INTO sale_items (
-         sale_id, product_id, sku, product_name, quantity, unit_price, line_total, name_ar,
+         sale_id, product_id, sku, product_name, quantity, unit_price, line_total, name_ar, description,
          unit_id, unit_name, units_per_base, tax_rate, tax_amount, discount_amount
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         saleId,
         item.product.id,
@@ -2087,6 +2156,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
         item.unitPrice,
         item.lineTotal,
         item.product.nameAr ?? '',
+        item.description,
         item.unitId,
         item.unitName,
         item.unitsPerBase,
@@ -2103,6 +2173,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
       sku: item.product.sku,
       productName: item.product.name,
       nameAr: item.product.nameAr,
+      description: item.description,
       quantity: item.quantity,
       unitPrice: item.unitPrice,
       lineTotal: item.lineTotal,
@@ -3323,6 +3394,15 @@ export async function authenticateUser(
   };
 }
 
+export async function hasDefaultAdminCredentials(): Promise<boolean> {
+  const database = await getDb();
+  const result = database.exec(
+    'SELECT 1 FROM users WHERE lower(username) = ? AND password = ? LIMIT 1',
+    [DEFAULT_POS_ADMIN_USERNAME, DEFAULT_POS_ADMIN_PASSWORD]
+  );
+  return Boolean(result[0]?.values[0]);
+}
+
 export async function listUsers(): Promise<UserAccount[]> {
   const database = await getDb();
   const res = database.exec(
@@ -3392,6 +3472,48 @@ export async function createUser(input: {
     displayName,
     permissions,
   };
+}
+
+export async function replaceUsersWithRegisteredAdmin(input: {
+  username: string;
+  password: string;
+}): Promise<void> {
+  const username = input.username.trim();
+  if (!username || !input.password) {
+    throw new Error('Registered username and password are required.');
+  }
+  if (username.toLowerCase() === DEFAULT_POS_ADMIN_USERNAME) {
+    throw new Error('The registered account cannot replace the primary aptadmin account.');
+  }
+
+  const database = await getDb();
+  const primaryAdmin = database.exec(
+    'SELECT id FROM users WHERE username = ?',
+    [DEFAULT_POS_ADMIN_USERNAME]
+  );
+  if (!primaryAdmin[0]?.values[0]) {
+    throw new Error('The primary aptadmin account is missing; local user credentials were not changed.');
+  }
+
+  database.run('BEGIN TRANSACTION');
+  try {
+    database.run('DELETE FROM users WHERE username != ?', [DEFAULT_POS_ADMIN_USERNAME]);
+    database.run(
+      'INSERT INTO users (username, password, role, display_name, permissions) VALUES (?, ?, ?, ?, ?)',
+      [
+        username,
+        input.password,
+        'admin',
+        username,
+        'register,inventory,purchases,customers,vendors,accounts,reports,sales,edit-sales,sales-return,manage-sales-returns,delete-sales,settings',
+      ]
+    );
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
+  saveDatabase();
 }
 
 export async function updateUser(
@@ -3472,6 +3594,24 @@ export async function deleteUser(id: number): Promise<boolean> {
   database.run('DELETE FROM users WHERE id = ?', [id]);
   saveDatabase();
   return true;
+}
+
+export async function removeBlockedSystemCredentials(): Promise<number> {
+  const database = await getDb();
+  const result = database.exec(
+    'SELECT COUNT(*) FROM users WHERE lower(username) != ?',
+    ['aptadmin']
+  );
+  const removedCount = Number(result[0]?.values[0]?.[0] ?? 0);
+  database.run(
+    'DELETE FROM users WHERE lower(username) != ?',
+    ['aptadmin']
+  );
+  database.run(
+    "DELETE FROM settings WHERE key IN ('registeredSystem', 'appVersion', 'disabledAppComponents', 'versionComponentPolicies', 'registrationDetails')"
+  );
+  saveDatabase();
+  return removedCount;
 }
 
 // ----------------- CUSTOMERS -----------------
@@ -4523,11 +4663,15 @@ export async function updateSaleInvoice(
     unitName: string;
     unitsPerBase: number;
     taxRate: number;
+    description: string;
   }> = [];
   const requestedQuantities = new Map<number, number>();
   const availableStocks = new Map<number, number>();
 
   for (const item of input.items) {
+    if (item.description !== undefined && typeof item.description !== 'string') {
+      throw new Error('Product description must be text.');
+    }
     if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
       throw new Error('Invoice item quantities must be positive whole numbers.');
     }
@@ -4565,6 +4709,7 @@ export async function updateSaleInvoice(
       unitName: multiUnit?.name || product.unit,
       unitsPerBase,
       taxRate: product.taxRate ?? getDefaultInventoryTaxRate(database),
+      description: item.description ?? '',
     });
     requestedQuantities.set(
       product.id,
@@ -4641,9 +4786,9 @@ export async function updateSaleInvoice(
       const taxLine = taxBreakdown.lines[itemIndex];
       database.run(
         `INSERT INTO sale_items (
-           sale_id, product_id, sku, product_name, quantity, unit_price, line_total, name_ar,
+           sale_id, product_id, sku, product_name, quantity, unit_price, line_total, name_ar, description,
            unit_id, unit_name, units_per_base, tax_rate, tax_amount, discount_amount
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           saleId,
           item.product.id,
@@ -4653,6 +4798,7 @@ export async function updateSaleInvoice(
           item.unitPrice,
           item.lineTotal,
           item.product.nameAr || '',
+          item.description,
           item.unitId,
           item.unitName,
           item.unitsPerBase,

@@ -1,7 +1,7 @@
 {
   "name": "counterline-pos",
   "private": true,
-  "version": "1.0.24",
+  "version": "1.0.26",
   "description": "aptPOS retail billing and inventory desktop application",
   "author": "aptPOS",
   "type": "module",
@@ -21,6 +21,7 @@
     "electron:preview": "npm run build && npm run electron:compile && electron dist-electron/main.js"
   },
   "dependencies": {
+    "dotenv": "^17.4.2",
     "electron-updater": "^6.8.11",
     "express": "^4.21.2",
     "sql.js": "^1.15.2"
@@ -38,7 +39,6 @@
     "autoprefixer": "^10.4.21",
     "concurrently": "^9.1.2",
     "cross-env": "^7.0.3",
-    "dotenv": "^17.2.3",
     "electron": "^33.0.0",
     "electron-builder": "^25.1.8",
     "esbuild": "^0.28.0",

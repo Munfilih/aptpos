@@ -517,6 +517,11 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                               {item.productName}
                             </div>
                           )}
+                          {item.description && (
+                            <div className="mt-0.5 whitespace-pre-wrap break-words text-[10px] leading-tight text-slate-600">
+                              {item.description}
+                            </div>
+                          )}
                           {showNameAr && item.nameAr && (
                             <div className="text-[10px] text-slate-600 font-arabic font-medium leading-tight mt-0.5" dir="rtl">
                               {item.nameAr}
@@ -795,6 +800,11 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                   <div key={item.id} className="border-b border-dashed border-slate-200 py-1.5 last:border-0">
                     {showNameEn && (
                       <div className="font-medium text-slate-900 break-words">{item.productName}</div>
+                    )}
+                    {item.description && (
+                      <div className="mt-0.5 whitespace-pre-wrap break-words text-[10px] text-slate-600">
+                        {item.description}
+                      </div>
                     )}
                     {showNameAr && item.nameAr && (
                       <div className="text-[10px] text-slate-600 break-words" dir="rtl">

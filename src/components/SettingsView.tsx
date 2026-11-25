@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Check,
+  Copy,
   Printer,
   Store,
   Percent,
@@ -27,7 +28,6 @@ import {
   Sun,
 } from 'lucide-react';
 import type {
-  AppComponentId,
   AppVersion,
   InvoiceTemplateSettings,
   PaperWidth,
@@ -41,10 +41,6 @@ import type {
   VersionComponentPolicies,
 } from '../types/pos';
 import { APP_COMPONENTS, APP_VERSIONS } from '../types/pos';
-import {
-  getAllVersionComponentPolicies,
-  getAllowedComponentsForVersion,
-} from '../utils/versionComponentPolicies';
 import { useLanguage } from '../i18n/LanguageContext';
 import { BUILT_IN_PAYMENT_METHODS, getPaymentMethods } from '../utils/paymentMethods';
 import { MINIMUM_INVOICE_MARGIN_MM, resolveInvoiceMarginsMm } from '../utils/thermalPrinting';
@@ -56,7 +52,6 @@ interface SettingsViewProps {
   onActiveSectionChange: (section: SettingsSectionId) => void;
   showSectionNavigation?: boolean;
   printQueue: PrintJob[];
-  isAdmin: boolean;
   isAppAdmin: boolean;
   canRegisterSystem: boolean;
   theme: ThemeMode;
@@ -73,30 +68,73 @@ interface SettingsViewProps {
     appVersion: AppVersion;
   }>;
   onLoadVersionComponentPolicies: () => Promise<VersionComponentPolicies>;
-  onSaveVersionComponentPolicies: (
-    policies: VersionComponentPolicies,
-    password: string
-  ) => Promise<VersionComponentPolicies>;
   onFlushPrintQueue: () => Promise<void>;
-  onResetDatabase?: () => Promise<void>;
+  onResetDatabase?: (password: string) => Promise<void>;
   onRestoreDatabase?: (buffer: ArrayBuffer) => Promise<void>;
 }
 
 type BackupMode = 'on-close' | 'manual' | 'scheduled';
+type CardDimensionField =
+  | 'productCardWidthIn'
+  | 'productCardHeightIn'
+  | 'categoryCardWidthIn'
+  | 'categoryCardHeightIn';
+
+function formatRegistrationDate(value: string | null | undefined, locale: string): string {
+  if (!value) return '—';
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(value) ||
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return value;
+  }
+  return new Intl.DateTimeFormat(locale, { dateStyle: 'medium' }).format(date);
+}
+
+const CARD_DIMENSION_DEFAULTS: Record<CardDimensionField, number> = {
+  productCardWidthIn: 2,
+  productCardHeightIn: 3,
+  categoryCardWidthIn: 2,
+  categoryCardHeightIn: 3,
+};
+
+function resolveCardDimension(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function normalizeCardDimensionSettings(settings: StoreSettings): StoreSettings {
+  return {
+    ...settings,
+    productCardWidthIn: resolveCardDimension(settings.productCardWidthIn, CARD_DIMENSION_DEFAULTS.productCardWidthIn),
+    productCardHeightIn: resolveCardDimension(settings.productCardHeightIn, CARD_DIMENSION_DEFAULTS.productCardHeightIn),
+    categoryCardWidthIn: resolveCardDimension(settings.categoryCardWidthIn, CARD_DIMENSION_DEFAULTS.categoryCardWidthIn),
+    categoryCardHeightIn: resolveCardDimension(settings.categoryCardHeightIn, CARD_DIMENSION_DEFAULTS.categoryCardHeightIn),
+  };
+}
+
+function getCardDimensionInputs(settings: StoreSettings): Record<CardDimensionField, string> {
+  const normalizedSettings = normalizeCardDimensionSettings(settings);
+  return {
+    productCardWidthIn: String(normalizedSettings.productCardWidthIn),
+    productCardHeightIn: String(normalizedSettings.productCardHeightIn),
+    categoryCardWidthIn: String(normalizedSettings.categoryCardWidthIn),
+    categoryCardHeightIn: String(normalizedSettings.categoryCardHeightIn),
+  };
+}
 
 interface SettingsSectionTabsProps {
   activeSection: SettingsSectionId | null;
   isAppAdmin: boolean;
-  canRegisterSystem?: boolean;
-  themeOnly?: boolean;
   onSelect: (section: SettingsSectionId) => void;
 }
 
 export const SettingsSectionTabs: React.FC<SettingsSectionTabsProps> = ({
   activeSection,
   isAppAdmin,
-  canRegisterSystem = false,
-  themeOnly = false,
   onSelect,
 }) => {
   const { t, isRtl } = useLanguage();
@@ -114,18 +152,11 @@ export const SettingsSectionTabs: React.FC<SettingsSectionTabsProps> = ({
     { id: 'version', label: isRtl ? 'الإصدار' : 'Version' },
     { id: 'updates', label: isRtl ? 'التحديثات' : 'Update' },
   ];
-  const sections = themeOnly
-    ? allSections.filter((section) => section.id === 'screen')
-    : allSections.filter(
-      (section) =>
-        isAppAdmin ||
-        !['users', 'database', 'version'].includes(section.id) &&
-          (section.id !== 'registration' || canRegisterSystem)
-      );
-
   return (
     <div className="settings-section-tabs">
-      {sections.map((section) => {
+      {allSections
+        .filter((section) => isAppAdmin || (section.id !== 'users' && section.id !== 'version'))
+        .map((section) => {
         const active = activeSection === section.id;
         return (
           <button
@@ -151,7 +182,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onActiveSectionChange,
   showSectionNavigation = true,
   printQueue,
-  isAdmin,
   isAppAdmin,
   canRegisterSystem,
   theme,
@@ -162,13 +192,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onActivateVersion,
   onActivateRegistrationKey,
   onLoadVersionComponentPolicies,
-  onSaveVersionComponentPolicies,
   onFlushPrintQueue,
   onResetDatabase,
   onRestoreDatabase,
 }) => {
   const { t, language, setLanguage, isRtl } = useLanguage();
-  const [form, setForm] = useState<StoreSettings>(settings);
+  const [form, setForm] = useState<StoreSettings>(() => normalizeCardDimensionSettings(settings));
+  const [cardDimensionInputs, setCardDimensionInputs] = useState<Record<CardDimensionField, string>>(
+    () => getCardDimensionInputs(settings)
+  );
   const [selectedTemplate, setSelectedTemplate] = useState<PaperWidth>(settings.paperWidth || '80mm');
   const [availablePrinters, setAvailablePrinters] = useState<Array<{ name: string; displayName: string }>>([]);
   const [printerListError, setPrinterListError] = useState<string | null>(null);
@@ -182,13 +214,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [settingsSaveError, setSettingsSaveError] = useState<string | null>(null);
   const [versionActivationOpen, setVersionActivationOpen] = useState(false);
   const [policyVersion, setPolicyVersion] = useState<AppVersion>(settings.appVersion || 'Standard');
-  const [versionPolicyAdminPassword, setVersionPolicyAdminPassword] = useState('');
+  const [versionPolicies, setVersionPolicies] = useState<VersionComponentPolicies>({});
   const [versionPolicyLoading, setVersionPolicyLoading] = useState(false);
   const [versionPoliciesLoaded, setVersionPoliciesLoaded] = useState(false);
-  const [versionPolicySaving, setVersionPolicySaving] = useState(false);
+  const [versionPolicyLoadAttempt, setVersionPolicyLoadAttempt] = useState(0);
   const [versionPolicyError, setVersionPolicyError] = useState<string | null>(null);
-  const versionPolicySaveQueue = useRef<Promise<void>>(Promise.resolve());
-  const pendingVersionPolicySaves = useRef(0);
   const [versionAdminPassword, setVersionAdminPassword] = useState('');
   const [versionActivationBusy, setVersionActivationBusy] = useState(false);
   const [versionActivationError, setVersionActivationError] = useState<string | null>(null);
@@ -197,10 +227,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [registrationKeyBusy, setRegistrationKeyBusy] = useState(false);
   const [registrationKeyError, setRegistrationKeyError] = useState<string | null>(null);
   const [registrationKeySuccess, setRegistrationKeySuccess] = useState<string | null>(null);
+  const [systemCode, setSystemCode] = useState('');
+  const [loadingSystemCode, setLoadingSystemCode] = useState(false);
+  const [systemCodeError, setSystemCodeError] = useState<string | null>(null);
+  const [systemCodeCopied, setSystemCodeCopied] = useState(false);
   const [newPaymentMethod, setNewPaymentMethod] = useState('');
   const [editingPaymentMethod, setEditingPaymentMethod] = useState<string | null>(null);
   const [paymentMethodError, setPaymentMethodError] = useState<string | null>(null);
   const [showResetModal, setShowResetModal] = useState(false);
+  const [resetAdminPassword, setResetAdminPassword] = useState('');
   const [isResetting, setIsResetting] = useState(false);
   const [resetSuccess, setResetSuccess] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
@@ -460,7 +495,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [userActionSuccess, setUserActionSuccess] = useState<string | null>(null);
 
   const fetchUsers = async () => {
-    if (!isAppAdmin) return;
     setUsersLoading(true);
     try {
       const res = await fetch('/api/users');
@@ -476,25 +510,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   useEffect(() => {
-    if (isAppAdmin) {
-      fetchUsers();
-    }
+    if (isAppAdmin) void fetchUsers();
   }, [isAppAdmin]);
 
   useEffect(() => {
-    if (!isAdmin && !isAppAdmin && activeSettingsSection !== 'screen') {
-      onActiveSectionChange('screen');
-    } else if (
-      isAdmin &&
+    if (
       !isAppAdmin &&
-      (activeSettingsSection === 'users' ||
-        activeSettingsSection === 'database' ||
-        (activeSettingsSection === 'registration' && !canRegisterSystem) ||
-        activeSettingsSection === 'version')
+      (activeSettingsSection === 'users' || activeSettingsSection === 'version')
     ) {
       onActiveSectionChange('sales');
     }
-  }, [isAdmin, isAppAdmin, canRegisterSystem, activeSettingsSection, onActiveSectionChange]);
+  }, [activeSettingsSection, isAppAdmin, onActiveSectionChange]);
 
   useEffect(() => {
     const api = window.electronAPI;
@@ -675,9 +701,28 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   // Synchronize form when external settings update
   useEffect(() => {
-    setForm(settings);
+    const updatedSettings = normalizeCardDimensionSettings(settings);
+    setForm(updatedSettings);
+    setCardDimensionInputs(getCardDimensionInputs(updatedSettings));
     setSelectedTemplate(settings.paperWidth || '80mm');
   }, [settings]);
+
+  const updateCardDimensionInput = (field: CardDimensionField, value: string) => {
+    setCardDimensionInputs((current) => ({ ...current, [field]: value }));
+    const parsedValue = Number(value);
+    if (value.trim() && Number.isFinite(parsedValue) && parsedValue > 0) {
+      setForm((current) => ({ ...current, [field]: parsedValue }));
+    }
+  };
+
+  const normalizeCardDimensionInput = (field: CardDimensionField) => {
+    const parsedValue = Number(cardDimensionInputs[field]);
+    const value = Number.isFinite(parsedValue) && parsedValue > 0
+      ? parsedValue
+      : CARD_DIMENSION_DEFAULTS[field];
+    setCardDimensionInputs((current) => ({ ...current, [field]: String(value) }));
+    setForm((current) => ({ ...current, [field]: value }));
+  };
 
   useEffect(() => {
     setPolicyVersion(settings.appVersion || 'Standard');
@@ -696,7 +741,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     void onLoadVersionComponentPolicies()
       .then((policies) => {
         if (!active) return;
-        setForm((current) => ({ ...current, versionComponentPolicies: policies }));
+        setVersionPolicies(policies);
         setVersionPoliciesLoaded(true);
       })
       .catch((error: unknown) => {
@@ -712,7 +757,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     return () => {
       active = false;
     };
-  }, [activeSettingsSection, settings.registeredSystem, onLoadVersionComponentPolicies]);
+  }, [
+    activeSettingsSection,
+    settings.registeredSystem,
+    onLoadVersionComponentPolicies,
+    versionPolicyLoadAttempt,
+  ]);
 
   useLayoutEffect(() => {
     settingsViewRef.current?.querySelectorAll<HTMLElement>('.settings-content-scroll').forEach((pane) => {
@@ -802,7 +852,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       const result = await onActivateRegistrationKey(registrationKey.trim());
       setRegistrationKey('');
       setRegistrationKeySuccess(
-        `Registered as ${result.appVersion}. The owner account "${result.username}" is ready; sign out and use it to continue.`
+        `Registered as ${result.appVersion}. Other local login accounts were removed, the primary aptadmin account was kept, and "${result.username}" is ready. Sign out and use the license account to continue.`
       );
     } catch (error) {
       setRegistrationKeyError(
@@ -813,53 +863,51 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
-  const queueVersionPolicySave = (policies: VersionComponentPolicies) => {
-    const password = versionPolicyAdminPassword.trim();
-    if (!versionPoliciesLoaded || !password) return;
-
-    pendingVersionPolicySaves.current += 1;
-    setVersionPolicySaving(true);
-    setVersionPolicyError(null);
-    const save = versionPolicySaveQueue.current.then(() =>
-      onSaveVersionComponentPolicies(policies, password)
-    );
-    versionPolicySaveQueue.current = save.then(() => undefined, () => undefined);
-    void save
-      .then((savedPolicies) => {
-        if (JSON.stringify(savedPolicies) !== JSON.stringify(policies)) {
-          throw new Error('Firebase returned different version policies than the ones saved.');
+  useEffect(() => {
+    if (activeSettingsSection !== 'registration' || !canRegisterSystem || systemCode) {
+      return;
+    }
+    let active = true;
+    setLoadingSystemCode(true);
+    setSystemCodeError(null);
+    fetch('/api/registration/system-code')
+      .then(async (response) => {
+        const data = await response.json().catch(() => null);
+        const code = typeof data?.systemCode === 'string' ? data.systemCode : '';
+        if (!response.ok || !code) {
+          throw new Error(
+            typeof data?.error === 'string'
+              ? data.error
+              : (isRtl ? 'تعذر تحميل رمز النظام.' : "Could not load this installation's system code.")
+          );
         }
-        setVersionPolicyError(null);
+        if (active) setSystemCode(code);
       })
       .catch((error: unknown) => {
-        setVersionPolicyError(
-          error instanceof Error ? error.message : 'Could not save Firebase version policies.'
-        );
+        if (active) {
+          setSystemCodeError(
+            error instanceof Error ? error.message : (isRtl ? 'تعذر تحميل رمز النظام.' : 'Could not load the system code.')
+          );
+        }
       })
       .finally(() => {
-        pendingVersionPolicySaves.current -= 1;
-        if (pendingVersionPolicySaves.current === 0) setVersionPolicySaving(false);
+        if (active) setLoadingSystemCode(false);
       });
-  };
 
-  const saveAllVersionPolicies = () => {
-    queueVersionPolicySave(getAllVersionComponentPolicies(form));
-  };
-
-  const updateAllowedComponent = (component: AppComponentId, allowed: boolean) => {
-    const policies = getAllVersionComponentPolicies(form);
-    const allowedComponents = new Set(policies[policyVersion]);
-    if (allowed) allowedComponents.add(component);
-    else allowedComponents.delete(component);
-    const updatedPolicies = {
-      ...policies,
-      [policyVersion]: Array.from(allowedComponents),
+    return () => {
+      active = false;
     };
-    setForm((current) => ({
-      ...current,
-      versionComponentPolicies: updatedPolicies,
-    }));
-    queueVersionPolicySave(updatedPolicies);
+  }, [activeSettingsSection, canRegisterSystem, isRtl, systemCode]);
+
+  const handleCopySystemCode = async () => {
+    if (!systemCode) return;
+    try {
+      await navigator.clipboard.writeText(systemCode);
+      setSystemCodeCopied(true);
+      setTimeout(() => setSystemCodeCopied(false), 2000);
+    } catch {
+      setSystemCodeCopied(false);
+    }
   };
 
   const paymentMethods = getPaymentMethods(form.paymentMethods);
@@ -935,11 +983,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleConfirmReset = async () => {
     if (!onResetDatabase) return;
+    if (!resetAdminPassword.trim()) {
+      setResetError('Enter the app admin password to reset the database.');
+      return;
+    }
     setIsResetting(true);
     setResetError(null);
     try {
-      await onResetDatabase();
+      await onResetDatabase(resetAdminPassword);
       setShowResetModal(false);
+      setResetAdminPassword('');
       setResetSuccess(true);
       setTimeout(() => setResetSuccess(false), 4000);
     } catch (error) {
@@ -1024,8 +1077,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <SettingsSectionTabs
             activeSection={activeSettingsSection}
             isAppAdmin={isAppAdmin}
-            canRegisterSystem={canRegisterSystem}
-            themeOnly={!isAdmin && !isAppAdmin}
             onSelect={onActiveSectionChange}
           />
         </nav>
@@ -1065,6 +1116,72 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </section>
           )}
 
+          {activeSettingsSection === 'screen' && (
+            <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+              <h2 className="text-sm font-semibold text-slate-900">
+                {isRtl ? 'أبعاد بطاقات الكتالوج' : 'Catalog Card Dimensions'}
+              </h2>
+              <p className="mt-1 text-xs text-slate-500">
+                {isRtl
+                  ? 'حدد العرض والارتفاع بالبوصة لبطاقات المنتجات والتصنيفات.'
+                  : 'Set product and category card width and height in inches.'}
+              </p>
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {([
+                  {
+                    title: isRtl ? 'بطاقات المنتجات' : 'Product Cards',
+                    widthField: 'productCardWidthIn',
+                    heightField: 'productCardHeightIn',
+                  },
+                  {
+                    title: isRtl ? 'بطاقات التصنيفات' : 'Category Cards',
+                    widthField: 'categoryCardWidthIn',
+                    heightField: 'categoryCardHeightIn',
+                  },
+                ] as const).map((group) => (
+                  <div key={group.widthField} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <h3 className="text-xs font-semibold text-slate-800">{group.title}</h3>
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                      {([
+                        {
+                          field: group.widthField,
+                          label: isRtl ? 'العرض' : 'Width',
+                          ariaLabel: isRtl ? `${group.title} - العرض بالبوصة` : `${group.title} width in inches`,
+                        },
+                        {
+                          field: group.heightField,
+                          label: isRtl ? 'الارتفاع' : 'Height',
+                          ariaLabel: isRtl ? `${group.title} - الارتفاع بالبوصة` : `${group.title} height in inches`,
+                        },
+                      ] as const).map((dimension) => (
+                        <label key={dimension.field} className="block text-xs font-medium text-slate-700">
+                          {dimension.label}
+                          <span className="mt-1 flex items-center rounded-md border border-slate-300 bg-white focus-within:border-blue-600 focus-within:ring-2 focus-within:ring-blue-100">
+                            <input
+                              type="number"
+                              min="0.1"
+                              step="0.1"
+                              inputMode="decimal"
+                              aria-label={dimension.ariaLabel}
+                              value={cardDimensionInputs[dimension.field]}
+                              onChange={(event) => updateCardDimensionInput(dimension.field, event.target.value)}
+                              onBlur={() => normalizeCardDimensionInput(dimension.field)}
+                              className="min-w-0 flex-1 bg-transparent px-2.5 py-2 text-sm text-slate-900 focus:outline-none"
+                            />
+                            <span className="px-2 text-xs text-slate-500">in</span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-3 text-[11px] text-slate-500">
+                {isRtl ? 'الأبعاد الافتراضية لكلا النوعين هي 2 × 3 بوصات.' : 'Both default to 2 × 3 inches.'}
+              </p>
+            </section>
+          )}
+
           {/* Main Settings Form */}
           <form
             id="settings-form"
@@ -1074,16 +1191,63 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             {settingsSaveError && (
               <p className="text-xs text-red-600" role="alert">{settingsSaveError}</p>
             )}
-            {canRegisterSystem && activeSettingsSection === 'registration' && (
-              <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
-                <h2 className="text-sm font-semibold text-slate-900">
-                  {isRtl ? 'تسجيل النظام' : 'Register this system'}
-                </h2>
-                <p className="mt-1 text-xs leading-5 text-slate-500">
-                  {isRtl
-                    ? 'أدخل مفتاح التسجيل المقدم من تطبيق المصادقة لتفعيل هذا النظام.'
-                    : 'Enter the registration key provided by the Auth app to activate this system.'}
-                </p>
+            {activeSettingsSection === 'registration' && (
+              <section className={settings.registeredSystem ? '' : 'rounded-xl border border-slate-200 bg-white p-4 shadow-xs'}>
+                {!settings.registeredSystem && (
+                  <>
+                    <h2 className="text-sm font-semibold text-slate-900">
+                      {isRtl ? 'تسجيل النظام' : 'Register this system'}
+                    </h2>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      {isRtl
+                        ? 'شارك رمز النظام مع تطبيق المصادقة ثم أدخل مفتاح التسجيل لتفعيل هذا النظام.'
+                        : 'Share the system code with the Auth app, then enter the registration key to activate this system.'}
+                    </p>
+                  </>
+                )}
+                {!settings.registeredSystem && (
+                <div className="mt-4 max-w-md">
+                  <label className="block text-xs font-medium text-slate-700">
+                    {isRtl ? 'رمز النظام' : 'System Code'}
+                  </label>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <input
+                      type="text"
+                      readOnly
+                      aria-label={isRtl ? 'رمز النظام' : 'System Code'}
+                      value={loadingSystemCode ? (isRtl ? 'جارٍ تحميل رمز النظام...' : 'Loading system code…') : systemCode}
+                      className="w-full rounded-md border border-slate-300 bg-slate-50 px-3 py-2 font-mono text-sm text-slate-800 select-all focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void handleCopySystemCode()}
+                      disabled={!systemCode || loadingSystemCode}
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 shadow-xs hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      title={isRtl ? 'نسخ رمز النظام' : 'Copy System Code'}
+                    >
+                      {systemCodeCopied ? (
+                        <>
+                          <Check className="h-4 w-4 text-emerald-600" />
+                          <span>{isRtl ? 'تم النسخ' : 'Copied'}</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-4 w-4 text-slate-500" />
+                          <span>{isRtl ? 'نسخ' : 'Copy'}</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  {systemCodeError && (
+                    <p className="mt-1 text-xs text-red-600" role="alert">{systemCodeError}</p>
+                  )}
+                  <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                    {isRtl
+                      ? 'شارك هذا الرمز مع المسؤول لإنشاء مفتاح التسجيل الخاص بهذا الجهاز.'
+                      : 'Share this code with your administrator to generate a registration key for this machine.'}
+                  </p>
+                </div>
+                )}
                 {settings.registeredSystem ? (
                   <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
                     <p className="text-sm font-semibold text-emerald-900">
@@ -1092,6 +1256,56 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <p className="mt-1 text-xs text-emerald-800">
                       {isRtl ? 'الإصدار:' : 'Version:'} {settings.appVersion || 'Standard'}
                     </p>
+                    {settings.registrationDetails && (
+                      <div className="mt-3 rounded-lg border border-emerald-200 bg-white/80 p-3">
+                        <h3 className="text-xs font-semibold text-slate-900">
+                          {isRtl ? 'تفاصيل تسجيل النشاط التجاري' : 'Business registration details'}
+                        </h3>
+                        <dl className="mt-2 grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-2">
+                          {[
+                            [isRtl ? 'اسم النشاط التجاري' : 'Business name', settings.registrationDetails.businessName],
+                            [isRtl ? 'العنوان' : 'Address', settings.registrationDetails.address],
+                            [isRtl ? 'رقم الجوال' : 'Mobile number', settings.registrationDetails.mobileNumber],
+                            [isRtl ? 'رمز النظام' : 'System code', settings.registrationDetails.systemCode],
+                            [isRtl ? 'اسم المستخدم الأساسي' : 'Primary username', settings.registrationDetails.username],
+                            [isRtl ? 'الإصدار' : 'Version', settings.registrationDetails.appVersion],
+                            [
+                              isRtl ? 'تاريخ بداية AMC' : 'AMC start date',
+                              formatRegistrationDate(settings.registrationDetails.amcStartDate, isRtl ? 'ar' : 'en'),
+                            ],
+                            [
+                              isRtl ? 'تاريخ انتهاء AMC' : 'AMC expiry date',
+                              settings.registrationDetails.amcEndDate
+                                ? formatRegistrationDate(settings.registrationDetails.amcEndDate, isRtl ? 'ar' : 'en')
+                                : (isRtl ? 'بدون AMC' : 'No AMC'),
+                            ],
+                          ].map(([label, value]) => (
+                            <div key={label} className="min-w-0">
+                              <dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">{label}</dt>
+                              <dd className="mt-0.5 break-words text-xs font-medium text-slate-800">{value}</dd>
+                            </div>
+                          ))}
+                          {settings.registrationDetails.amcNotes?.trim() && (
+                            <div className="min-w-0 sm:col-span-2">
+                              <dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                {isRtl ? 'ملاحظات AMC' : 'AMC notes'}
+                              </dt>
+                              <dd className="mt-0.5 break-words text-xs font-medium text-slate-800">
+                                {settings.registrationDetails.amcNotes}
+                              </dd>
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                              {isRtl ? 'كلمة المرور الأساسية' : 'Primary password'}
+                            </dt>
+                            <dd className="mt-0.5 text-xs font-medium text-slate-800">
+                              {isRtl ? 'محفوظة بشكل آمن ولا تُعرض' : 'Protected on this device and not displayed'}
+                            </dd>
+                          </div>
+                        </dl>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <>
@@ -1105,6 +1319,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100"
                       />
                     </label>
+                    <p className="mt-2 max-w-xl text-[11px] leading-4 text-amber-700" role="note">
+                      {isRtl
+                        ? 'عند التفعيل، ستُستبدل حسابات الدخول الأخرى بحساب الترخيص، مع الاحتفاظ بحساب aptadmin الأساسي.'
+                        : 'Activation replaces other POS login accounts with the license account. The primary aptadmin account is kept.'}
+                    </p>
                     <button
                       type="button"
                       onClick={() => void handleRegistrationKeyActivation()}
@@ -1188,80 +1407,78 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </h2>
                   <p className="mt-1 text-xs text-slate-500">
                     {isRtl
-                      ? 'حدد المكونات المسموح بها لكل إصدار. تُحفظ التغييرات مباشرة في Firebase وتُطبق عند اختيار الإصدار.'
-                      : 'Choose allowed components independently for each version. Changes sync to Firebase immediately and apply when a version is selected.'}
+                      ? 'سياسات المكونات للعرض فقط. تُدار التغييرات من بوابة aptPOS User Admin.'
+                      : 'Component policies are read-only here. Manage changes from the aptPOS User Admin portal.'}
                   </p>
-                  <label className="mt-4 block max-w-sm text-xs font-medium text-slate-700">
-                    {isRtl ? 'كلمة مرور مسؤول aptadmin للمزامنة' : 'aptadmin password for Firebase updates'}
-                    <input
-                      type="password"
-                      autoComplete="current-password"
-                      value={versionPolicyAdminPassword}
-                      onChange={(event) => setVersionPolicyAdminPassword(event.target.value)}
-                      className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100"
-                    />
-                  </label>
                   {versionPolicyLoading && (
                     <p className="mt-3 text-xs text-slate-500" role="status">
                       {isRtl ? 'جارٍ تحميل سياسات Firebase...' : 'Loading Firebase version policies...'}
                     </p>
                   )}
-                  {versionPolicySaving && (
-                    <p className="mt-3 text-xs text-slate-500" role="status">
-                      {isRtl ? 'جارٍ الحفظ في Firebase...' : 'Saving changes to Firebase...'}
-                    </p>
-                  )}
                   {versionPolicyError && (
                     <p className="mt-3 text-xs text-red-600" role="alert">{versionPolicyError}</p>
                   )}
-                  <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label={isRtl ? 'إصدارات التطبيق' : 'App versions'}>
-                    {APP_VERSIONS.map((version) => {
-                      const allowedCount = getAllowedComponentsForVersion(form, version).length;
-                      return (
-                        <button
-                          key={version}
-                          type="button"
-                          role="tab"
-                          aria-selected={policyVersion === version}
-                          onClick={() => setPolicyVersion(version)}
-                          className={`rounded-md border px-3 py-2 text-xs font-semibold ${
-                            policyVersion === version
-                              ? 'border-blue-700 bg-blue-50 text-blue-800'
-                              : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                          }`}
-                        >
-                          {version} · {allowedCount}/{APP_COMPONENTS.length}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <h3 className="mt-4 text-xs font-semibold text-slate-700">
-                    {policyVersion} {isRtl ? 'المكونات المسموح بها' : 'allowed components'}
-                  </h3>
-                  <p className="mt-1 text-[11px] text-slate-500">
-                    {isRtl
-                      ? 'المكونات المحددة متاحة للمستخدمين. يبقى aptadmin قادراً على الوصول إلى جميع المكونات في الأنظمة غير المسجلة.'
-                      : 'Checked components are available to users. aptadmin retains full access on non-registered systems.'}
-                  </p>
-                  <div className="settings-item-list mt-3">
-                    {APP_COMPONENTS.map((component) => (
-                      <label
-                        key={component.id}
-                        className="settings-item-row cursor-pointer"
-                      >
-                        <span className="settings-item-copy text-sm font-medium text-slate-700">
-                          {isRtl ? component.labelAr : component.label}
-                        </span>
-                        <input
-                          type="checkbox"
-                          checked={getAllowedComponentsForVersion(form, policyVersion).includes(component.id)}
-                          disabled={!versionPoliciesLoaded || versionPolicyLoading || !versionPolicyAdminPassword.trim()}
-                          onChange={(event) => updateAllowedComponent(component.id, event.target.checked)}
-                          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                        />
-                      </label>
-                    ))}
-                  </div>
+                  {versionPolicyError && !versionPoliciesLoaded && (
+                    <button
+                      type="button"
+                      onClick={() => setVersionPolicyLoadAttempt((attempt) => attempt + 1)}
+                      disabled={versionPolicyLoading}
+                      className="mt-2 rounded-md border border-blue-200 px-3 py-1.5 text-xs font-semibold text-blue-800 hover:bg-blue-50 disabled:opacity-50"
+                    >
+                      {isRtl ? 'إعادة المحاولة' : 'Retry loading policies'}
+                    </button>
+                  )}
+                  {versionPoliciesLoaded && (
+                    <>
+                      <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label={isRtl ? 'إصدارات التطبيق' : 'App versions'}>
+                        {APP_VERSIONS.map((version) => {
+                          const allowedCount = versionPolicies[version]?.length ?? 0;
+                          return (
+                            <button
+                              key={version}
+                              type="button"
+                              role="tab"
+                              aria-selected={policyVersion === version}
+                              onClick={() => setPolicyVersion(version)}
+                              className={`rounded-md border px-3 py-2 text-xs font-semibold ${
+                                policyVersion === version
+                                  ? 'border-blue-700 bg-blue-50 text-blue-800'
+                                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                              }`}
+                            >
+                              {version} · {allowedCount}/{APP_COMPONENTS.length}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <h3 className="mt-4 text-xs font-semibold text-slate-700">
+                        {policyVersion} {isRtl ? 'المكونات المسموح بها' : 'allowed components'}
+                      </h3>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        {isRtl
+                          ? 'المكونات المحددة متاحة للمستخدمين. يبقى aptadmin قادراً على الوصول إلى جميع المكونات في الأنظمة غير المسجلة.'
+                          : 'Checked components are available to users. aptadmin retains full access on non-registered systems.'}
+                      </p>
+                      <div className="settings-item-list mt-3">
+                        {APP_COMPONENTS.map((component) => (
+                          <label
+                            key={component.id}
+                            className="settings-item-row"
+                          >
+                            <span className="settings-item-copy text-sm font-medium text-slate-700">
+                              {isRtl ? component.labelAr : component.label}
+                            </span>
+                            <input
+                              type="checkbox"
+                              checked={versionPolicies[policyVersion]?.includes(component.id) ?? false}
+                              disabled
+                              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </section>
               </div>
             )}
@@ -2083,7 +2300,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             )}
 
             {/* SECTION 5: DATABASE MAINTENANCE, BACKUP & RESTORE */}
-            {isAppAdmin && activeSettingsSection === 'database' && (
+            {activeSettingsSection === 'database' && (
               <div className="space-y-4">
                 <div className="px-1">
                   <h2 className="text-[15px] font-semibold text-[#1f1f1f] flex items-center gap-2">
@@ -2428,6 +2645,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       type="button"
                       onClick={() => {
                         setResetError(null);
+                        setResetAdminPassword('');
                         setShowResetModal(true);
                       }}
                       className="px-4 py-2 text-xs font-semibold text-white bg-red-700 hover:bg-red-800 rounded-lg shadow-sm transition-colors flex items-center gap-1.5"
@@ -2461,6 +2679,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </div>
                 )}
 
+                {settings.registeredSystem && settings.registrationDetails && (
+                  (() => {
+                    const registeredUser = usersList.find(
+                      (user) => user.username === settings.registrationDetails?.username
+                    );
+                    return registeredUser ? (
+                      <div className="flex flex-col gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
+                            <Shield className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">
+                              {isRtl ? 'مستخدم التسجيل الرئيسي' : 'Registered primary account'}
+                            </p>
+                            <p className="mt-0.5 font-mono text-sm font-bold text-slate-900">
+                              {registeredUser.username}
+                            </p>
+                            <p className="mt-0.5 text-[11px] text-slate-600">
+                              {registeredUser.displayName} · {registeredUser.role}
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEditUser(registeredUser)}
+                          className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-300 bg-white px-3 py-2 text-xs font-semibold text-emerald-800 shadow-xs hover:bg-emerald-100"
+                        >
+                          <Edit2 className="h-3.5 w-3.5" />
+                          {isRtl ? 'إدارة بيانات المستخدم' : 'Manage account'}
+                        </button>
+                      </div>
+                    ) : null;
+                  })()
+                )}
+
                 {/* User list */}
                 <div className="settings-item-list">
                   {usersLoading ? (
@@ -2473,6 +2727,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     usersList.map((u) => {
                       const isAdmin = u.role === 'admin';
                       const isPrimaryAdmin = u.username.toLowerCase() === 'aptadmin';
+                      const isRegisteredPrimary =
+                        settings.registeredSystem &&
+                        settings.registrationDetails?.username === u.username;
                       return (
                         <div
                           key={u.id}
@@ -2494,6 +2751,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                 }`}>
                                   {u.role}
                                 </span>
+                                {isRegisteredPrimary && (
+                                  <span className="inline-block rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+                                    {isRtl ? 'مستخدم التسجيل' : 'Registered'}
+                                  </span>
+                                )}
                               </div>
                               <div className="text-[11px] text-slate-500 mt-0.5 truncate">
                                 {u.displayName}
@@ -2516,7 +2778,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                             >
                               <Edit2 className="w-3.5 h-3.5" />
                             </button>
-                            {!isPrimaryAdmin && (
+                            {!isPrimaryAdmin && !isRegisteredPrimary && (
                               <button
                                 type="button"
                                 onClick={() => handleDeleteUser(u.id, u.username)}
@@ -2630,6 +2892,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               Are you sure you want to completely reset the database? All sales transactions, inventory records, purchase orders, and customers will be cleared and restored to default factory seed data.
             </p>
 
+            <label htmlFor="reset-admin-password" className="block text-xs font-semibold text-slate-700">
+              App admin password
+              <input
+                id="reset-admin-password"
+                type="password"
+                autoComplete="current-password"
+                autoFocus
+                required
+                value={resetAdminPassword}
+                onChange={(event) => setResetAdminPassword(event.target.value)}
+                disabled={isResetting}
+                className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
+              />
+            </label>
+
             {resetError && (
               <p role="alert" className="text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg p-3">
                 {resetError}
@@ -2640,14 +2917,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <button
                 type="button"
                 disabled={isResetting}
-                onClick={() => setShowResetModal(false)}
+                onClick={() => {
+                  setShowResetModal(false);
+                  setResetAdminPassword('');
+                }}
                 className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
               >
                 Cancel
               </button>
               <button
                 type="button"
-                disabled={isResetting}
+                disabled={isResetting || !resetAdminPassword.trim()}
                 onClick={handleConfirmReset}
                 className="px-4 py-2 text-xs font-semibold text-white bg-red-700 hover:bg-red-800 rounded-lg shadow-sm transition-colors flex items-center gap-1.5 disabled:opacity-50"
               >
@@ -3289,8 +3569,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </form>
         </div>
       )}
-      {(isAdmin || isAppAdmin) && (
-        <div className="settings-floating-save">
+      <div className="settings-floating-save">
           {savedNotice && (
             <span className="settings-save-notice" role="status">
               <Check className="h-4 w-4" />
@@ -3305,20 +3584,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           )}
           {activeSettingsSection === 'registration' ? null : activeSettingsSection === 'version' ? (
             <>
-              <button
-                type="button"
-                onClick={saveAllVersionPolicies}
-                disabled={versionPolicySaving || versionPolicyLoading || !versionPoliciesLoaded || !versionPolicyAdminPassword.trim()}
-                className="settings-save-button"
-              >
-                {versionPolicySaving
-                  ? isRtl ? 'جارٍ الحفظ...' : 'Saving...'
-                  : isRtl ? 'حفظ الإصدارات' : 'Save Versions'}
-              </button>
               {!settings.registeredSystem && (form.appVersion === 'Soft' || form.appVersion === 'Silver') && (
                 <button
                   type="button"
-                  disabled={versionActivationBusy || versionPolicySaving || !versionPoliciesLoaded}
+                  disabled={versionActivationBusy || !versionPoliciesLoaded}
                   onClick={() => {
                     setVersionActivationError(null);
                     setVersionAdminPassword('');
@@ -3340,8 +3609,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {saving ? 'Saving...' : isRtl ? 'حفظ الإعدادات' : 'Save All Settings'}
             </button>
           )}
-        </div>
-      )}
+      </div>
     </div>
   );
 };

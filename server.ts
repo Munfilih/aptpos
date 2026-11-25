@@ -3,7 +3,6 @@ import express from 'express';
 import fs from 'fs';
 import os from 'node:os';
 import path from 'path';
-import { createDecipheriv, createHash } from 'node:crypto';
 import type { Server } from 'http';
 import { fileURLToPath } from 'url';
 import {
@@ -35,6 +34,7 @@ import {
   deleteVendor,
   flushPrintQueue,
   getDb,
+  hasDefaultAdminCredentials,
   getDemoAccess,
   beginDemoOfflineGrace,
   clearDemoAccess,
@@ -56,8 +56,11 @@ import {
   listVendors,
   resetDatabase,
   restoreDatabase,
+  removeBlockedSystemCredentials,
+  replaceUsersWithRegisteredAdmin,
   reviewRegistrationRequest,
   saveDemoAccess,
+  clearRegisteredSystemSettings,
   syncDemoAccessStatus,
   updateCustomer,
   updateProduct,
@@ -75,7 +78,13 @@ import {
 } from './server/db';
 import { APP_COMPONENTS, APP_VERSIONS } from './src/types/pos';
 import { parseVersionComponentPolicies } from './src/utils/versionComponentPolicies';
-import type { AppComponentId, AppVersion, VersionComponentPolicies } from './src/types/pos';
+import type {
+  AppComponentId,
+  AppVersion,
+  PosScreenLayout,
+  RegistrationDetails,
+  VersionComponentPolicies,
+} from './src/types/pos';
 
 const translationCache = new Map<string, string>();
 const inFlightTranslations = new Map<string, Promise<string>>();
@@ -197,7 +206,7 @@ async function postToDemoPortal(
   body: Record<string, unknown>,
   timeoutMs = 60000
 ): Promise<Record<string, unknown>> {
-  const configuredUrl = process.env.DEMO_PORTAL_API_URL || 'https://aptpos-admin-api.onrender.com';
+  const configuredUrl = process.env.DEMO_PORTAL_API_URL || 'http://127.0.0.1:3002';
   let endpoint: URL;
   try {
     endpoint = new URL(pathname, configuredUrl.endsWith('/') ? configuredUrl : `${configuredUrl}/`);
@@ -247,15 +256,8 @@ async function postToDemoPortal(
   return payload as Record<string, unknown>;
 }
 
-async function requestVersionControlPortal(
-  method: 'GET' | 'PUT',
-  allowedModules?: VersionComponentPolicies
-): Promise<{ versionComponentPolicies: VersionComponentPolicies; updatedAt: string | null }> {
-  const apiKey = (process.env.VERSION_CONTROL_API_KEY || '').trim();
-  if (!apiKey) {
-    throw new Error('Set VERSION_CONTROL_API_KEY on both the POS server and Auth API.');
-  }
-  const configuredUrl = process.env.DEMO_PORTAL_API_URL || 'https://aptpos-admin-api.onrender.com';
+async function requestVersionControlPortal(): Promise<{ versionComponentPolicies: VersionComponentPolicies; updatedAt: string | null }> {
+  const configuredUrl = process.env.DEMO_PORTAL_API_URL || 'http://127.0.0.1:3002';
   let endpoint: URL;
   try {
     endpoint = new URL(
@@ -274,12 +276,7 @@ async function requestVersionControlPortal(
   let response: Response;
   try {
     response = await fetch(endpoint, {
-      method,
-      headers: {
-        'X-Version-Control-Key': apiKey,
-        ...(method === 'PUT' ? { 'Content-Type': 'application/json' } : {}),
-      },
-      ...(method === 'PUT' ? { body: JSON.stringify({ allowedModules }) } : {}),
+      method: 'GET',
       signal: controller.signal,
     });
   } catch (error) {
@@ -322,11 +319,7 @@ async function postToRegistrationPortal(
   pathname: string,
   body: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
-  const apiKey = (process.env.VERSION_CONTROL_API_KEY || '').trim();
-  if (!apiKey) {
-    throw new Error('Set VERSION_CONTROL_API_KEY on both the POS server and Auth API.');
-  }
-  const configuredUrl = process.env.DEMO_PORTAL_API_URL || 'https://aptpos-admin-api.onrender.com';
+  const configuredUrl = process.env.DEMO_PORTAL_API_URL || 'http://127.0.0.1:3002';
   let endpoint: URL;
   try {
     endpoint = new URL(pathname, configuredUrl.endsWith('/') ? configuredUrl : `${configuredUrl}/`);
@@ -345,7 +338,6 @@ async function postToRegistrationPortal(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Version-Control-Key': apiKey,
       },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -379,46 +371,114 @@ async function postToRegistrationPortal(
   return payload as Record<string, unknown>;
 }
 
-function decryptRegistrationCredentials(value: unknown): { username: string; password: string } {
-  const apiKey = (process.env.VERSION_CONTROL_API_KEY || '').trim();
-  if (!apiKey) throw new Error('Set VERSION_CONTROL_API_KEY on both the POS server and Auth API.');
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    !('version' in value) ||
-    value.version !== 1 ||
-    !('iv' in value) ||
-    typeof value.iv !== 'string' ||
-    !('tag' in value) ||
-    typeof value.tag !== 'string' ||
-    !('data' in value) ||
-    typeof value.data !== 'string'
-  ) {
-    throw new Error('The Auth API returned invalid encrypted registration credentials.');
-  }
-
-  const encryptionKey = createHash('sha256')
-    .update('aptpos-registration-credentials:v1:')
-    .update(apiKey)
-    .digest();
-  const decipher = createDecipheriv('aes-256-gcm', encryptionKey, Buffer.from(value.iv, 'base64'));
-  decipher.setAuthTag(Buffer.from(value.tag, 'base64'));
-  const plaintext = Buffer.concat([
-    decipher.update(Buffer.from(value.data, 'base64')),
-    decipher.final(),
-  ]).toString('utf8');
-  const credentials: unknown = JSON.parse(plaintext);
+function parsePreparedRegistrationCredentials(
+  prepared: Record<string, unknown>
+): { username: string; password: string } | undefined {
+  if (prepared.credentials === undefined) return undefined;
+  const credentials = prepared.credentials;
   if (
     typeof credentials !== 'object' ||
     credentials === null ||
     !('username' in credentials) ||
-    typeof credentials.username !== 'string' ||
-    !('password' in credentials) ||
-    typeof credentials.password !== 'string'
+    !('password' in credentials)
   ) {
     throw new Error('The Auth API returned invalid registration credentials.');
   }
-  return { username: credentials.username, password: credentials.password };
+  const username = credentials.username;
+  const password = credentials.password;
+  if (typeof username !== 'string' || typeof password !== 'string') {
+    throw new Error('The Auth API returned invalid registration credentials.');
+  }
+  if (prepared.username !== username) {
+    throw new Error('The Auth API returned mismatched registration credentials.');
+  }
+  const normalizedUsername = username.trim().toLowerCase();
+  if (normalizedUsername === 'aptadmin' || normalizedUsername === 'demo') {
+    throw new Error('The registered account cannot use the reserved username "aptadmin" or "demo".');
+  }
+  return { username, password };
+}
+
+function parseRegistrationDetails(value: unknown): RegistrationDetails | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('businessName' in value) ||
+    typeof value.businessName !== 'string' ||
+    !value.businessName.trim() ||
+    !('address' in value) ||
+    typeof value.address !== 'string' ||
+    !('mobileNumber' in value) ||
+    typeof value.mobileNumber !== 'string' ||
+    !('systemCode' in value) ||
+    typeof value.systemCode !== 'string' ||
+    !('username' in value) ||
+    typeof value.username !== 'string' ||
+    !('appVersion' in value)
+  ) {
+    throw new Error('The Auth API returned invalid business registration details.');
+  }
+  const appVersion = APP_VERSIONS.find((version) => version === value.appVersion);
+  if (!appVersion) throw new Error('The Auth API returned an invalid business registration version.');
+  const details = value as Record<string, unknown>;
+  const parseAmcDate = (date: unknown, field: string): string | null | undefined => {
+    if (date === undefined || date === null) return date;
+    const parsedDate = typeof date === 'string' ? new Date(`${date}T00:00:00.000Z`) : null;
+    if (
+      typeof date !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+      !parsedDate ||
+      !Number.isFinite(parsedDate.getTime()) ||
+      parsedDate.toISOString().slice(0, 10) !== date
+    ) {
+      throw new Error(`The Auth API returned an invalid AMC ${field} date.`);
+    }
+    return date;
+  };
+  const amcStartDate = parseAmcDate(details.amcStartDate, 'start');
+  const amcEndDate = parseAmcDate(details.amcEndDate, 'end');
+  if (
+    (amcStartDate === undefined) !== (amcEndDate === undefined) ||
+    (amcStartDate === null) !== (amcEndDate === null)
+  ) {
+    throw new Error('The Auth API returned incomplete AMC dates.');
+  }
+  if (amcStartDate && amcEndDate && amcStartDate > amcEndDate) {
+    throw new Error('The Auth API returned an AMC end date before its start date.');
+  }
+  if (details.amcNotes !== undefined && typeof details.amcNotes !== 'string') {
+    throw new Error('The Auth API returned invalid AMC notes.');
+  }
+  return {
+    businessName: value.businessName,
+    address: value.address,
+    mobileNumber: value.mobileNumber,
+    systemCode: value.systemCode,
+    username: value.username,
+    appVersion,
+    ...(amcStartDate !== undefined ? { amcStartDate } : {}),
+    ...(amcEndDate !== undefined ? { amcEndDate } : {}),
+    ...(typeof details.amcNotes === 'string' ? { amcNotes: details.amcNotes } : {}),
+  };
+}
+
+function sameRegistrationDetails(
+  current: RegistrationDetails | undefined,
+  next: RegistrationDetails
+): boolean {
+  return Boolean(
+    current &&
+    current.businessName === next.businessName &&
+    current.address === next.address &&
+    current.mobileNumber === next.mobileNumber &&
+    current.systemCode === next.systemCode &&
+    current.username === next.username &&
+    current.appVersion === next.appVersion &&
+    current.amcStartDate === next.amcStartDate &&
+    current.amcEndDate === next.amcEndDate &&
+    current.amcNotes === next.amcNotes
+  );
 }
 
 const DEMO_OFFLINE_GRACE_MS = 60 * 60 * 1000;
@@ -438,19 +498,52 @@ function getDemoSystemInfo() {
   };
 }
 
+function parsePosScreenLayout(value: unknown): PosScreenLayout | undefined {
+  return value === 'pos' || value === 'rpos' ? value : undefined;
+}
+
+function getDemoPermissions(components: AppComponentId[]): string[] {
+  const permissions = new Set<string>();
+  components.forEach((component) => {
+    if (component === 'return-register' || component === 'return-history') {
+      permissions.add('sales-return');
+      permissions.add('manage-sales-returns');
+    } else if (component === 'shift') {
+      permissions.add('register');
+    } else {
+      permissions.add(component);
+    }
+  });
+  return [...permissions];
+}
+
 async function getCurrentDemoAccess(eventType: 'login' | 'check' = 'check'): Promise<{
-  status: 'never' | 'active' | 'expired' | 'registered';
+  status:
+    | 'never'
+    | 'pending'
+    | 'awaiting-activation'
+    | 'deactivated'
+    | 'previous-request'
+    | 'active'
+    | 'expired'
+    | 'registered'
+    | 'blocked';
   expiresAt: string | null;
   appVersion?: AppVersion;
+  screenType?: PosScreenLayout;
+  businessName?: string;
+  permissions?: string[];
   offlineGraceExpired?: boolean;
 }> {
   const systemCode = await getRegistrationSystemCode();
   try {
+    const defaultAdminCredentialsInUse = await hasDefaultAdminCredentials();
     const response = await postToDemoPortal(
       '/api/registration/demo-status-check',
       {
         systemCode,
         eventType,
+        defaultAdminCredentialsInUse,
         ...(eventType === 'login' ? { systemInfo: getDemoSystemInfo() } : {}),
       },
       10000
@@ -459,13 +552,30 @@ async function getCurrentDemoAccess(eventType: 'login' | 'check' = 'check'): Pro
       typeof response.active !== 'boolean' ||
       (response.expiresAt !== null && typeof response.expiresAt !== 'string') ||
       (response.revoked !== undefined && typeof response.revoked !== 'boolean') ||
-      (response.registered !== undefined && typeof response.registered !== 'boolean')
+      (response.registered !== undefined && typeof response.registered !== 'boolean') ||
+      (response.blocked !== undefined && typeof response.blocked !== 'boolean') ||
+      (response.screenType !== undefined && parsePosScreenLayout(response.screenType) === undefined) ||
+      (response.pendingRequest !== undefined && typeof response.pendingRequest !== 'boolean') ||
+      (response.pendingActivation !== undefined && typeof response.pendingActivation !== 'boolean') ||
+      (response.previousRequest !== undefined && typeof response.previousRequest !== 'boolean')
     ) {
       throw new Error('The demo status service returned an invalid response.');
     }
 
+    const localSettings = await getSettings();
+    if (response.blocked === true) {
+      if (!localSettings.systemCodeBlocked) {
+        await updateSettings({ systemCodeBlocked: true });
+      }
+      return { status: 'blocked', expiresAt: null };
+    }
+    if (localSettings.systemCodeBlocked) {
+      await updateSettings({ systemCodeBlocked: false });
+    }
+
     if (response.registered === true) {
       const appVersion = APP_VERSIONS.find((version) => version === response.appVersion);
+      const screenType = parsePosScreenLayout(response.screenType);
       if (!response.active || appVersion === undefined || !Array.isArray(response.allowedModules)) {
         throw new Error('The registered-system entitlement is invalid.');
       }
@@ -481,26 +591,51 @@ async function getCurrentDemoAccess(eventType: 'login' | 'check' = 'check'): Pro
       const disabledAppComponents = APP_COMPONENTS
         .map((component) => component.id)
         .filter((component) => !knownModules.includes(component));
-      const settings = await getSettings();
+      const settings = localSettings;
+      const registrationDetails =
+        response.registrationDetails === undefined
+          ? undefined
+          : parseRegistrationDetails(response.registrationDetails);
+      if (
+        registrationDetails &&
+        (registrationDetails.systemCode !== systemCode || registrationDetails.appVersion !== appVersion)
+      ) {
+        throw new Error('The registered-system details do not match this device.');
+      }
       const currentDisabled = [...(settings.disabledAppComponents || [])].sort();
       const nextDisabled = [...disabledAppComponents].sort();
+      const registrationDetailsChanged =
+        registrationDetails !== undefined &&
+        !sameRegistrationDetails(settings.registrationDetails, registrationDetails);
       if (
         settings.registeredSystem !== true ||
         settings.appVersion !== appVersion ||
-        currentDisabled.join(',') !== nextDisabled.join(',')
+        (screenType !== undefined && settings.posScreenLayout !== screenType) ||
+        currentDisabled.join(',') !== nextDisabled.join(',') ||
+        registrationDetailsChanged
       ) {
         await updateSettings({
           registeredSystem: true,
           appVersion,
           disabledAppComponents,
+          ...(screenType ? { posScreenLayout: screenType } : {}),
+          ...(registrationDetails ? { registrationDetails } : {}),
         });
       }
-      return { status: 'registered', expiresAt: null, appVersion };
+      const businessName = (registrationDetails || localSettings.registrationDetails)?.businessName?.trim();
+      return {
+        status: 'registered',
+        expiresAt: null,
+        appVersion,
+        ...(businessName ? { businessName } : {}),
+        ...(screenType ? { screenType } : {}),
+      };
     }
 
-    const localSettings = await getSettings();
-    if (localSettings.registeredSystem) {
-      await updateSettings({ registeredSystem: false });
+    if (localSettings.registeredSystem || Boolean(localSettings.registrationDetails)) {
+      // Portal no longer considers this system registered. Clear local registration
+      // state without destroying existing user accounts.
+      await updateSettings({ registeredSystem: false, registrationDetails: undefined });
     }
 
     const expiresAt = response.expiresAt;
@@ -509,7 +644,20 @@ async function getCurrentDemoAccess(eventType: 'login' | 'check' = 'check'): Pro
       throw new Error('The demo status service returned an invalid expiration date.');
     }
 
-    if (response.revoked === true || (!response.active && expirationTime === null)) {
+    if (response.revoked === true) {
+      await clearDemoAccess();
+      return { status: 'deactivated', expiresAt: null };
+    }
+    if (response.pendingRequest === true) {
+      return { status: 'pending', expiresAt };
+    }
+    if (response.pendingActivation === true) {
+      return { status: 'awaiting-activation', expiresAt };
+    }
+    if (response.previousRequest === true) {
+      return { status: 'previous-request', expiresAt };
+    }
+    if (!response.active && expirationTime === null) {
       await clearDemoAccess();
       return { status: 'never', expiresAt: null };
     }
@@ -517,9 +665,74 @@ async function getCurrentDemoAccess(eventType: 'login' | 'check' = 'check'): Pro
       await syncDemoAccessStatus(expiresAt);
       return { status: 'expired', expiresAt };
     }
-    if (response.active && expiresAt !== null) {
+    if (response.active && expiresAt !== null && expirationTime !== null) {
+      const appVersion = APP_VERSIONS.find((version) => version === response.appVersion);
+      const screenType = parsePosScreenLayout(response.screenType);
+      if (!appVersion || !screenType || !Array.isArray(response.allowedModules)) {
+        throw new Error('The demo system configuration is invalid.');
+      }
+      const allowedModules = response.allowedModules.filter(
+        (module): module is AppComponentId =>
+          typeof module === 'string' &&
+          APP_COMPONENTS.some((component) => component.id === module)
+      );
+      if (allowedModules.length !== response.allowedModules.length) {
+        throw new Error('The demo system configuration contains an unknown module.');
+      }
+
+      const demoPermissions = getDemoPermissions(allowedModules);
+      const disabledAppComponents = APP_COMPONENTS
+        .map((component) => component.id)
+        .filter((component) => !allowedModules.includes(component));
+      const nextPolicies = {
+        ...localSettings.versionComponentPolicies,
+        [appVersion]: allowedModules,
+      };
+      const currentDisabled = [...(localSettings.disabledAppComponents || [])].sort();
+      const nextDisabled = [...disabledAppComponents].sort();
+      if (
+        localSettings.appVersion !== appVersion ||
+        localSettings.posScreenLayout !== screenType ||
+        currentDisabled.join(',') !== nextDisabled.join(',')
+      ) {
+        await updateSettings({
+          appVersion,
+          posScreenLayout: screenType,
+          disabledAppComponents,
+          versionComponentPolicies: nextPolicies,
+        });
+      } else if (
+        JSON.stringify(localSettings.versionComponentPolicies?.[appVersion]) !==
+        JSON.stringify(allowedModules)
+      ) {
+        await updateSettings({ versionComponentPolicies: nextPolicies });
+      }
+
+      const demoUsername = localSettings.demoUsername?.trim();
+      if (demoUsername && demoUsername.toLowerCase() !== 'aptadmin') {
+        const demoUser = (await listUsers()).find(
+          (user) => user.username.toLowerCase() === demoUsername.toLowerCase()
+        );
+        if (
+          demoUser &&
+          (demoUser.role !== 'custom' ||
+            [...demoUser.permissions].sort().join(',') !== [...demoPermissions].sort().join(','))
+        ) {
+          await updateUser(demoUser.id, {
+            role: 'custom',
+            permissions: demoPermissions,
+          });
+        }
+      }
+
       await syncDemoAccessStatus(expiresAt);
-      return { status: 'active', expiresAt };
+      return {
+        status: 'active',
+        expiresAt,
+        appVersion,
+        screenType,
+        permissions: demoPermissions,
+      };
     }
 
     await clearDemoAccess();
@@ -528,17 +741,55 @@ async function getCurrentDemoAccess(eventType: 'login' | 'check' = 'check'): Pro
     if (!(error instanceof DemoPortalUnavailableError)) throw error;
 
     const settings = await getSettings();
+    if (settings.systemCodeBlocked) {
+      return { status: 'blocked', expiresAt: null };
+    }
     if (settings.registeredSystem) {
       return { status: 'registered', expiresAt: null, appVersion: settings.appVersion };
     }
     const localAccess = await getDemoAccess();
     if (localAccess.status !== 'active') return localAccess;
 
-    const offlineGraceStartedAt = Date.parse(await beginDemoOfflineGrace());
+    let offlineGraceStartedAt: number;
+    try {
+      offlineGraceStartedAt = Date.parse(await beginDemoOfflineGrace());
+    } catch {
+      // Corrupted offline-grace timestamp: treat as expired so the user
+      // can reconnect to the portal and re-establish access.
+      return { ...localAccess, offlineGraceExpired: true };
+    }
     if (Date.now() - offlineGraceStartedAt >= DEMO_OFFLINE_GRACE_MS) {
       return { ...localAccess, offlineGraceExpired: true };
     }
-    return localAccess;
+    const appVersion = settings.appVersion || 'Standard';
+    const allowedModules =
+      settings.versionComponentPolicies?.[appVersion] ||
+      APP_COMPONENTS
+        .map((component) => component.id)
+        .filter((component) => !settings.disabledAppComponents?.includes(component));
+    return {
+      ...localAccess,
+      appVersion,
+      screenType: settings.posScreenLayout,
+      permissions: getDemoPermissions(allowedModules),
+    };
+  }
+}
+
+function getDemoLoginBlockMessage(status: string): string | null {
+  switch (status) {
+    case 'blocked':
+      return 'System Code Blocked. Contact Service Provider.';
+    case 'pending':
+      return 'A demo request is pending approval. Sign-in is unavailable until a demo key is activated.';
+    case 'awaiting-activation':
+      return 'Activate the current demo key before signing in.';
+    case 'deactivated':
+      return 'Demo deactivated in your system. Please contact your service provider.';
+    case 'previous-request':
+      return 'This system has a previous demo request. Please contact your service provider.';
+    default:
+      return null;
   }
 }
 
@@ -583,7 +834,7 @@ async function startServer(): Promise<Server> {
       const registrationKey = typeof req.body?.registrationKey === 'string'
         ? req.body.registrationKey.trim()
         : '';
-      if (registrationKey.length < 24 || registrationKey.length > 128) {
+      if ((!/^\d{16}$/.test(registrationKey) && registrationKey.length < 24) || registrationKey.length > 128) {
         res.status(400).json({ error: 'Enter the registration key provided by aptadmin.' });
         return;
       }
@@ -595,44 +846,34 @@ async function startServer(): Promise<Server> {
       });
       const appVersion = APP_VERSIONS.find((version) => version === prepared.appVersion);
       if (!appVersion) throw new Error('The Auth API returned an invalid registered version.');
+      const registrationDetails = parseRegistrationDetails(prepared.registrationDetails);
+      if (
+        registrationDetails &&
+        (registrationDetails.systemCode !== systemCode || registrationDetails.appVersion !== appVersion)
+      ) {
+        throw new Error('The Auth API returned inconsistent business registration details.');
+      }
 
       if (prepared.active === true) {
+        const credentials = parsePreparedRegistrationCredentials(prepared);
         const access = await getCurrentDemoAccess();
         if (access.status !== 'registered') {
           throw new Error('The registration is active, but this POS installation could not sync its access. Retry after checking the connection.');
         }
+        if (credentials) await replaceUsersWithRegisteredAdmin(credentials);
+        if (registrationDetails) await updateSettings({ registrationDetails });
         res.json({
           registered: true,
           username: typeof prepared.username === 'string' ? prepared.username : '',
           appVersion,
+          ...(registrationDetails ? { businessName: registrationDetails.businessName } : {}),
           settings: await getSettings(),
         });
         return;
       }
 
-      const credentials = decryptRegistrationCredentials(prepared.credentials);
-      if (prepared.username !== credentials.username) {
-        throw new Error('The Auth API returned mismatched registration credentials.');
-      }
-
-      const existingUsers = await listUsers();
-      const existingUser = existingUsers.find((user) => user.username === credentials.username);
-      if (existingUser) {
-        const authenticated = await authenticateUser(credentials.username, credentials.password);
-        if (!authenticated || authenticated.id !== existingUser.id || authenticated.role !== 'admin') {
-          res.status(409).json({
-            error: `The POS username "${credentials.username}" already exists with different credentials.`,
-          });
-          return;
-        }
-      } else {
-        await createUser({
-          username: credentials.username,
-          password: credentials.password,
-          role: 'admin',
-          displayName: credentials.username,
-        });
-      }
+      const credentials = parsePreparedRegistrationCredentials(prepared);
+      if (!credentials) throw new Error('The Auth API did not provide the registered login credentials.');
 
       const activated = await postToRegistrationPortal('/api/registration/key/activate', {
         systemCode,
@@ -646,10 +887,13 @@ async function startServer(): Promise<Server> {
       if (access.status !== 'registered' || access.appVersion !== appVersion) {
         throw new Error('The system was activated but its registered access could not be synchronized. Retry registration.');
       }
+      await replaceUsersWithRegisteredAdmin(credentials);
+      if (registrationDetails) await updateSettings({ registrationDetails });
       res.json({
         registered: true,
         username: credentials.username,
         appVersion,
+        ...(registrationDetails ? { businessName: registrationDetails.businessName } : {}),
         settings: await getSettings(),
       });
     } catch (error) {
@@ -706,8 +950,10 @@ async function startServer(): Promise<Server> {
       }
 
       const requestedBy = typeof input.requestedBy === 'string' ? input.requestedBy.trim() : '';
-      if (!requestedBy || requestedBy.length > 100) {
-        res.status(400).json({ error: 'The demo username is invalid.' });
+      if (!/^[A-Za-z0-9._-]+$/.test(requestedBy) || requestedBy.toLowerCase() === 'aptadmin') {
+        res.status(400).json({
+          error: 'Enter a valid demo username. The username "aptadmin" is reserved.',
+        });
         return;
       }
 
@@ -739,8 +985,24 @@ async function startServer(): Promise<Server> {
       const activationKey = typeof input.activationKey === 'string'
         ? input.activationKey.trim()
         : '';
-      if (suppliedCode !== systemCode || !activationKey || activationKey.length > 256) {
-        res.status(400).json({ error: 'Enter the matching system code and demo key.' });
+      const username = typeof input.username === 'string' ? input.username.trim() : '';
+      const password = typeof input.password === 'string' ? input.password : '';
+      if (suppliedCode !== systemCode) {
+        res.status(400).json({ error: 'The system code does not match this installation.' });
+        return;
+      }
+      if (!activationKey || activationKey.length < 10 || activationKey.length > 256) {
+        res.status(400).json({ error: 'Enter a valid demo key.' });
+        return;
+      }
+      if (!/^[A-Za-z0-9._-]+$/.test(username) || username.toLowerCase() === 'aptadmin') {
+        res.status(400).json({
+          error: 'Enter a valid demo username. The username "aptadmin" is reserved.',
+        });
+        return;
+      }
+      if (!password) {
+        res.status(400).json({ error: 'Enter a demo account password.' });
         return;
       }
 
@@ -751,8 +1013,60 @@ async function startServer(): Promise<Server> {
       if (!('expiresAt' in result) || typeof result.expiresAt !== 'string') {
         throw new Error('The demo activation service returned an invalid expiration date.');
       }
+      const appVersion = APP_VERSIONS.find((version) => version === result.appVersion);
+      const screenType =
+        result.screenType === 'pos' || result.screenType === 'rpos'
+          ? result.screenType
+          : undefined;
+      if (!appVersion || !screenType) {
+        throw new Error('The demo activation service returned an invalid version or screen type.');
+      }
+
+      await clearRegisteredSystemSettings();
       await saveDemoAccess(result.expiresAt);
-      res.json({ expiresAt: result.expiresAt });
+      const versionControl = await requestVersionControlPortal();
+      const activePolicy = versionControl.versionComponentPolicies[appVersion];
+      if (!activePolicy) {
+        throw new Error(`The Auth API has no component policy for ${appVersion}.`);
+      }
+      const disabledAppComponents = APP_COMPONENTS
+        .map((component) => component.id)
+        .filter((component) => !activePolicy.includes(component));
+      const permissions = getDemoPermissions(activePolicy);
+      await updateSettings({
+        appVersion,
+        posScreenLayout: screenType,
+        disabledAppComponents,
+        versionComponentPolicies: versionControl.versionComponentPolicies,
+        demoUsername: username,
+      });
+
+      const users = await listUsers();
+      const existingUser = users.find((user) => user.username.toLowerCase() === username.toLowerCase());
+      if (existingUser) {
+        await updateUser(existingUser.id, {
+          username,
+          password,
+          role: 'custom',
+          displayName: username,
+          permissions,
+        });
+      } else {
+        await createUser({
+          username,
+          password,
+          role: 'custom',
+          displayName: username,
+          permissions,
+        });
+      }
+      res.json({
+        expiresAt: result.expiresAt,
+        username,
+        appVersion,
+        screenType,
+        permissions,
+      });
     } catch (err) {
       const status =
         typeof err === 'object' && err !== null && 'status' in err &&
@@ -826,6 +1140,12 @@ async function startServer(): Promise<Server> {
 
   app.post('/api/login', async (req, res) => {
     try {
+      const cachedSettings = await getSettings();
+      if (cachedSettings.systemCodeBlocked) {
+        res.status(403).json({ error: 'System Code Blocked. Contact Service Provider.' });
+        return;
+      }
+
       const { username, password } = req.body || {};
       if (!username || !password) {
         res.status(400).json({ error: 'Username and password are required.' });
@@ -837,24 +1157,45 @@ async function startServer(): Promise<Server> {
         return;
       }
       if (user.username.toLowerCase() === 'demo') {
+        const priorSettings = await getSettings();
+        const priorRegistrationBlocked =
+          priorSettings.registeredSystem || Boolean(priorSettings.registrationDetails);
         const demoAccess = await getCurrentDemoAccess('login');
         if (demoAccess.offlineGraceExpired) {
           res.status(403).json({ error: DEMO_OFFLINE_GRACE_EXPIRED_MESSAGE });
           return;
         }
-        const demoIsActive = demoAccess.status === 'active' || demoAccess.status === 'registered';
-        const registeredSystem = demoAccess.status === 'registered';
+        if (demoAccess.status === 'registered') {
+          res.status(403).json({
+            error: 'Demo credentials cannot be used on a registered system. Sign in with your registered username.',
+          });
+          return;
+        }
+        const demoLoginBlockMessage = getDemoLoginBlockMessage(demoAccess.status);
+        if (demoLoginBlockMessage) {
+          res.status(403).json({ error: demoLoginBlockMessage });
+          return;
+        }
+        if (priorRegistrationBlocked) {
+          res.status(403).json({
+            error: 'This system registration is blocked or removed. Sign-in is unavailable until the system is registered again.',
+          });
+          return;
+        }
+        const demoIsActive = demoAccess.status === 'active';
+        const registeredSystem = false;
         res.json({
           ok: true,
           user: {
             ...user,
-            role: demoIsActive ? 'admin' : 'custom',
+            role: 'custom',
             permissions: demoIsActive
-              ? ['register', 'inventory', 'purchases', 'customers', 'vendors', 'accounts', 'reports', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings']
+              ? demoAccess.permissions || []
               : ['register'],
             demoMode: !registeredSystem,
             registeredSystem,
             appVersion: demoAccess.appVersion,
+            demoScreenType: demoAccess.screenType,
             demoExpiresAt: registeredSystem ? undefined : demoAccess.expiresAt || undefined,
           },
           demoAccess,
@@ -865,11 +1206,30 @@ async function startServer(): Promise<Server> {
         getSettings(),
         getDemoAccess(),
       ]);
-      if (localSettings.registeredSystem || localDemoAccess.status !== 'never') {
+      if (
+        localSettings.registeredSystem ||
+        Boolean(localSettings.registrationDetails) ||
+        localDemoAccess.status !== 'never' ||
+        Boolean(localSettings.demoUsername?.trim())
+      ) {
         const systemAccess = await getCurrentDemoAccess('login');
-        if (localSettings.registeredSystem && systemAccess.status !== 'registered') {
-          res.status(403).json({ error: 'This registered system is no longer active.' });
+        if (
+          (localSettings.registeredSystem || Boolean(localSettings.registrationDetails)) &&
+          systemAccess.status !== 'registered'
+        ) {
+          res.status(403).json({
+            error: 'This system registration is blocked or removed. Sign-in is unavailable until the system is registered again.',
+          });
           return;
+        }
+        if (
+          localSettings.demoUsername?.trim().toLowerCase() === user.username.toLowerCase()
+        ) {
+          const demoLoginBlockMessage = getDemoLoginBlockMessage(systemAccess.status);
+          if (demoLoginBlockMessage) {
+            res.status(403).json({ error: demoLoginBlockMessage });
+            return;
+          }
         }
         if (systemAccess.status === 'registered') {
           res.json({
@@ -879,6 +1239,23 @@ async function startServer(): Promise<Server> {
               registeredSystem: true,
               appVersion: systemAccess.appVersion,
             },
+          });
+          return;
+        }
+        if (systemAccess.status === 'active' && user.username.toLowerCase() !== 'aptadmin') {
+          res.json({
+            ok: true,
+            user: {
+              ...user,
+              role: 'custom',
+              permissions: systemAccess.permissions || [],
+              demoMode: true,
+              registeredSystem: false,
+              appVersion: systemAccess.appVersion,
+              demoScreenType: systemAccess.screenType,
+              demoExpiresAt: systemAccess.expiresAt || undefined,
+            },
+            demoAccess: systemAccess,
           });
           return;
         }
@@ -1289,7 +1666,7 @@ async function startServer(): Promise<Server> {
 
   app.get('/api/version-control', async (_req, res) => {
     try {
-      const versionControl = await requestVersionControlPortal('GET');
+      const versionControl = await requestVersionControlPortal();
       res.json(versionControl);
     } catch (error) {
       res.status(502).json({ error: (error as Error).message });
@@ -1297,27 +1674,9 @@ async function startServer(): Promise<Server> {
   });
 
   app.put('/api/version-control', async (req, res) => {
-    try {
-      const input = req.body || {};
-      if (!await isValidAppAdminPassword(input.password)) {
-        res.status(401).json({ error: 'Enter the valid aptadmin password to update Firebase version policies.' });
-        return;
-      }
-
-      const versionComponentPolicies = parseVersionComponentPolicies(input.versionComponentPolicies);
-      if (
-        !versionComponentPolicies ||
-        APP_VERSIONS.some((version) => !Array.isArray(versionComponentPolicies[version]))
-      ) {
-        res.status(400).json({ error: 'Choose allowed components for Soft, Silver, and Standard.' });
-        return;
-      }
-
-      const saved = await requestVersionControlPortal('PUT', versionComponentPolicies);
-      res.json(saved);
-    } catch (error) {
-      res.status(502).json({ error: (error as Error).message });
-    }
+    res.status(403).json({
+      error: 'Version policies are managed from the aptPOS User Admin portal.',
+    });
   });
 
   app.put('/api/settings', async (req, res) => {
@@ -1326,6 +1685,7 @@ async function startServer(): Promise<Server> {
       delete settingsInput.appVersion;
       delete settingsInput.disabledAppComponents;
       delete settingsInput.versionComponentPolicies;
+      delete settingsInput.demoUsername;
       delete settingsInput.registeredSystem;
       const settings = await updateSettings(settingsInput);
       res.json(settings);
@@ -1361,7 +1721,7 @@ async function startServer(): Promise<Server> {
         res.status(400).json({ error: 'Choose a valid app version.' });
         return;
       }
-      const versionControl = await requestVersionControlPortal('GET');
+      const versionControl = await requestVersionControlPortal();
       const activePolicy = versionControl.versionComponentPolicies[appVersion];
       if (!activePolicy) {
         throw new Error(`The Auth API has no component policy for ${appVersion}.`);
@@ -1556,8 +1916,12 @@ async function startServer(): Promise<Server> {
   });
 
   // ----------------- DATABASE MAINTENANCE & BACKUP -----------------
-  app.post('/api/database/reset', async (_req, res) => {
+  app.post('/api/database/reset', async (req, res) => {
     try {
+      if (!(await isValidAppAdminPassword(req.body?.password))) {
+        res.status(401).json({ error: 'Invalid app admin password.' });
+        return;
+      }
       await resetDatabase();
       res.json({ ok: true, message: 'Database reset and re-seeded successfully.' });
     } catch (err) {

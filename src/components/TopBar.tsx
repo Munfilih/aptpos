@@ -14,6 +14,7 @@ import {
   BarChart3,
   Files,
 } from 'lucide-react';
+import { APP_COMPONENTS } from '../types/pos';
 import type { AppComponentId, SettingsSectionId, UserSession } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
 import { SettingsSectionTabs } from './SettingsView';
@@ -52,6 +53,9 @@ interface TopBarProps {
   onOpenCashbook: () => void;
   currentUser: UserSession | null;
   demoExpiresAt?: string;
+  registeredSystem?: boolean;
+  amcStartDate?: string | null;
+  amcEndDate?: string | null;
   disabledAppComponents?: AppComponentId[];
   iconOnlyLauncher: boolean;
   openLauncherOnMount?: boolean;
@@ -70,7 +74,6 @@ interface TopNavLink {
   id: NavTab;
   label: string;
   icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
-  adminOnly?: boolean;
   permission?: string;
 }
 
@@ -82,7 +85,6 @@ interface TopNavGroup {
     id: NavTab;
     label: string;
     permission: string;
-    adminOnly?: boolean;
   }>;
 }
 
@@ -129,6 +131,9 @@ export const TopBar: React.FC<TopBarProps> = ({
   onOpenCashbook,
   currentUser,
   demoExpiresAt,
+  registeredSystem = false,
+  amcStartDate,
+  amcEndDate,
   disabledAppComponents = [],
   iconOnlyLauncher,
   openLauncherOnMount = false,
@@ -151,6 +156,12 @@ export const TopBar: React.FC<TopBarProps> = ({
   const [showLauncher, setShowLauncher] = useState(openLauncherOnMount);
   const [openNavigationGroup, setOpenNavigationGroup] = useState<HubModuleId | null>(null);
   const [demoSecondsRemaining, setDemoSecondsRemaining] = useState<number | null>(null);
+  const [currentTime, setCurrentTime] = useState(Date.now());
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setCurrentTime(Date.now()), 60_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     if (!demoExpiresAt) {
@@ -179,6 +190,57 @@ export const TopBar: React.FC<TopBarProps> = ({
       .join(':');
     return days ? `${days}d ${time}` : time;
   };
+  const getDaysUntilDate = (date: string | null | undefined): number | null => {
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+    const [year, month, day] = date.split('-').map(Number);
+    const target = new Date(Date.UTC(year, month - 1, day));
+    if (
+      target.getUTCFullYear() !== year ||
+      target.getUTCMonth() !== month - 1 ||
+      target.getUTCDate() !== day
+    ) {
+      return null;
+    }
+    const now = new Date(currentTime);
+    const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+    return Math.round((target.getTime() - today) / 86_400_000);
+  };
+  const amcStartDays = getDaysUntilDate(amcStartDate);
+  const amcExpiryDays = getDaysUntilDate(amcEndDate);
+  const amcStatus = (() => {
+    if (!registeredSystem || currentUser?.demoMode) return null;
+    if (!amcStartDate || !amcEndDate || amcStartDays === null || amcExpiryDays === null) {
+      return {
+        label: language === 'ar' ? 'بدون AMC' : 'No AMC',
+        className: 'border-red-200 bg-red-50 text-red-700',
+      };
+    }
+    if (amcStartDays > 0) {
+      return {
+        label: language === 'ar'
+          ? `يبدأ AMC خلال ${amcStartDays} يوم`
+          : `AMC starts in ${amcStartDays} day${amcStartDays === 1 ? '' : 's'}`,
+        className: 'border-sky-200 bg-sky-50 text-sky-700',
+      };
+    }
+    if (amcExpiryDays < 0) {
+      return {
+        label: language === 'ar' ? 'انتهى AMC' : 'AMC expired',
+        className: 'border-red-200 bg-red-50 text-red-700',
+      };
+    }
+    if (amcExpiryDays <= 10) {
+      return {
+        label: amcExpiryDays === 0
+          ? (language === 'ar' ? 'ينتهي AMC اليوم' : 'AMC expires today')
+          : language === 'ar'
+            ? `ينتهي AMC خلال ${amcExpiryDays} يوم`
+            : `AMC expires in ${amcExpiryDays} day${amcExpiryDays === 1 ? '' : 's'}`,
+        className: 'border-orange-200 bg-orange-50 text-orange-800',
+      };
+    }
+    return null;
+  })();
 
   useEffect(() => {
     if (!openLauncherOnMount) return;
@@ -194,26 +256,25 @@ export const TopBar: React.FC<TopBarProps> = ({
       icon: RotateCcw,
       permission: 'sales-return',
     },
-    { id: 'purchases', label: t.navPurchases, icon: FileText, adminOnly: true },
+    { id: 'purchases', label: t.navPurchases, icon: FileText },
     {
       id: 'purchase-return-register',
       label: language === 'ar' ? 'مرتجع مشتريات' : 'Purchase Return',
       icon: RotateCcw,
-      adminOnly: true,
     },
-    { id: 'inventory', label: t.navInventory, icon: Package, adminOnly: true },
+    { id: 'inventory', label: t.navInventory, icon: Package },
     { id: 'shift', label: language === 'ar' ? 'الوردية' : 'Shift', icon: Wallet, permission: 'register' },
     { id: 'accounts', label: t.navAccounts, icon: Wallet, permission: 'accounts' },
     { id: 'reports', label: t.navReports, icon: BarChart3, permission: 'reports' },
     { id: 'settings', label: t.navSettings, icon: SettingsIcon, permission: 'settings' },
-    { id: 'files', label: language === 'ar' ? 'الملفات' : 'Files', icon: Files, adminOnly: true },
+    { id: 'files', label: language === 'ar' ? 'الملفات' : 'Files', icon: Files },
     {
       id: 'parties',
       label: language === 'ar' ? 'الأطراف' : 'Parties',
       icon: Users,
       children: [
-        { id: 'customers', label: t.navCustomers, permission: 'customers', adminOnly: true },
-        { id: 'vendors', label: t.navVendors, permission: 'vendors', adminOnly: true },
+        { id: 'customers', label: t.navCustomers, permission: 'customers' },
+        { id: 'vendors', label: t.navVendors, permission: 'vendors' },
       ],
     },
   ];
@@ -224,7 +285,10 @@ export const TopBar: React.FC<TopBarProps> = ({
       (!isAppAdmin || currentUser.registeredSystem === true) &&
       disabledAppComponents.some((component) => component === tabId)
     ) return false;
-    if (tabId === 'settings' && isAppAdmin) return true;
+    if (tabId === 'settings') {
+      return isAppAdmin || currentUser.role === 'admin' || currentUser.permissions?.includes('settings') === true;
+    }
+    if (APP_COMPONENTS.some((component) => component.id === tabId)) return true;
     const item = navItems.find(
       (navItem): navItem is TopNavLink => navItem.id === tabId && !('children' in navItem)
     );
@@ -233,7 +297,6 @@ export const TopBar: React.FC<TopBarProps> = ({
       .flatMap((group) => group.children)
       .find((child) => child.id === tabId);
     const requiredPermission = item?.permission || groupChild?.permission;
-    if ((item?.adminOnly || groupChild?.adminOnly) && currentUser.role !== 'admin') return false;
     if (currentUser.role === 'admin') return true;
     if (requiredPermission === 'sales-return' && currentUser.permissions?.includes('manage-sales-returns')) {
       return true;
@@ -335,23 +398,27 @@ export const TopBar: React.FC<TopBarProps> = ({
     labelAr: string;
     icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
     tab?: NavTab;
+    componentId?: AppComponentId;
     comingSoon?: boolean;
     action?: 'open-cashbook';
   }> = [
-    { id: 'sales-history', label: 'Sales History', labelAr: 'سجل المبيعات', icon: Receipt, tab: 'sales' },
-    { id: 'purchase-history', label: 'Purchase History', labelAr: 'سجل المشتريات', icon: Receipt, tab: 'purchase-history' },
     { id: 'sales-return', label: 'Sales Return', labelAr: 'مرتجع مبيعات', icon: RotateCcw, tab: 'return-register' },
     { id: 'purchase-return', label: 'Purchase Return', labelAr: 'مرتجع مشتريات', icon: RotateCcw, tab: 'purchase-return-register' },
-    { id: 'sales-order', label: 'Sales Order', labelAr: 'طلب مبيعات', icon: ShoppingBag, tab: 'register' },
-    { id: 'sales-quotation', label: 'Sales Quotation', labelAr: 'عرض سعر', icon: FileText, comingSoon: true },
-    { id: 'purchase-order', label: 'Purchase Order', labelAr: 'أمر شراء', icon: Package, tab: 'purchases' },
-    { id: 'goods-delivery', label: 'Goods Delivery', labelAr: 'تسليم البضائع', icon: Package, comingSoon: true },
-    { id: 'organization-hr', label: 'HR', labelAr: 'الموارد البشرية', icon: Users, comingSoon: true },
+    { id: 'sales-order', label: 'Sales Order', labelAr: 'طلب مبيعات', icon: ShoppingBag, componentId: 'sales-order', comingSoon: true },
+    { id: 'sales-quotation', label: 'Sales Quotation', labelAr: 'عرض سعر', icon: FileText, componentId: 'sales-quotation', comingSoon: true },
+    { id: 'purchase-order', label: 'Purchase Order', labelAr: 'أمر شراء', icon: Package, componentId: 'purchase-order', comingSoon: true },
+    { id: 'purchase-quotation', label: 'Purchase Quotation', labelAr: 'عرض سعر شراء', icon: FileText, componentId: 'purchase-quotation', comingSoon: true },
+    { id: 'goods-delivery', label: 'Goods Delivery', labelAr: 'تسليم البضائع', icon: Package, componentId: 'goods-delivery', comingSoon: true },
+    { id: 'goods-receipt', label: 'Goods Receipt', labelAr: 'استلام البضائع', icon: Package, componentId: 'goods-receipt', comingSoon: true },
+    { id: 'organization-hr', label: 'HR', labelAr: 'الموارد البشرية', icon: Users, componentId: 'organization-hr', comingSoon: true },
+    { id: 'salary-process', label: 'Salary Process', labelAr: 'معالجة الرواتب', icon: Wallet, componentId: 'salary-process', comingSoon: true },
     { id: 'organization-shift', label: 'Shift', labelAr: 'الورديات', icon: Wallet, tab: 'shift' },
     { id: 'cashbook', label: 'Cash Book', labelAr: 'دفتر النقدية', icon: Wallet, tab: 'accounts', action: 'open-cashbook' },
   ];
   const visibleMenuShortcuts = menuShortcuts.filter(
-    (item) => item.comingSoon || !item.tab || hasTabPermission(item.tab)
+    (item) =>
+      (!item.componentId || !disabledAppComponents.includes(item.componentId)) &&
+      (item.comingSoon || !item.tab || hasTabPermission(item.tab))
   );
 
   const selectedHubModule = visibleHubModules.find(
@@ -515,13 +582,28 @@ export const TopBar: React.FC<TopBarProps> = ({
           <div
             className="flex min-w-0 max-w-[70%] items-center gap-1.5"
           >
-            {currentUser.demoMode && demoSecondsRemaining !== null && (
+            {currentUser.demoMode && (
               <span
-                className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2 py-1 font-mono text-[10px] font-bold text-amber-800"
-                aria-label={`Demo time remaining ${formatDemoCountdown(demoSecondsRemaining)}`}
-                title="Demo time remaining"
+                className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-800"
+                aria-label={
+                  demoSecondsRemaining === null
+                    ? (language === 'ar' ? 'وضع تجريبي' : 'Demo Mode')
+                    : `Demo time remaining ${formatDemoCountdown(demoSecondsRemaining)}`
+                }
+                title={language === 'ar' ? 'وضع تجريبي' : 'Demo Mode'}
               >
-                Demo {formatDemoCountdown(demoSecondsRemaining)}
+                {language === 'ar' ? 'وضع تجريبي' : 'Demo Mode'}
+                {demoSecondsRemaining !== null && (
+                  <span className="ml-1 font-mono">{formatDemoCountdown(demoSecondsRemaining)}</span>
+                )}
+              </span>
+            )}
+            {amcStatus && (
+              <span
+                className={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-bold ${amcStatus.className}`}
+                role={amcExpiryDays !== null && amcExpiryDays >= 0 && amcExpiryDays <= 10 ? 'status' : undefined}
+              >
+                {amcStatus.label}
               </span>
             )}
             <div
@@ -611,8 +693,6 @@ export const TopBar: React.FC<TopBarProps> = ({
                     <SettingsSectionTabs
                       activeSection={null}
                       isAppAdmin={isAppAdmin}
-                      canRegisterSystem={isAppAdmin || currentUser?.demoMode === true}
-                      themeOnly={currentUser?.role !== 'admin' && !isAppAdmin}
                       onSelect={(section) => {
                         onSettingsSectionChange(section);
                         onSettingsComponentChange(true);

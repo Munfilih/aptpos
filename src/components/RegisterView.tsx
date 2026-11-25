@@ -129,6 +129,12 @@ function normalizeCatalogSearch(value: string): string {
     .trim();
 }
 
+function resolveCardDimension(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : fallback;
+}
+
 function refreshCartItemProduct(
   item: CartItem,
   product: Product,
@@ -294,6 +300,9 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 }) => {
   const { t, isRtl } = useLanguage();
   const isRpos = settings.posScreenLayout === 'rpos';
+  const registeredBusinessName = settings.registeredSystem
+    ? settings.registrationDetails?.businessName.trim() || ''
+    : '';
   const paymentMethods = getPaymentMethods(settings.paymentMethods);
   const paymentMethodLabel = (method: PaymentMethod) =>
     method === 'Cash'
@@ -303,6 +312,18 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         : method === 'Split'
           ? (isRtl ? 'مجزأ' : 'Split')
           : method;
+  const productCardWidthIn = resolveCardDimension(settings.productCardWidthIn, 2);
+  const productCardHeightIn = resolveCardDimension(settings.productCardHeightIn, 3);
+  const categoryCardWidthIn = resolveCardDimension(settings.categoryCardWidthIn, 2);
+  const categoryCardHeightIn = resolveCardDimension(settings.categoryCardHeightIn, 3);
+  const productCardGridStyle: React.CSSProperties = {
+    gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${productCardWidthIn}in), 1fr))`,
+    justifyItems: 'start',
+  };
+  const categoryCardGridStyle: React.CSSProperties = {
+    gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${categoryCardWidthIn}in), 1fr))`,
+    justifyItems: 'start',
+  };
   const [mobileTab, setMobileTab] = useState<'table' | 'checkout'>('table');
   const [barcodeInput, setBarcodeInput] = useState('');
   const [isCatalogOpen, setIsCatalogOpen] = useState(false);
@@ -321,6 +342,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   const [zeroPriceDialogItems, setZeroPriceDialogItems] = useState<CartItem[] | null>(null);
   const [selectedZeroPriceItemId, setSelectedZeroPriceItemId] = useState<string | null>(null);
   const [ticketEditPrice, setTicketEditPrice] = useState('');
+  const [ticketEditDescription, setTicketEditDescription] = useState('');
   const [ticketEditQuantity, setTicketEditQuantity] = useState('');
   const [ticketEditUnitId, setTicketEditUnitId] = useState('');
   const [customerSearch, setCustomerSearch] = useState('');
@@ -704,6 +726,24 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   const ticketEditPriceInputRef = useRef<HTMLInputElement>(null);
   const c = isRtl ? 'ر.س' : (settings.currencySymbol || 'SAR');
 
+  useEffect(() => {
+    if (
+      !pendingPriceItem ||
+      !editingTicketItemId ||
+      getCartItemLineId(pendingPriceItem) !== editingTicketItemId
+    ) {
+      return;
+    }
+
+    const focusFrame = requestAnimationFrame(() => {
+      const input = ticketEditPriceInputRef.current;
+      if (!input) return;
+      input.focus();
+      input.select();
+    });
+    return () => cancelAnimationFrame(focusFrame);
+  }, [editingTicketItemId, pendingPriceItem]);
+
   // Robust auto-focus barcode input across all render states and device widths
   const focusBarcodeInput = useCallback(() => {
     if (
@@ -828,6 +868,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           };
       return {
         product,
+        description: item.description ?? '',
         quantity: item.quantity,
         unitId: item.unitId,
         unitName: item.unitName || product.unit,
@@ -957,6 +998,14 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         return;
       }
 
+      if (editingTicketItemId !== null && e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setEditingTicketItemId(null);
+        setPendingPriceItem(null);
+        return;
+      }
+
       if (isCancelConfirmationOpen) {
         if (e.key === 'Escape') {
           e.preventDefault();
@@ -1067,6 +1116,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     discountType,
     discountValue,
     receiptModalOpen,
+    editingTicketItemId,
   ]);
 
   // Dismiss wrong barcode alert and restore scanner readiness
@@ -1205,6 +1255,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 
   const openTicketItemEditor = (item: CartItem) => {
     setTicketEditPrice(String(item.product.retailPrice));
+    setTicketEditDescription(item.description ?? '');
     setTicketEditQuantity(String(item.quantity));
     setTicketEditUnitId(item.unitId || '');
     setEditingTicketItemId(getCartItemLineId(item));
@@ -1302,6 +1353,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       unitName: unit.unitName,
       unitsPerBase: unit.unitsPerBase,
       lineId: nextLineId,
+      description: ticketEditDescription,
       product: { ...item.product, unit: unit.unitName, retailPrice: price },
     };
     setCart((prev) =>
@@ -1811,6 +1863,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             quantity: item.quantity,
             unitPrice: item.product.retailPrice,
             unitId: item.unitId || null,
+            description: item.description ?? '',
           })),
         }),
       });
@@ -2185,7 +2238,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   )}
                   <div
                     className="grid gap-3"
-                    style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 190px), 1fr))' }}
+                    style={categoryCardGridStyle}
                   >
                     {availableGroups.map((group) => {
                       const imageData = categoryImageByName.get(group) || '';
@@ -2200,11 +2253,15 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                             setCatalogSearch('');
                             setIsBrowsingCategories(false);
                           }}
-                          className={`group relative flex min-h-[230px] select-none flex-col overflow-hidden rounded-2xl border bg-white p-2.5 text-start shadow-sm transition-all active:scale-[0.99] ${
+                          className={`group relative flex w-full select-none flex-col overflow-hidden rounded-2xl border bg-white p-2.5 text-start shadow-sm transition-all active:scale-[0.99] ${
                             selected
                               ? 'border-blue-500 ring-2 ring-blue-500/20 shadow-md'
                               : 'border-slate-200 hover:-translate-y-0.5 hover:border-blue-400 hover:shadow-lg'
                           }`}
+                          style={{
+                            maxWidth: `${categoryCardWidthIn}in`,
+                            height: `${categoryCardHeightIn}in`,
+                          }}
                         >
                           <div className="product-image-surface relative mb-1.5 flex aspect-square w-full items-center justify-center overflow-hidden rounded-xl border border-slate-100 bg-white">
                             {imageData ? (
@@ -2273,7 +2330,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   </div>
                   <div
                     className="grid gap-3"
-                    style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 190px), 1fr))' }}
+                    style={productCardGridStyle}
                   >
                   {paginatedCatalogProducts.map((prod) => {
                     const isOut = !settings.allowNegativeStock && prod.stock <= 0;
@@ -2285,13 +2342,17 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                         type="button"
                         disabled={isOut}
                         onClick={() => addToCart(prod)}
-                        className={`group relative flex min-h-[230px] select-none flex-col overflow-hidden rounded-2xl border bg-white p-2.5 text-start shadow-sm transition-all active:scale-[0.99] ${
+                        className={`group relative flex w-full select-none flex-col overflow-hidden rounded-2xl border bg-white p-1.5 text-start shadow-sm transition-all active:scale-[0.99] ${
                           isOut
                             ? 'cursor-not-allowed border-slate-200 opacity-60'
                             : inCartCount > 0
                             ? 'border-blue-500 ring-2 ring-blue-500/20 shadow-md'
                             : 'border-slate-200 hover:-translate-y-0.5 hover:border-blue-400 hover:shadow-lg'
                         }`}
+                        style={{
+                          maxWidth: `${productCardWidthIn}in`,
+                          height: `${productCardHeightIn}in`,
+                        }}
                       >
                         <div className="product-image-surface relative mb-1.5 flex aspect-square w-full items-center justify-center overflow-hidden rounded-xl border border-slate-100 bg-white">
                           {!prod.imagePath && !prod.imageData && (
@@ -2307,7 +2368,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                               imagePath={prod.imagePath}
                               imageData={prod.imageData}
                               alt={prod.name}
-                              className="relative z-10 h-auto w-auto max-h-full max-w-full object-contain p-1 transition-transform duration-300 group-hover:scale-105"
+                              className="relative z-10 h-auto w-auto max-h-full max-w-full object-contain p-1"
                             />
                           )}
                           {inCartCount > 0 && (
@@ -2328,7 +2389,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                             <div
                               dir={isRtl ? 'rtl' : 'ltr'}
                               title={isRtl && prod.nameAr ? prod.nameAr : prod.name}
-                              className="min-w-0 flex-1 truncate whitespace-nowrap text-[clamp(0.8rem,1vw,1rem)] font-medium leading-snug text-slate-900"
+                              className="min-w-0 flex-1 truncate whitespace-nowrap text-[11px] font-medium leading-snug text-slate-900"
                             >
                               {isRtl && prod.nameAr ? prod.nameAr : prod.name}
                             </div>
@@ -2336,20 +2397,20 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                               <div
                                 dir={isRtl ? 'ltr' : 'rtl'}
                                 title={isRtl ? prod.name : prod.nameAr}
-                                className="max-w-[42%] shrink-0 truncate whitespace-nowrap text-xs font-medium text-slate-500"
+                                className="max-w-[42%] shrink-0 truncate whitespace-nowrap text-[10px] font-medium text-slate-500"
                               >
                                 {isRtl ? prod.name : prod.nameAr}
                               </div>
                             )}
                           </div>
 
-                          <div className="flex w-full items-center justify-between gap-2">
-                            <div className="min-w-0">
-                              <span className="font-mono text-[clamp(0.9rem,1vw,1.1rem)] font-black tabular-nums text-slate-900">
+                          <div className="flex w-full flex-col items-start gap-1">
+                            <div className="min-w-0 max-w-full">
+                              <span className="font-mono text-[10px] font-black tabular-nums text-slate-900">
                                 {c} {prod.retailPrice.toFixed(2)}
                               </span>
                             </div>
-                            <span className={`shrink-0 rounded-lg px-2.5 py-1.5 text-[10px] font-bold ${
+                            <span className={`max-w-full truncate rounded-lg px-1.5 py-1 text-[9px] font-bold ${
                               isOut
                                 ? 'bg-slate-100 text-slate-500'
                                 : inCartCount > 0
@@ -2465,9 +2526,18 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             {cart.length === 0 ? (
               <div className="pos-welcome-screen flex h-full min-h-[360px] items-center justify-center p-6 text-center">
                 <div>
-                  <div className="text-xl font-bold text-white">
-                    {settings.storeName}
-                  </div>
+                  {registeredBusinessName ? (
+                    <>
+                      <div className="text-sm font-semibold text-white/75">
+                        {isRtl ? 'مرحباً بكم في' : 'Welcome to'}
+                      </div>
+                      <div dir="auto" className="mt-1 break-words text-xl font-bold text-white">
+                        {registeredBusinessName}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-xl font-bold text-white">{settings.storeName}</div>
+                  )}
                   {settings.storeNameAr && (
                     <div className="mt-1 font-arabic text-lg font-semibold text-white/75" dir="rtl">
                       {settings.storeNameAr}
@@ -2577,6 +2647,11 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                           </strong>
                         </span>
                       </div>
+                      {item.description && (
+                        <p className="col-span-2 whitespace-pre-wrap break-words text-[11px] font-normal text-slate-500">
+                          {item.description}
+                        </p>
+                      )}
                     </div>
                   );
                 })}
@@ -2718,6 +2793,11 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                               </button>
                             )}
                           </div>
+                          {item.description && (
+                            <p className="col-span-2 whitespace-pre-wrap break-words text-[11px] font-normal text-slate-500">
+                              {item.description}
+                            </p>
+                          )}
                           <div className="col-span-2 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] font-semibold text-slate-600">
                             <span className="whitespace-nowrap text-xs font-mono font-bold text-blue-700">
                               {item.quantity}
@@ -3397,6 +3477,15 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                 </div>
               </label>
             </div>
+            <label className="mt-3 block text-xs font-semibold text-slate-600">
+              {isRtl ? 'وصف المنتج' : 'Product Description'}
+              <textarea
+                rows={3}
+                value={ticketEditDescription}
+                onChange={(event) => setTicketEditDescription(event.target.value)}
+                className="mt-1 w-full resize-y rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100"
+              />
+            </label>
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
@@ -3981,9 +4070,10 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   <p className="text-xs mt-1">{isRtl ? 'حاول تعديل مصطلح البحث أو اختيار تصنيف آخر.' : 'Try adjusting your search query or category filter.'}</p>
                 </div>
               ) : (
-                <div className={catalogView === 'grid'
-                  ? 'grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4'
-                  : 'flex flex-col gap-2'}>
+                <div
+                  className={catalogView === 'grid' ? 'grid gap-3' : 'flex flex-col gap-2'}
+                  style={catalogView === 'grid' ? productCardGridStyle : undefined}
+                >
                   {paginatedCatalogProducts.map((prod) => {
                     const isOut = !settings.allowNegativeStock && prod.stock <= 0;
                     const inCartCount =
@@ -3999,7 +4089,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                         onClick={() => addToCart(prod)}
                         className={`text-left rounded-xl border transition-all ${
                           catalogView === 'grid'
-                            ? 'flex min-h-[112px] flex-col justify-between p-3.5'
+                            ? 'flex flex-col justify-between p-3.5'
                             : 'flex w-full items-center gap-4 px-4 py-3'
                         } ${
                           isHighlighted
@@ -4012,6 +4102,13 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                               ? ''
                               : 'bg-white border-slate-200 hover:border-blue-600 hover:shadow-sm active:scale-[0.98]'
                         }`}
+                        style={catalogView === 'grid'
+                          ? {
+                            width: '100%',
+                            maxWidth: `${productCardWidthIn}in`,
+                            height: `${productCardHeightIn}in`,
+                          }
+                          : undefined}
                       >
                         <div className="min-w-0 flex-1">
                           <div className="flex items-start justify-between gap-1.5">

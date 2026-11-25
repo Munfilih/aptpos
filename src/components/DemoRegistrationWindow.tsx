@@ -1,15 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, KeyRound, LockKeyhole, X } from 'lucide-react';
-import type { DemoAccessStatus } from '../types/pos';
+import { Check, Copy, KeyRound, X } from 'lucide-react';
+import type { DemoAccessStatus, DemoActivationResult } from '../types/pos';
+import { parseDemoActivationResult } from '../utils/demoActivation';
 
 interface DemoRegistrationWindowProps {
   requestedBy: string;
   demoAccessStatus: DemoAccessStatus;
   onClose: () => void;
-  onDemoActivated: (expiresAt: string) => void;
+  onDemoActivated: (activation: DemoActivationResult) => void | Promise<void>;
 }
-
-type RegistrationMode = 'options' | 'demo' | 'license';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -33,10 +32,11 @@ export const DemoRegistrationWindow: React.FC<DemoRegistrationWindowProps> = ({
   onDemoActivated,
 }) => {
   const dialogRef = useRef<HTMLElement>(null);
-  const [mode, setMode] = useState<RegistrationMode>('options');
   const [systemCode, setSystemCode] = useState('');
   const [systemCodeError, setSystemCodeError] = useState('');
+  const [systemCodeCopied, setSystemCodeCopied] = useState(false);
   const [activationKey, setActivationKey] = useState('');
+  const [demoPassword, setDemoPassword] = useState('');
   const [requestError, setRequestError] = useState('');
   const [requestMessage, setRequestMessage] = useState('');
   const [activationError, setActivationError] = useState('');
@@ -113,6 +113,17 @@ export const DemoRegistrationWindow: React.FC<DemoRegistrationWindowProps> = ({
     };
   }, []);
 
+  const handleCopySystemCode = async () => {
+    if (!systemCode) return;
+    try {
+      await navigator.clipboard.writeText(systemCode);
+      setSystemCodeCopied(true);
+      setTimeout(() => setSystemCodeCopied(false), 2000);
+    } catch {
+      // ignore
+    }
+  };
+
   const handleRequestDemo = async () => {
     setRequestError('');
     setRequestMessage('');
@@ -153,14 +164,20 @@ export const DemoRegistrationWindow: React.FC<DemoRegistrationWindowProps> = ({
     }
   };
 
-  const handleActivateDemo = async () => {
+  const handleActivateDemo = async (event?: React.FormEvent) => {
+    if (event) event.preventDefault();
     setActivationError('');
     setSubmitting(true);
     try {
       const response = await fetch('/api/registration/demo-activate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ systemCode, activationKey }),
+        body: JSON.stringify({
+          systemCode,
+          activationKey: activationKey.trim(),
+          username: requestedBy,
+          password: demoPassword,
+        }),
       });
       const data = await readJsonResponse(response);
       if (!response.ok) {
@@ -169,10 +186,11 @@ export const DemoRegistrationWindow: React.FC<DemoRegistrationWindowProps> = ({
           : 'Could not activate this demo.';
         throw new Error(message);
       }
-      if (!isRecord(data) || typeof data.expiresAt !== 'string') {
-        throw new Error('The activation service returned an invalid expiration date.');
+      const activation = parseDemoActivationResult(data);
+      if (!activation) {
+        throw new Error('The activation service returned invalid demo access details.');
       }
-      onDemoActivated(data.expiresAt);
+      await onDemoActivated(activation);
     } catch (error) {
       setActivationError(
         error instanceof Error ? error.message : 'Could not activate this demo.'
@@ -182,53 +200,11 @@ export const DemoRegistrationWindow: React.FC<DemoRegistrationWindowProps> = ({
     }
   };
 
-  const handleSubmitLicenseRequest = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (mode !== 'license') return;
-    setRequestError('');
-    setRequestMessage('');
-    setSubmitting(true);
-    try {
-      const response = await fetch('/api/registration/requests', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          requestType: 'license',
-          systemCode,
-          submittedKey: activationKey,
-          requestedBy,
-        }),
-      });
-      const data = await readJsonResponse(response);
-      if (!response.ok) {
-        const message = isRecord(data) && typeof data.error === 'string'
-          ? data.error
-          : `Could not submit the license request (HTTP ${response.status}).`;
-        throw new Error(message);
-      }
-      if (!isRecord(data) ||
-        (typeof data.requestId !== 'string' && typeof data.requestId !== 'number')) {
-        throw new Error('The registration service returned an empty or invalid response.');
-      }
-      setRequestMessage('License registration request received. It is waiting for approval.');
-      setActivationKey('');
-    } catch (error) {
-      setRequestError(
-        error instanceof Error ? error.message : 'Could not submit the license request.'
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const isLicense = mode === 'license';
-  const title = mode === 'options'
-    ? 'Register aptPOS'
-    : isLicense
-      ? 'Register With License Key'
-      : demoAccessStatus === 'expired'
-        ? 'Demo Expired'
-        : 'Activate Demo';
+  const title = demoAccessStatus === 'deactivated'
+    ? 'Reactivate Demo'
+    : demoAccessStatus === 'expired'
+      ? 'Demo Expired'
+      : 'Activate Demo';
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/65 p-4">
@@ -243,16 +219,20 @@ export const DemoRegistrationWindow: React.FC<DemoRegistrationWindowProps> = ({
         <header className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
           <div className="flex items-start gap-3">
             <span className="rounded-xl bg-blue-50 p-2.5 text-blue-700">
-              <LockKeyhole className="h-5 w-5" />
+              <KeyRound className="h-5 w-5" />
             </span>
             <div>
               <h2 id="registration-window-title" className="text-base font-bold text-slate-900">
                 {title}
               </h2>
               <p className="mt-1 text-xs leading-5 text-slate-500">
-                {mode === 'options'
-                  ? 'Choose how you want to register this aptPOS installation.'
-                  : 'Your request will be sent to aptadmin for approval.'}
+                {demoAccessStatus === 'deactivated'
+                  ? 'This demo is deactivated. If your provider has reactivated it, enter the new activation key.'
+                  : demoAccessStatus === 'expired'
+                    ? 'Your demo period has ended. Request an extension or enter a demo key.'
+                    : demoAccessStatus === 'awaiting-activation'
+                      ? 'A demo key has been issued for this system. Enter it to activate the demo.'
+                      : 'Request a demo key, then activate it on this system.'}
               </p>
             </div>
           </div>
@@ -271,174 +251,125 @@ export const DemoRegistrationWindow: React.FC<DemoRegistrationWindowProps> = ({
             role="alert"
             className="mx-5 mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900"
           >
-            <strong>Demo expired.</strong> Register to continue using aptPOS.
+            <strong>Demo expired.</strong> Request a demo key extension to continue using aptPOS.
           </div>
         )}
 
-        {mode === 'options' ? (
-          <div className="grid gap-3 p-5 sm:grid-cols-2">
-            <button
-              type="button"
-              onClick={() => {
-                setRequestError('');
-                setRequestMessage('');
-                setActivationError('');
-                setMode('demo');
-              }}
-              className="flex min-h-36 flex-col items-start rounded-xl border border-slate-200 p-4 text-left transition hover:border-blue-400 hover:bg-blue-50/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
-            >
-              <span className="rounded-lg bg-blue-50 p-2 text-blue-700">
-                <KeyRound className="h-5 w-5" />
-              </span>
-              <span className="mt-3 text-sm font-bold text-slate-900">Activate Demo</span>
-              <span className="mt-1 text-xs leading-5 text-slate-500">
-                Request a generated demo key, then activate it on this system.
-              </span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setRequestError('');
-                setRequestMessage('');
-                setActivationError('');
-                setMode('license');
-              }}
-              className="flex min-h-36 flex-col items-start rounded-xl border border-slate-200 p-4 text-left transition hover:border-blue-400 hover:bg-blue-50/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
-            >
-              <span className="rounded-lg bg-violet-50 p-2 text-violet-700">
-                <LockKeyhole className="h-5 w-5" />
-              </span>
-              <span className="mt-3 text-sm font-bold text-slate-900">Register With License Key</span>
-              <span className="mt-1 text-xs leading-5 text-slate-500">
-                Submit a license key and system code for approval.
-              </span>
-            </button>
-            {systemCodeError && (
-              <p role="alert" className="sm:col-span-2 rounded-lg bg-rose-50 p-3 text-xs text-rose-700">
-                {systemCodeError}
-              </p>
-            )}
-          </div>
-        ) : (
-          <form
-            onSubmit={(event) => {
-              if (isLicense) {
-                void handleSubmitLicenseRequest(event);
-              } else {
-                event.preventDefault();
-                void handleActivateDemo();
-              }
-            }}
-            className="space-y-4 p-5"
-          >
-            <button
-              type="button"
-              onClick={() => {
-                setMode('options');
-                setActivationKey('');
-                setRequestError('');
-                setRequestMessage('');
-                setActivationError('');
-              }}
-              className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-blue-700"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              Back to registration options
-            </button>
+        <form
+          onSubmit={(event) => void handleActivateDemo(event)}
+          className="space-y-4 p-5"
+        >
+          <div>
             <label className="block text-xs font-semibold text-slate-700">
               System Code
+            </label>
+            <div className="mt-1.5 flex items-center gap-2">
               <input
                 value={loadingCode ? 'Loading system code…' : systemCode}
                 readOnly
                 aria-label="System Code"
-                className="mt-1.5 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2.5 font-mono text-sm text-slate-800"
+                className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2.5 font-mono text-sm text-slate-800 select-all focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100"
               />
-            </label>
-            {(isLicense || demoAccessStatus !== 'expired') && (
-              <label className="block text-xs font-semibold text-slate-700">
-                {isLicense ? 'License Key' : 'Demo Key'}
-                <input
-                  required
-                  autoComplete="off"
-                  value={activationKey}
-                  onChange={(event) => setActivationKey(event.target.value)}
-                  aria-label={isLicense ? 'License Key' : 'Demo Key'}
-                  className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100"
-                />
-              </label>
-            )}
-            {requestMessage && (
-              <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs leading-5 text-emerald-900">
-                {requestMessage}
-              </p>
-            )}
+              <button
+                type="button"
+                onClick={() => void handleCopySystemCode()}
+                disabled={!systemCode || loadingCode}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-xs font-medium text-slate-700 shadow-xs hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                title="Copy System Code"
+              >
+                {systemCodeCopied ? (
+                  <>
+                    <Check className="h-4 w-4 text-emerald-600" />
+                    <span>Copied</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-4 w-4 text-slate-500" />
+                    <span>Copy</span>
+                  </>
+                )}
+              </button>
+            </div>
             {systemCodeError && (
-              <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-700">
+              <p role="alert" className="mt-1 text-xs text-rose-700">
                 {systemCodeError}
               </p>
             )}
-            {requestError && (
-              <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-700">
-                {requestError}
-              </p>
-            )}
-            {activationError && (
-              <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-700">
-                {activationError}
-              </p>
-            )}
-            <p className="text-xs leading-5 text-slate-500">
-              {isLicense
-                ? 'Your license request will be sent to aptadmin for review.'
-                : demoAccessStatus === 'expired'
-                  ? 'Your demo has expired. Register with a license key to continue using aptPOS.'
-                  : 'An internet connection is required to send this request to aptPOS User Management. After approval, aptadmin will generate a key for this system code and share it with you.'}
+          </div>
+
+          <label className="block text-xs font-semibold text-slate-700">
+            Demo Key
+            <input
+              required
+              autoComplete="off"
+              value={activationKey}
+              onChange={(event) => setActivationKey(event.target.value)}
+              aria-label="Demo Key"
+              placeholder="Enter demo activation key"
+              className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100"
+            />
+          </label>
+
+          <label className="block text-xs font-semibold text-slate-700">
+            Demo Account Password
+            <input
+              required
+              type="password"
+              autoComplete="new-password"
+              value={demoPassword}
+              onChange={(event) => setDemoPassword(event.target.value)}
+              aria-label="Demo Account Password"
+              placeholder="Enter demo password"
+              className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100"
+            />
+          </label>
+
+          {requestMessage && (
+            <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs leading-5 text-emerald-900">
+              {requestMessage}
             </p>
-            <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
-              {isLicense ? (
-                <button
-                  type="submit"
-                  disabled={submitting || loadingCode || !systemCode || Boolean(systemCodeError) || !activationKey}
-                  className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {submitting ? 'Submitting…' : 'Request Approval'}
-                </button>
-              ) : demoAccessStatus === 'expired' ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActivationKey('');
-                    setRequestError('');
-                    setRequestMessage('');
-                    setActivationError('');
-                    setMode('license');
-                  }}
-                  className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800"
-                >
-                  Register to Continue
-                </button>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => void handleRequestDemo()}
-                    disabled={submitting || loadingCode || !systemCode || Boolean(systemCodeError)}
-                    className="rounded-lg border border-blue-200 px-4 py-2.5 text-sm font-semibold text-blue-800 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {submitting ? 'Please wait…' : 'Request Demo Key'}
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={submitting || loadingCode || !systemCode || Boolean(systemCodeError) || !activationKey}
-                    className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {submitting ? 'Activating…' : 'Activate Demo'}
-                  </button>
-                </>
-              )}
-            </div>
-          </form>
-        )}
+          )}
+          {requestError && (
+            <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-700">
+              {requestError}
+            </p>
+          )}
+          {activationError && (
+            <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-700">
+              {activationError}
+            </p>
+          )}
+
+          <p className="text-xs leading-5 text-slate-500">
+            {demoAccessStatus === 'deactivated'
+              ? 'Enter the new activation key provided by aptadmin to restore demo access.'
+              : 'An internet connection is required to send this request to aptPOS User Management. After approval, aptadmin will generate a key for this system code and share it with you.'}
+          </p>
+
+          <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
+            {demoAccessStatus !== 'awaiting-activation' && demoAccessStatus !== 'deactivated' && (
+              <button
+                type="button"
+                onClick={() => void handleRequestDemo()}
+                disabled={submitting || loadingCode || !systemCode || Boolean(systemCodeError)}
+                className="rounded-lg border border-blue-200 px-4 py-2.5 text-sm font-semibold text-blue-800 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {submitting ? 'Please wait…' : demoAccessStatus === 'expired' ? 'Request Extension' : 'Request Demo Key'}
+              </button>
+            )}
+            <button
+              type="submit"
+              disabled={submitting || loadingCode || !systemCode || Boolean(systemCodeError) || !activationKey.trim()}
+              className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {submitting
+                ? 'Activating…'
+                : demoAccessStatus === 'deactivated'
+                  ? 'Reactivate Demo'
+                  : 'Activate Demo'}
+            </button>
+          </div>
+        </form>
       </section>
     </div>
   );

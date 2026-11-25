@@ -23,15 +23,24 @@ export const APP_COMPONENTS = [
   { id: 'purchase-history', label: 'Purchase History', labelAr: 'سجل المشتريات' },
   { id: 'purchase-return-register', label: 'Purchase Returns', labelAr: 'مرتجعات المشتريات' },
   { id: 'purchase-return-history', label: 'Purchase Return History', labelAr: 'سجل مرتجعات المشتريات' },
+  { id: 'sales-order', label: 'Sales Order', labelAr: 'طلب مبيعات' },
+  { id: 'sales-quotation', label: 'Sales Quotation', labelAr: 'عرض سعر' },
+  { id: 'purchase-order', label: 'Purchase Order', labelAr: 'أمر شراء' },
+  { id: 'purchase-quotation', label: 'Purchase Quotation', labelAr: 'عرض سعر شراء' },
+  { id: 'goods-delivery', label: 'Goods Delivery', labelAr: 'تسليم البضائع' },
+  { id: 'goods-receipt', label: 'Goods Receipt', labelAr: 'استلام البضائع' },
   { id: 'customers', label: 'Customers', labelAr: 'العملاء' },
   { id: 'vendors', label: 'Vendors', labelAr: 'الموردون' },
-  { id: 'sales', label: 'Sales History', labelAr: 'سجل المبيعات' },
+  { id: 'sales', label: 'Sales', labelAr: 'المبيعات' },
   { id: 'return-register', label: 'Sales Returns', labelAr: 'مرتجعات المبيعات' },
   { id: 'return-history', label: 'Sales Return History', labelAr: 'سجل مرتجعات المبيعات' },
   { id: 'accounts', label: 'Accounts & Cash Book', labelAr: 'الحسابات ودفتر النقدية' },
   { id: 'reports', label: 'Reports', labelAr: 'التقارير' },
+  { id: 'organization-hr', label: 'HR', labelAr: 'الموارد البشرية' },
+  { id: 'salary-process', label: 'Salary Process', labelAr: 'معالجة الرواتب' },
   { id: 'shift', label: 'Shift', labelAr: 'الوردية' },
   { id: 'files', label: 'Files', labelAr: 'الملفات' },
+  { id: 'settings', label: 'Settings', labelAr: 'الإعدادات' },
 ] as const;
 
 export type AppComponentId = (typeof APP_COMPONENTS)[number]['id'];
@@ -76,6 +85,15 @@ export interface UserSession {
   demoExpiresAt?: string;
   registeredSystem?: boolean;
   appVersion?: AppVersion;
+  demoScreenType?: PosScreenLayout;
+}
+
+export interface DemoActivationResult {
+  username: string;
+  expiresAt: string;
+  appVersion: AppVersion;
+  screenType: PosScreenLayout;
+  permissions: string[];
 }
 
 export interface UserAccount {
@@ -88,7 +106,16 @@ export interface UserAccount {
 
 export type RegistrationRequestType = 'demo' | 'license';
 export type RegistrationRequestStatus = 'pending' | 'approved' | 'rejected';
-export type DemoAccessStatus = 'never' | 'active' | 'expired' | 'registered';
+export type DemoAccessStatus =
+  | 'never'
+  | 'pending'
+  | 'awaiting-activation'
+  | 'deactivated'
+  | 'previous-request'
+  | 'active'
+  | 'expired'
+  | 'registered'
+  | 'blocked';
 
 export interface RegistrationRequest {
   id: number;
@@ -167,6 +194,7 @@ export interface Product {
 
 export interface CartItem {
   product: Product;
+  description?: string;
   quantity: number;
   unitId?: string;
   unitName?: string;
@@ -184,6 +212,7 @@ export interface SaleItem {
   sku: string;
   productName: string;
   nameAr?: string;
+  description?: string;
   quantity: number;
   unitPrice: number;
   lineTotal: number;
@@ -398,6 +427,18 @@ export interface InvoiceTemplateSettings {
   invoiceShowQrCode?: boolean;
 }
 
+export interface RegistrationDetails {
+  businessName: string;
+  address: string;
+  mobileNumber: string;
+  systemCode: string;
+  username: string;
+  appVersion: AppVersion;
+  amcStartDate?: string | null;
+  amcEndDate?: string | null;
+  amcNotes?: string;
+}
+
 export interface StoreSettings {
   storeName: string;
   storeNameAr?: string; // اسم المتجر / الشركة بالعربية
@@ -422,6 +463,10 @@ export interface StoreSettings {
 
   // POS Screen & Layout Models
   posScreenLayout: PosScreenLayout;
+  productCardWidthIn?: number;
+  productCardHeightIn?: number;
+  categoryCardWidthIn?: number;
+  categoryCardHeightIn?: number;
 
   // Operational & Sales Settings
   barcodeScanBeep: boolean;
@@ -454,7 +499,10 @@ export interface StoreSettings {
   appVersion?: AppVersion;
   disabledAppComponents?: AppComponentId[];
   versionComponentPolicies?: VersionComponentPolicies;
+  demoUsername?: string;
   registeredSystem?: boolean;
+  systemCodeBlocked?: boolean;
+  registrationDetails?: RegistrationDetails;
 }
 
 export interface PrintJob {

@@ -26,6 +26,7 @@ import type {
   CashbookEntry,
   CashbookOpeningBalance,
   Customer,
+  DemoActivationResult,
   DemoAccessStatus,
   CreateCashbookEntryInput,
   CreatePurchaseReturnInput,
@@ -34,6 +35,7 @@ import type {
   Product,
   PurchaseEntry,
   PurchaseReturnVoucher,
+  PosScreenLayout,
   Sale,
   SalesReturnVoucher,
   StoreSettings,
@@ -77,6 +79,10 @@ const DEFAULT_SETTINGS: StoreSettings = {
   cashierName: 'Cashier / الكاشير',
   taxType: 'inclusive',
   posScreenLayout: 'pos',
+  productCardWidthIn: 2,
+  productCardHeightIn: 3,
+  categoryCardWidthIn: 2,
+  categoryCardHeightIn: 3,
   barcodeScanBeep: true,
   allowNegativeStock: false,
   roundTotalToFiveCents: false,
@@ -228,6 +234,31 @@ const AppCloseDialog: React.FC<AppCloseDialogProps> = ({
   );
 };
 
+function isNavigableComponent(
+  component: AppComponentId
+): component is Extract<AppComponentId, NavTab> {
+  switch (component) {
+    case 'register':
+    case 'inventory':
+    case 'purchases':
+    case 'purchase-history':
+    case 'purchase-return-register':
+    case 'purchase-return-history':
+    case 'customers':
+    case 'vendors':
+    case 'sales':
+    case 'return-register':
+    case 'return-history':
+    case 'accounts':
+    case 'reports':
+    case 'shift':
+    case 'files':
+      return true;
+    default:
+      return false;
+  }
+}
+
 export function App() {
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => {
     try {
@@ -238,6 +269,7 @@ export function App() {
       return null;
     }
   });
+
 
   const [activeTab, setActiveTab] = useState<NavTab>('register');
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>('sales');
@@ -481,6 +513,15 @@ export function App() {
 
   const handleLoginSuccess = (user: UserSession) => {
     setCurrentUser(user);
+    const demoVersion = user.appVersion;
+    const demoScreenType = user.demoScreenType;
+    if (user.demoMode && demoVersion && demoScreenType) {
+      setSettings((current) => ({
+        ...current,
+        appVersion: demoVersion,
+        posScreenLayout: demoScreenType,
+      }));
+    }
     setLoginDemoRegistration(null);
     setLoginError(null);
     try {
@@ -497,7 +538,6 @@ export function App() {
     }
     setOpenLauncherAfterLogin(true);
     setLoading(true);
-    fetchAll();
   };
 
   const handleDemoRegistrationRequested = (user: UserSession, status: DemoAccessStatus) => {
@@ -516,14 +556,38 @@ export function App() {
     }
   }, []);
 
-  const handleDemoActivated = (expiresAt: string) => {
+  const handleDemoActivated = async (activation: DemoActivationResult) => {
     if (!loginDemoRegistration) return;
+    const response = await fetch('/api/settings', { cache: 'no-store' });
+    const payload: unknown = await response.json().catch(() => null);
+    if (
+      !response.ok ||
+      typeof payload !== 'object' ||
+      payload === null ||
+      !('appVersion' in payload) ||
+      !('posScreenLayout' in payload)
+    ) {
+      throw new Error('Could not load the approved demo settings.');
+    }
+    const updatedSettings = payload as StoreSettings;
+    if (
+      updatedSettings.appVersion !== activation.appVersion ||
+      updatedSettings.posScreenLayout !== activation.screenType
+    ) {
+      throw new Error('The approved demo version and screen could not be synchronized.');
+    }
+    setSettings(updatedSettings);
     handleLoginSuccess({
       ...loginDemoRegistration.user,
-      role: 'admin',
-      permissions: ['register', 'inventory', 'purchases', 'customers', 'vendors', 'accounts', 'reports', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings'],
+      username: activation.username,
+      displayName: activation.username,
+      role: 'custom',
+      permissions: activation.permissions,
       demoMode: true,
-      demoExpiresAt: expiresAt,
+      registeredSystem: false,
+      demoExpiresAt: activation.expiresAt,
+      appVersion: activation.appVersion,
+      demoScreenType: activation.screenType,
     });
   };
 
@@ -583,6 +647,10 @@ export function App() {
         }
 
         const expiresAt = payload.expiresAt;
+        if (payload.status === 'blocked') {
+          handleLogout();
+          return;
+        }
         if (payload.status === 'registered') {
           const appVersionValue = 'appVersion' in payload ? payload.appVersion : undefined;
           const appVersion = APP_VERSIONS.find((version) => version === appVersionValue);
@@ -621,13 +689,102 @@ export function App() {
           }
           return;
         }
+        if (payload.status === 'awaiting-activation') {
+          handleLogout();
+          setLoginError(null);
+          setLoginDemoRegistration({
+            user: currentUser,
+            status: 'awaiting-activation',
+          });
+          return;
+        }
+        if (payload.status === 'deactivated') {
+          handleLogout();
+          setLoginError(null);
+          setLoginDemoRegistration({
+            user: currentUser,
+            status: 'deactivated',
+          });
+          return;
+        }
+        if (payload.status === 'pending' || payload.status === 'previous-request') {
+          handleLogout();
+          setLoginDemoRegistration(null);
+          setLoginError(
+            payload.status === 'pending'
+              ? 'A demo request is pending approval. Sign-in is unavailable until a demo key is activated.'
+              : 'This system has a previous demo request. Please contact your service provider.'
+          );
+          return;
+        }
         if (
           payload.status === 'active' &&
           typeof expiresAt === 'string' &&
           Date.parse(expiresAt) > Date.now()
         ) {
-          if (currentUser.demoExpiresAt !== expiresAt) {
-            const updatedUser = { ...currentUser, demoExpiresAt: expiresAt };
+          const appVersion =
+            'appVersion' in payload
+              ? APP_VERSIONS.find((version) => version === payload.appVersion)
+              : undefined;
+          const screenType: PosScreenLayout | undefined =
+            'screenType' in payload && payload.screenType === 'pos'
+              ? 'pos'
+              : 'screenType' in payload && payload.screenType === 'rpos'
+                ? 'rpos'
+                : undefined;
+          const rawPermissions =
+            'permissions' in payload && Array.isArray(payload.permissions)
+              ? payload.permissions
+              : null;
+          const permissions =
+            rawPermissions?.filter((permission): permission is string => typeof permission === 'string') || [];
+          if (
+            !appVersion ||
+            !screenType ||
+            !rawPermissions ||
+            permissions.length !== rawPermissions.length
+          ) {
+            handleLogout();
+            setLoginError('The active demo returned an invalid version or screen configuration.');
+            return;
+          }
+
+          const settingsResponse = await fetch('/api/settings', { cache: 'no-store' });
+          if (!settingsResponse.ok) {
+            throw new Error('Could not refresh the active demo configuration.');
+          }
+          const updatedSettings: StoreSettings = await settingsResponse.json();
+          if (
+            updatedSettings.appVersion !== appVersion ||
+            updatedSettings.posScreenLayout !== screenType
+          ) {
+            throw new Error('The active demo configuration could not be synchronized.');
+          }
+          setSettings((current) =>
+            current.appVersion === updatedSettings.appVersion &&
+            current.posScreenLayout === updatedSettings.posScreenLayout &&
+            JSON.stringify(current.disabledAppComponents) ===
+              JSON.stringify(updatedSettings.disabledAppComponents)
+              ? current
+              : updatedSettings
+          );
+
+          const permissionsChanged =
+            JSON.stringify([...(currentUser.permissions || [])].sort()) !==
+            JSON.stringify([...permissions].sort());
+          if (
+            currentUser.demoExpiresAt !== expiresAt ||
+            currentUser.appVersion !== appVersion ||
+            currentUser.demoScreenType !== screenType ||
+            permissionsChanged
+          ) {
+            const updatedUser = {
+              ...currentUser,
+              demoExpiresAt: expiresAt,
+              appVersion,
+              demoScreenType: screenType,
+              permissions,
+            };
             setCurrentUser(updatedUser);
             try {
               sessionStorage.setItem('counterline_user', JSON.stringify(updatedUser));
@@ -662,18 +819,10 @@ export function App() {
       }
     };
 
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') void checkDemoAccess();
-    };
-    const interval = window.setInterval(() => void checkDemoAccess(), 60_000);
-    window.addEventListener('focus', checkDemoAccess);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
+    void checkDemoAccess();
 
     return () => {
       active = false;
-      window.clearInterval(interval);
-      window.removeEventListener('focus', checkDemoAccess);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [currentUser, handleLogout]);
 
@@ -850,8 +999,12 @@ export function App() {
     await fetchAll();
   };
 
-  const handleResetDatabase = async () => {
-    const res = await fetch('/api/database/reset', { method: 'POST' });
+  const handleResetDatabase = async (password: string) => {
+    const res = await fetch('/api/database/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
     if (!res.ok) {
       const data = await res.json().catch(() => null);
       throw new Error(data?.error || `Database reset failed (HTTP ${res.status}).`);
@@ -948,39 +1101,6 @@ export function App() {
     return policies;
   }, []);
 
-  const saveVersionComponentPolicies = useCallback(async (
-    policies: VersionComponentPolicies,
-    password: string
-  ) => {
-    const response = await fetch('/api/version-control', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ versionComponentPolicies: policies, password }),
-    });
-    const payload: unknown = await response.json().catch(() => null);
-    if (!response.ok) {
-      throw new Error(
-        typeof payload === 'object' &&
-        payload !== null &&
-        'error' in payload &&
-        typeof payload.error === 'string'
-          ? payload.error
-          : 'Could not save Firebase version policies.'
-      );
-    }
-    if (typeof payload !== 'object' || payload === null || !('versionComponentPolicies' in payload)) {
-      const contentType = response.headers.get('content-type') || 'an unknown content type';
-      throw new Error(
-        `The POS server returned ${contentType} instead of a version policy save response. Restart the POS app/server to load the updated API, then retry.`
-      );
-    }
-    const savedPolicies = parseVersionComponentPolicies(payload.versionComponentPolicies);
-    if (!savedPolicies || APP_VERSIONS.some((version) => !Array.isArray(savedPolicies[version]))) {
-      throw new Error('The version policy service returned an incomplete save response.');
-    }
-    return savedPolicies;
-  }, []);
-
   const handleActivateVersion = async (input: {
     appVersion: AppVersion;
     password: string;
@@ -1061,10 +1181,6 @@ export function App() {
   );
   const canManageSalesReturns =
     isAdmin || currentUser?.permissions?.includes('manage-sales-returns') === true;
-  const canReturnSales =
-    isAdmin ||
-    currentUser?.permissions?.includes('sales-return') === true ||
-    canManageSalesReturns;
   const canDeleteSales = isAdmin || currentUser?.permissions?.includes('delete-sales') === true;
   const isAppAdmin = currentUser?.username.toLowerCase() === 'aptadmin';
   const isRposMode = settings.posScreenLayout === 'rpos';
@@ -1072,18 +1188,14 @@ export function App() {
   const hasPermission = (tabId: NavTab) => {
     if (!currentUser) return false;
     if (
-      tabId !== 'settings' &&
       tabId !== 'unavailable' &&
       (!isAppAdmin || settings.registeredSystem === true) &&
       settings.disabledAppComponents?.some((component) => component === tabId)
     ) return false;
-    if (tabId === 'purchase-return-register' || tabId === 'purchase-return-history') {
-      return isAdmin;
-    }
-    if (tabId === 'files') return isAdmin;
     if (tabId === 'settings') {
       return isAdmin || isAppAdmin || currentUser.permissions?.includes('settings') === true;
     }
+    if (APP_COMPONENTS.some((component) => component.id === tabId)) return true;
     if (isAdmin) return true;
     const requiredPermission =
       tabId === 'shift'
@@ -1099,9 +1211,12 @@ export function App() {
     }
     return currentUser.permissions?.includes(requiredPermission) ?? false;
   };
+  const canReturnSales =
+    hasPermission('return-register') || hasPermission('return-history');
 
   const fallbackTabs = APP_COMPONENTS
     .map((component) => component.id)
+    .filter(isNavigableComponent)
     .filter((tab) => hasPermission(tab));
   const effectiveTab: NavTab = hasPermission(activeTab)
     ? activeTab
@@ -1113,11 +1228,10 @@ export function App() {
   const settingsWorkspace = (
     <SettingsView
       settings={settings}
-      activeSection={isAdmin || isAppAdmin ? settingsSection : 'screen'}
+      activeSection={settingsSection}
       onActiveSectionChange={setSettingsSection}
       showSectionNavigation={!showSettingsComponent}
       printQueue={printQueue}
-      isAdmin={isAdmin}
       isAppAdmin={isAppAdmin}
       canRegisterSystem={isAppAdmin || currentUser?.demoMode === true}
       theme={theme}
@@ -1128,7 +1242,6 @@ export function App() {
       onActivateVersion={handleActivateVersion}
       onActivateRegistrationKey={handleActivateRegistrationKey}
       onLoadVersionComponentPolicies={loadVersionComponentPolicies}
-      onSaveVersionComponentPolicies={saveVersionComponentPolicies}
       onFlushPrintQueue={handleFlushPrintQueue}
       onResetDatabase={handleResetDatabase}
       onRestoreDatabase={handleRestoreDatabase}
@@ -1159,6 +1272,7 @@ export function App() {
             data-theme={theme}
             className={`pos-app-shell${activeReceipt ? ' invoice-print-open' : ''} h-[100dvh] max-h-[100dvh] w-screen flex flex-col bg-slate-50 text-slate-900 overflow-hidden`}
           >
+          {!loading && (
           <TopBar
             activeTab={effectiveTab}
             activeSettingsSection={settingsSection}
@@ -1177,9 +1291,13 @@ export function App() {
             openLauncherOnMount={openLauncherAfterLogin}
             onLauncherOpened={handleLauncherOpened}
             demoExpiresAt={currentUser.demoMode ? currentUser.demoExpiresAt : undefined}
+            registeredSystem={settings.registeredSystem === true}
+            amcStartDate={settings.registrationDetails?.amcStartDate}
+            amcEndDate={settings.registrationDetails?.amcEndDate}
             purchaseVoucherNumber={effectiveTab === 'purchases' ? nextPurchaseVoucherNumber : undefined}
             purchaseVendor={effectiveTab === 'purchases' ? purchaseVendor : null}
           />
+          )}
 
           {loading ? (
             <main className="flex-1 flex items-center justify-center">
@@ -1212,7 +1330,7 @@ export function App() {
                     hasPermission('sales') ? () => setActiveTab('sales') : undefined
                   }
                   onEditProduct={
-                    isAdmin && hasPermission('inventory')
+                    hasPermission('inventory')
                       ? (product) =>
                           setProductEditRequest((request) => ({
                             product,
@@ -1221,7 +1339,7 @@ export function App() {
                       : undefined
                   }
                   onAddProduct={
-                    isAdmin && hasPermission('inventory')
+                    hasPermission('inventory')
                       ? (barcode) => {
                           setProductCreateBarcode(barcode);
                           setProductCreateReturnTab('register');
@@ -1241,10 +1359,14 @@ export function App() {
           {(effectiveTab === 'register' ||
             effectiveTab === 'purchases' ||
             effectiveTab === 'purchase-history') &&
-            isAdmin &&
+            hasPermission('inventory') &&
             productEditRequest && (
             <InventoryView
               products={products}
+              purchases={purchases}
+              purchaseReturnVouchers={purchaseReturnVouchers}
+              sales={sales}
+              salesReturnVouchers={salesReturnVouchers}
               settings={settings}
               theme={theme}
               onRefreshProducts={refreshProducts}
@@ -1261,13 +1383,17 @@ export function App() {
             />
           )}
 
-          {(effectiveTab === 'inventory' ||
-            productCreateReturnTab === 'purchases' ||
-            (effectiveTab === 'register' && productCreateReturnTab === 'register')) &&
-            isAdmin && (
+          {((effectiveTab === 'inventory' && hasPermission('inventory')) ||
+            ((productCreateReturnTab === 'purchases' ||
+              (effectiveTab === 'register' && productCreateReturnTab === 'register')) &&
+              hasPermission('inventory'))) && (
             <div className={effectiveTab === 'inventory' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
               <InventoryView
                 products={products}
+                purchases={purchases}
+                purchaseReturnVouchers={purchaseReturnVouchers}
+                sales={sales}
+                salesReturnVouchers={salesReturnVouchers}
                 settings={settings}
                 theme={theme}
                 onRefreshProducts={refreshProducts}
@@ -1281,12 +1407,14 @@ export function App() {
             </div>
           )}
 
-          {effectiveTab === 'files' && isAdmin && <FilesView />}
+          {effectiveTab === 'files' && hasPermission('files') && <FilesView />}
           {effectiveTab === 'shift' && currentUser && (
             <ShiftView currentUser={currentUser} settings={settings} theme={theme} />
           )}
 
-          {isAdmin && (
+          {(hasPermission('purchases') ||
+            hasPermission('purchase-history') ||
+            hasPermission('purchase-return-register')) && (
             <div
               className={
                 effectiveTab === 'purchases' ||
@@ -1302,7 +1430,11 @@ export function App() {
               }
             >
               <PurchasesView
-                isActive={effectiveTab === 'purchases' || effectiveTab === 'purchase-return-register'}
+                isActive={
+                  effectiveTab === 'purchases' ||
+                  effectiveTab === 'purchase-history' ||
+                  effectiveTab === 'purchase-return-register'
+                }
                 page={effectiveTab === 'purchase-history' ? 'history' : 'entry'}
                 mode={effectiveTab === 'purchase-return-register' ? 'purchase-return' : 'purchase'}
                 focusBarcodeRequest={purchaseBarcodeFocusRequest}
@@ -1410,7 +1542,7 @@ export function App() {
                   />
                 )}
 
-                {effectiveTab === 'customers' && isAdmin && (
+                {effectiveTab === 'customers' && hasPermission('customers') && (
                   <CustomersView
                     customers={customers}
                     settings={settings}
@@ -1418,7 +1550,7 @@ export function App() {
                   />
                 )}
 
-                {effectiveTab === 'vendors' && isAdmin && (
+                {effectiveTab === 'vendors' && hasPermission('vendors') && (
                   <VendorsView
                     vendors={vendors}
                     settings={settings}
@@ -1450,7 +1582,7 @@ export function App() {
             </div>
           )}
 
-          {effectiveTab === 'purchase-return-history' && isAdmin && (
+          {effectiveTab === 'purchase-return-history' && hasPermission('purchase-return-history') && (
             <PurchaseReturnHistoryView
               vouchers={purchaseReturnVouchers}
               settings={settings}

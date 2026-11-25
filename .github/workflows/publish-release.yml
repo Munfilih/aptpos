@@ -35,7 +35,7 @@ jobs:
         run: npm ci
 
       - name: Build Windows installer
-        run: npm run electron:build -- --publish never
+        run: npm run electron:build -- --publish=never
 
       - name: Publish release and update assets
         shell: pwsh
