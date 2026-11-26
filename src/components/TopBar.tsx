@@ -61,6 +61,7 @@ interface TopBarProps {
   amcEndDate?: string | null;
   disabledAppComponents?: AppComponentId[];
   iconOnlyLauncher: boolean;
+  launcherBackgroundDataUrl?: string;
   openLauncherOnMount?: boolean;
   onLauncherOpened?: () => void;
   purchaseVoucherNumber?: string;
@@ -141,6 +142,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   amcEndDate,
   disabledAppComponents = [],
   iconOnlyLauncher,
+  launcherBackgroundDataUrl,
   openLauncherOnMount = false,
   onLauncherOpened,
   purchaseVoucherNumber,
@@ -148,14 +150,14 @@ export const TopBar: React.FC<TopBarProps> = ({
 }) => {
   const { t, language, toggleLanguage } = useLanguage();
   const settingsSectionLabel: Record<SettingsSectionId, string> = {
-    sales: t.secSalesTax,
-    screen: language === 'ar' ? 'المظهر' : 'Theme',
-    store: t.secStoreInfo,
-    printer: t.secPrintTemplate,
+    general: language === 'ar' ? 'عام' : 'General',
+    business: language === 'ar' ? 'الأعمال' : 'Business',
+    billing: language === 'ar' ? 'الفوترة' : 'Billing',
+    customers: language === 'ar' ? 'العملاء' : 'Customers',
+    payment: language === 'ar' ? 'الدفع' : 'Payment',
     users: t.secUsersPerms,
     database: t.secDatabase,
     registration: language === 'ar' ? 'التسجيل' : 'Registration',
-    version: language === 'ar' ? 'الإصدار' : 'Version',
     updates: language === 'ar' ? 'التحديثات' : 'Software Updates',
   };
   const [showLauncher, setShowLauncher] = useState(openLauncherOnMount);
@@ -254,8 +256,14 @@ export const TopBar: React.FC<TopBarProps> = ({
   }, [openLauncherOnMount, onLauncherOpened]);
 
   const navItems: TopNavItem[] = [
-    ...(appScreenMode === 'erp'
-      ? [{ id: 'sales-entry' as const, label: language === 'ar' ? 'إدخال المبيعات' : 'Sales Entry', icon: FileText }]
+    ...(appScreenMode === 'erp' || appScreenMode === 'flyerp'
+      ? [{
+          id: 'sales-entry' as const,
+          label: appScreenMode === 'flyerp'
+            ? language === 'ar' ? 'فواتير السفر' : 'Travel Billing'
+            : language === 'ar' ? 'إدخال المبيعات' : 'Sales Entry',
+          icon: FileText,
+        }]
       : []),
     { id: 'register', label: t.navRegister, icon: ShoppingBag },
     {
@@ -270,7 +278,13 @@ export const TopBar: React.FC<TopBarProps> = ({
       label: language === 'ar' ? 'مرتجع مشتريات' : 'Purchase Return',
       icon: RotateCcw,
     },
-    { id: 'inventory', label: t.navInventory, icon: Package },
+    {
+      id: 'inventory',
+      label: appScreenMode === 'flyerp'
+        ? language === 'ar' ? 'الخدمات' : 'Services'
+        : t.navInventory,
+      icon: Package,
+    },
     { id: 'shift', label: language === 'ar' ? 'الوردية' : 'Shift', icon: Wallet, permission: 'register' },
     { id: 'accounts', label: t.navAccounts, icon: Wallet, permission: 'accounts' },
     { id: 'reports', label: t.navReports, icon: BarChart3, permission: 'reports' },
@@ -337,12 +351,17 @@ export const TopBar: React.FC<TopBarProps> = ({
     },
     {
       id: 'inventory',
-      label: 'Inventory',
-      labelAr: 'المخزون',
+      label: appScreenMode === 'flyerp' ? 'Services' : 'Inventory',
+      labelAr: appScreenMode === 'flyerp' ? 'الخدمات' : 'المخزون',
       icon: Package,
       tab: 'inventory',
       destinations: [
-        { label: 'Inventory', labelAr: 'المخزون', icon: Package, tab: 'inventory' },
+        {
+          label: appScreenMode === 'flyerp' ? 'Services' : 'Inventory',
+          labelAr: appScreenMode === 'flyerp' ? 'الخدمات' : 'المخزون',
+          icon: Package,
+          tab: 'inventory',
+        },
       ],
     },
     {
@@ -396,9 +415,16 @@ export const TopBar: React.FC<TopBarProps> = ({
   const visibleHubModules = hubModules
     .map((module) => ({
       ...module,
-      tab: appScreenMode === 'erp' && module.id === 'sales' ? 'sales-entry' : module.tab,
-      destinations: (appScreenMode === 'erp' && module.id === 'sales'
-        ? [{ ...module.destinations[0], label: 'Sales Entry', labelAr: 'إدخال المبيعات', tab: 'sales-entry' as NavTab }]
+      tab: (appScreenMode === 'erp' || appScreenMode === 'flyerp') && module.id === 'sales'
+        ? 'sales-entry'
+        : module.tab,
+      destinations: ((appScreenMode === 'erp' || appScreenMode === 'flyerp') && module.id === 'sales'
+        ? [{
+            ...module.destinations[0],
+            label: appScreenMode === 'flyerp' ? 'Travel Billing' : 'Sales Entry',
+            labelAr: appScreenMode === 'flyerp' ? 'فواتير السفر' : 'إدخال المبيعات',
+            tab: 'sales-entry' as NavTab,
+          }]
         : module.destinations).filter(
         (destination) => destination.comingSoon || (destination.tab && hasTabPermission(destination.tab))
       ),
@@ -546,13 +572,15 @@ export const TopBar: React.FC<TopBarProps> = ({
           <button
             type="button"
             onClick={() => {
-              handleSelectNavigationTab(appScreenMode === 'erp' ? 'sales-entry' : 'register');
+              handleSelectNavigationTab(
+                appScreenMode === 'erp' || appScreenMode === 'flyerp' ? 'sales-entry' : 'register'
+              );
               onSettingsLauncherChange(false);
               onSettingsComponentChange(false);
             }}
             className="font-display text-base sm:text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 rounded flex items-center gap-1.5"
           >
-            <span>apt<span className={appName === 'aptERP' ? 'text-violet-700' : 'text-blue-700'}>{appName.slice(3)}</span></span>
+            <span>apt<span className={appName === 'aptERP' ? 'text-violet-700' : appName === 'aptFlyERP' ? 'text-amber-700' : 'text-blue-700'}>{appName.slice(3)}</span></span>
           </button>
           {activePageLabel && (
             <span className="border-l border-slate-200 pl-2 text-xs font-medium text-slate-600 sm:pl-3">
@@ -654,6 +682,13 @@ export const TopBar: React.FC<TopBarProps> = ({
         >
           <div
             className="win11-start-panel relative flex h-[calc(100dvh-4.5rem)] max-h-[calc(100dvh-4.5rem)] w-full max-w-5xl flex-col overflow-hidden rounded-t-3xl p-2 pb-[max(1rem,env(safe-area-inset-bottom))] sm:h-[38rem] sm:max-h-[calc(100dvh-6rem)] sm:rounded-3xl sm:px-8 sm:pb-8 sm:pt-2"
+            style={launcherBackgroundDataUrl
+              ? {
+                  backgroundImage: `linear-gradient(var(--theme-launcher-image-overlay), var(--theme-launcher-image-overlay)), url("${launcherBackgroundDataUrl}")`,
+                  backgroundPosition: 'center',
+                  backgroundSize: 'cover',
+                }
+              : undefined}
           >
             {selectedHubModule?.id === 'settings' ? (
               <>
@@ -766,7 +801,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             ) : (
               <>
                 <div
-                  className="launcher-grid min-h-0 flex-1 grid w-full grid-cols-[repeat(auto-fit,minmax(7rem,1fr))] items-start justify-items-center content-start gap-4 overflow-y-auto overscroll-contain pb-[max(1rem,env(safe-area-inset-bottom))]"
+                  className="launcher-grid min-h-0 flex-1 grid w-full grid-cols-[repeat(auto-fit,minmax(8rem,1fr))] items-start justify-items-center content-start gap-5 overflow-y-auto overscroll-contain pb-[max(1rem,env(safe-area-inset-bottom))]"
                 >
                 {launcherItems.map((entry) => {
                 const Icon = entry.icon;
@@ -803,8 +838,8 @@ export const TopBar: React.FC<TopBarProps> = ({
                         setOpenNavigationGroup(entry.moduleId);
                       }
                     }}
-                    className={`group flex min-h-28 w-28 min-w-0 flex-col items-center rounded-xl border border-transparent p-2 text-center transition-colors ${
-                          iconOnlyLauncher ? 'justify-center' : 'justify-start gap-2'
+                    className={`group flex min-h-32 w-32 min-w-0 flex-col items-center rounded-2xl border border-transparent p-2 text-center transition-colors ${
+                          iconOnlyLauncher ? 'justify-center' : 'justify-start gap-2.5'
                         } ${
                           isComingSoon
                             ? 'cursor-not-allowed opacity-50'
@@ -813,21 +848,21 @@ export const TopBar: React.FC<TopBarProps> = ({
                   >
                       <span
                         data-art={isMenuLanding ? entry.id : undefined}
-                        className={`win11-launcher-icon relative flex h-18 w-18 shrink-0 items-center justify-center rounded-xl transition-all sm:h-20 sm:w-20 ${
-                          isComingSoon ? '' : 'group-hover:-translate-y-0.5 group-hover:scale-110 group-hover:shadow-md'
+                        className={`win11-launcher-icon relative flex h-20 w-20 shrink-0 items-center justify-center rounded-2xl transition-all sm:h-24 sm:w-24 ${
+                          isComingSoon ? '' : 'group-hover:-translate-y-0.5 group-hover:scale-105 group-hover:shadow-lg'
                         }`}
                       >
                         {isMenuLanding ? (
                           <LauncherAppArt id={entry.id} />
                         ) : (
                           <Icon
-                            strokeWidth={1.5}
-                            className="relative z-10 h-8 w-8 text-blue-700 sm:h-9 sm:w-9"
+                            strokeWidth={1.75}
+                            className="relative z-10 h-9 w-9 text-blue-700 sm:h-11 sm:w-11"
                           />
                         )}
                       </span>
                       {!iconOnlyLauncher && (
-                        <span className="w-18 whitespace-normal break-words text-center text-xs font-semibold leading-tight text-slate-700">
+                        <span className="w-24 whitespace-normal break-words text-center text-xs font-semibold leading-tight text-slate-700">
                           {label}
                         </span>
                       )}

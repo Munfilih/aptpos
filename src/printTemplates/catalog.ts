@@ -55,6 +55,7 @@ const voucherTypes: PrintDocumentType[] = [
 
 export const PRINT_TEMPLATE_CATALOG: PrintTemplateDefinition[] = [
   ...PAPER_FORMATS.flatMap((format) => createEntries('sales-invoice', format, SALES_VARIANTS)),
+  ...createEntries('sales-invoice', 'A4', [{ variant: 'flyerp', label: 'aptFlyERP Travel' }]),
   ...voucherTypes.flatMap((documentType) =>
     PAPER_FORMATS.flatMap((format) => createEntries(documentType, format, STANDARD_VARIANTS))
   ),
@@ -95,13 +96,11 @@ export function getPrintFormats(documentType: PrintDocumentType): PaperWidth[] {
 }
 
 export function getPrintDocumentFormat(
-  settings: Pick<StoreSettings, 'printDocumentFormats' | 'paperWidth'>,
+  settings: Pick<StoreSettings, 'paperWidth'>,
   documentType: PrintDocumentType,
   fallback?: PaperWidth
 ): PaperWidth {
   const formats = getPrintFormats(documentType);
-  const configuredFormat = settings.printDocumentFormats?.[documentType];
-  if (configuredFormat && formats.includes(configuredFormat)) return configuredFormat;
   if (fallback && formats.includes(fallback)) return fallback;
   const defaultFormat = settings.paperWidth;
   if (defaultFormat && formats.includes(defaultFormat)) return defaultFormat;

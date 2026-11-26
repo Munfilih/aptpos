@@ -14,7 +14,8 @@ export type PrintTemplateVariant =
   | 'tax-standard'
   | 'tax-compact'
   | 'shift-summary'
-  | 'shift-detailed';
+  | 'shift-detailed'
+  | 'flyerp';
 
 export interface PrintDocumentField {
   label: string;
@@ -34,17 +35,27 @@ export interface PrintDocumentData {
   companyName: string;
   companyNameAr?: string;
   companyAddress?: string;
+  companyBuildingNo?: string;
+  companyStreetName?: string;
+  companyDistrict?: string;
+  companyCity?: string;
+  companyPostalCode?: string;
+  companyCountry?: string;
   companyPhone?: string;
   companyTaxId?: string;
+  companyCrNumber?: string;
   companyLogo?: string;
   fields: PrintDocumentField[];
   columns: string[];
   numericColumns?: number[];
   rows: PrintDocumentRow[];
   totals: PrintDocumentField[];
+  pendingBalance?: string;
   multiLanguage?: boolean;
+  compactPartyDetails?: boolean;
   footer?: string;
   qrDataUrl?: string;
+  qrSizeMm?: number;
   direction?: 'ltr' | 'rtl';
 }
 

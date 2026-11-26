@@ -154,38 +154,44 @@ async function generateHeader() {
 
 // ── Sidebar BMP 164×314 ───────────────────────────────────────────────────────
 
+function drawSidebarGradient(canvas, cw, ch) {
+  const top = { r: 12, g: 27, b: 58 };    // #0c1b3a
+  const bottom = { r: 15, g: 45, b: 102 }; // #0f2d66
+  for (let y = 0; y < ch; y++) {
+    const t = y / ch;
+    const r = Math.round(top.r + (bottom.r - top.r) * t);
+    const g = Math.round(top.g + (bottom.g - top.g) * t);
+    const b = Math.round(top.b + (bottom.b - top.b) * t);
+    for (let x = 0; x < cw; x++) {
+      const di = (y * cw + x) * 3;
+      canvas[di] = r; canvas[di + 1] = g; canvas[di + 2] = b;
+    }
+  }
+}
+
 async function generateSidebar() {
   const W = 164, H = 314;
   const canvas = Buffer.alloc(W * H * 3);
-  drawBgGradient(canvas, W, H);
+  drawSidebarGradient(canvas, W, H);
 
-  // Subtle cyan dot grid keeps the branded panel light and unobtrusive.
-  for (let y = 0; y < H; y += 24) {
-    for (let x = 0; x < W; x += 24) {
-      const di = (y * W + x) * 3;
-      canvas[di]     = Math.min(255, canvas[di] + 4);
-      canvas[di + 1] = Math.min(255, canvas[di + 1] + 7);
-      canvas[di + 2] = Math.min(255, canvas[di + 2] + 8);
-    }
-  }
-
-  // Soft cyan glow behind the uploaded mark.
-  const glowCX = W / 2, glowCY = H * 0.35, glowR = 90;
+  // Subtle ambient glow behind the aptPOS mark
+  const glowCX = W / 2, glowCY = H * 0.30, glowR = 88;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const dist = Math.hypot(x - glowCX, y - glowCY);
       if (dist < glowR) {
-        const t = (1 - dist / glowR) * 0.25;
+        const t = (1 - dist / glowR) * 0.32;
         const di = (y * W + x) * 3;
-        canvas[di + 2] = Math.min(255, canvas[di + 2] + Math.round(40 * t));
-        canvas[di + 1] = Math.min(255, canvas[di + 1] + Math.round(24 * t));
+        canvas[di]     = Math.min(255, canvas[di] + Math.round(10 * t));
+        canvas[di + 1] = Math.min(255, canvas[di + 1] + Math.round(115 * t));
+        canvas[di + 2] = Math.min(255, canvas[di + 2] + Math.round(215 * t));
       }
     }
   }
 
-  const logoSize = 78;
+  const logoSize = 76;
   const logoX = Math.floor((W - logoSize) / 2);
-  const logoY = 38;
+  const logoY = 44;
   const logoRgba = await sharp(LOGO)
     .resize(logoSize, logoSize, { fit: 'cover' })
     .ensureAlpha().raw().toBuffer();
@@ -194,20 +200,23 @@ async function generateSidebar() {
   const textY = logoY + logoSize + 44;
   await blendSvg(canvas, W, H, `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">
     <text x="${W / 2}" y="${textY}" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="29" font-weight="700">
-      <tspan fill="#0c1b3a">apt</tspan><tspan fill="#0A4BD9">POS</tspan>
+      <tspan fill="#ffffff">apt</tspan><tspan fill="#38bdf8">POS</tspan>
     </text>
-    <text x="${W / 2}" y="${textY + 28}" text-anchor="middle" fill="#52627a" font-family="Segoe UI, Arial, sans-serif" font-size="9" letter-spacing="1">SMART RETAIL</text>
-    <text x="${W / 2}" y="${textY + 41}" text-anchor="middle" fill="#52627a" font-family="Segoe UI, Arial, sans-serif" font-size="9" letter-spacing="1">MANAGEMENT SYSTEM</text>
+    <text x="${W / 2}" y="${textY + 26}" text-anchor="middle" fill="#cbd5e1" font-family="Segoe UI, Arial, sans-serif" font-size="8.5" font-weight="600" letter-spacing="1.2">SMART RETAIL</text>
+    <text x="${W / 2}" y="${textY + 39}" text-anchor="middle" fill="#94a3b8" font-family="Segoe UI, Arial, sans-serif" font-size="8.5" letter-spacing="1">POS • INVENTORY • ERP</text>
+    <text x="${W / 2}" y="${H - 18}" text-anchor="middle" fill="#64748b" font-family="Segoe UI, Arial, sans-serif" font-size="8">Official Windows Setup</text>
   </svg>`);
 
-  // Accent line below text
-  const lineY = textY + 54;
-  const lineW = 40, lineX = Math.floor((W - lineW) / 2);
-  for (let x = lineX; x < lineX + lineW; x++) {
-    const di = (lineY * W + x) * 3;
-    const position = x - lineX;
-    const color = position < lineW / 3 ? BLUE : position < (lineW * 2) / 3 ? INDIGO : ORANGE;
-    canvas[di] = color.r; canvas[di + 1] = color.g; canvas[di + 2] = color.b;
+  // Tri-color brand accent bar below text
+  const lineY = textY + 52;
+  const lineW = 48, lineX = Math.floor((W - lineW) / 2);
+  for (let dy = 0; dy < 2; dy++) {
+    for (let x = lineX; x < lineX + lineW; x++) {
+      const di = ((lineY + dy) * W + x) * 3;
+      const position = x - lineX;
+      const color = position < lineW / 3 ? BLUE : position < (lineW * 2) / 3 ? INDIGO : ORANGE;
+      canvas[di] = color.r; canvas[di + 1] = color.g; canvas[di + 2] = color.b;
+    }
   }
 
   writeBmp(path.join(OUT, 'installerSidebar.bmp'), W, H, canvas);

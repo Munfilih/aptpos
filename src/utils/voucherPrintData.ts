@@ -8,6 +8,7 @@ import type {
   Vendor,
 } from '../types/pos';
 import { getInvoiceDateTime } from './dateFilters';
+import { getSaleAppliedPayment, getSaleBalanceDue } from './saleBalances';
 import { generateZatcaTlvBase64 } from './zatcaQr';
 
 export interface PrintDataContext {
@@ -23,6 +24,12 @@ function companyData(settings: StoreSettings): Record<string, unknown> {
     storeName: settings.storeName,
     storeNameAr: settings.storeNameAr,
     address: settings.address,
+    buildingNo: settings.buildingNo,
+    streetName: settings.streetName,
+    district: settings.district,
+    city: settings.city,
+    postalCode: settings.postalCode,
+    country: settings.country,
     phone: settings.phone,
     taxId: settings.taxId,
     crNumber: settings.crNumber,
@@ -35,9 +42,16 @@ function companyData(settings: StoreSettings): Record<string, unknown> {
 function customerData(customer?: Customer): Record<string, unknown> {
   return {
     name: customer?.name,
+    nameAr: customer?.nameAr,
     phone: customer?.phone,
     email: customer?.email,
     address: customer?.address,
+    buildingNo: customer?.buildingNo,
+    streetName: customer?.streetName,
+    district: customer?.district,
+    city: customer?.city,
+    postalCode: customer?.postalCode,
+    country: customer?.country,
     vatNumber: customer?.vatNumber,
     crNumber: customer?.crNumber,
   };
@@ -59,6 +73,8 @@ export function buildSalesInvoicePrintData(
   settings: StoreSettings,
   customer?: Customer
 ): PrintDataContext {
+  const amountPaid = getSaleAppliedPayment(sale);
+  const balanceDue = getSaleBalanceDue(sale);
   const phase1QrCode = generateZatcaTlvBase64({
     sellerName: settings.storeNameAr || settings.storeName || 'aptPOS Retail',
     vatNumber: settings.taxId || '300000000000003',
@@ -73,6 +89,16 @@ export function buildSalesInvoicePrintData(
       cashierName: sale.cashierName,
       paymentMethod: sale.paymentMethod,
       customerName: sale.customerName,
+      paymentStatus: balanceDue > 0
+        ? amountPaid > 0 ? 'partially-paid' : 'unpaid'
+        : 'paid',
+      ...(sale.appScreenMode === 'flyerp'
+        ? {
+            taxStatus: (sale.taxType ?? settings.taxType) === 'inclusive'
+              ? 'included'
+              : 'excluded',
+          }
+        : {}),
       customer: customerData(customer),
       eInvoiceQrCodePhase1: phase1QrCode,
       eInvoiceQrCodePhase2: '',
@@ -86,6 +112,8 @@ export function buildSalesInvoicePrintData(
       total: sale.total,
       amountTendered: sale.amountTendered,
       changeDue: sale.changeDue,
+      amountPaid,
+      ...(balanceDue > 0 ? { balanceDue } : {}),
     },
     items: sale.items.map((item, index) => ({
       serialNumber: index + 1,

@@ -18,6 +18,7 @@ import type {
   StoreSettings,
 } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
+import { AppDateInput } from './AppDateInput';
 import { createVoucherTemplateJob, printTemplateJob } from '../printTemplates/render';
 
 interface PurchaseReturnRegisterViewProps {
@@ -253,10 +254,9 @@ export const PurchaseReturnRegisterView: React.FC<PurchaseReturnRegisterViewProp
                 <label className="mb-1 block text-[11px] font-medium text-slate-700">
                   {isRtl ? 'تاريخ الاستلام' : 'Date Received'}
                 </label>
-                <input
+                <AppDateInput
                   readOnly
                   value={selectedPurchase.receivedDate}
-                  type="date"
                   className="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900"
                 />
               </div>
@@ -572,7 +572,7 @@ export const PurchaseReturnHistoryView: React.FC<PurchaseReturnHistoryViewProps>
           <tbody className="divide-y divide-slate-100 bg-white">
             {filteredVouchers.map((voucher) => (
               <tr key={voucher.id} className="hover:bg-slate-50">
-                <td className="whitespace-nowrap px-3 py-2">{new Date(voucher.createdAt).toLocaleString(isRtl ? 'ar-SA' : 'en-US')}</td>
+                <td className="whitespace-nowrap px-3 py-2">{new Date(voucher.createdAt).toLocaleString(isRtl ? 'ar-SA' : 'en-GB')}</td>
                 <td className="whitespace-nowrap px-3 py-2 font-mono font-semibold">{voucher.voucherNumber}</td>
                 <td className="whitespace-nowrap px-3 py-2 font-mono">{voucher.invoiceNumber}</td>
                 <td className="whitespace-nowrap px-3 py-2">{voucher.vendorName}</td>

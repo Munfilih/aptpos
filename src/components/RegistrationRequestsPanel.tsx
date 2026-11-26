@@ -151,7 +151,7 @@ export const RegistrationRequestsPanel: React.FC = () => {
                     {requestTypeLabel(request.requestType)}
                   </h3>
                   <p className="mt-1 text-[11px] text-slate-500">
-                    Request #{request.id} · {request.requestedBy} · {new Date(request.createdAt).toLocaleString()}
+                    Request #{request.id} · {request.requestedBy} · {new Date(request.createdAt).toLocaleString('en-GB')}
                   </p>
                 </div>
                 <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase ${
@@ -202,7 +202,7 @@ export const RegistrationRequestsPanel: React.FC = () => {
               )}
               {request.reviewedAt && request.reviewedBy && (
                 <p className="mt-3 border-t border-slate-100 pt-3 text-[11px] text-slate-500">
-                  Reviewed by {request.reviewedBy} on {new Date(request.reviewedAt).toLocaleString()}.
+                  Reviewed by {request.reviewedBy} on {new Date(request.reviewedAt).toLocaleString('en-GB')}.
                 </p>
               )}
             </article>

@@ -1705,9 +1705,9 @@ async function startServer(): Promise<Server> {
           res.status(404).json({ error: 'Sales invoice was not found.' });
           return;
         }
-        const customer = sale.customerId
-          ? (await listCustomers()).find((entry) => entry.id === sale.customerId)
-          : undefined;
+        const customers = await listCustomers();
+        const customer = customers.find((entry) => entry.id === sale.customerId)
+          || customers.find((entry) => entry.name === sale.customerName);
         res.json({
           voucherType,
           context: buildSalesInvoicePrintData(sale, settings, customer),

@@ -32,7 +32,7 @@ win:
     - target: nsis
       arch:
         - x64
-  signAndEditExecutable: false
+  requestedExecutionLevel: asInvoker
 
 nsis:
   oneClick: false
@@ -42,7 +42,8 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: aptPOS
-  uninstallDisplayName: aptPOS
+  uninstallDisplayName: aptPOS ${version}
+  menuCategory: false
   installerIcon: build-resources/aptpos.ico
   uninstallerIcon: build-resources/aptpos.ico
   installerHeader: build-resources/installerHeader.bmp

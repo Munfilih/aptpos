@@ -241,7 +241,7 @@ export const FilesView: React.FC = () => {
                     {document.name}
                   </h2>
                   <p className="mt-1 truncate text-[10px] text-slate-500">
-                    {formatFileSize(document.size)} · {new Date(document.addedAt).toLocaleString()}
+                    {formatFileSize(document.size)} · {new Date(document.addedAt).toLocaleString('en-GB')}
                   </p>
                 </div>
                 <button

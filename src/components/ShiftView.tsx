@@ -134,8 +134,7 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
     'shift-report',
     settings.paperWidth || '80mm'
   );
-  const shiftTemplateProfile = settings.printDocumentProfiles?.['shift-report']?.[activeFormat];
-  const shiftTemplate = resolvePrintTemplate('shift-report', activeFormat, shiftTemplateProfile?.templateId);
+  const shiftTemplate = resolvePrintTemplate('shift-report', activeFormat);
   const [activeShift, setActiveShift] = useState<CashierShift | null>(null);
   const [shiftHistory, setShiftHistory] = useState<CashierShift[]>([]);
   const [openingCash, setOpeningCash] = useState('0.00');
@@ -336,7 +335,7 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
   };
 
   const formatDate = (value: string) =>
-    new Date(value).toLocaleString(language === 'ar' ? 'ar-SA' : 'en-US');
+    new Date(value).toLocaleString(language === 'ar' ? 'ar-SA' : 'en-GB');
   const formatAmount = (amount: number) => `${currency} ${amount.toFixed(2)}`;
 
   const getShiftPrintData = (): PrintDocumentData => {

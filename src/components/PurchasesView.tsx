@@ -26,6 +26,7 @@ import { createPrintTemplateJob, createVoucherTemplateJob, printTemplateJob } fr
 import { getPrintDocumentFormat } from '../printTemplates/catalog';
 import type { PrintDocumentData, PrintTemplateJob } from '../printTemplates/types';
 import { useLanguage } from '../i18n/LanguageContext';
+import { AppDateInput } from './AppDateInput';
 import { resolveDateBounds, toLocalDateKey, type DateFilter } from '../utils/dateFilters';
 import { VendorsView } from './VendorsView';
 
@@ -651,7 +652,7 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
     )
     .map(({ voucher, item }) => ({
       id: `purchase-return-${voucher.id}-${item.id}`,
-      date: new Date(voucher.createdAt).toLocaleString(isRtl ? 'ar-SA' : 'en-US'),
+      date: new Date(voucher.createdAt).toLocaleString(isRtl ? 'ar-SA' : 'en-GB'),
       voucherNumber: voucher.voucherNumber,
       party: voucher.vendorName,
       quantity: item.quantity,
@@ -664,7 +665,7 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
     )
     .map(({ sale, item }) => ({
       id: `sale-${sale.id}-${item.id}`,
-      date: new Date(sale.createdAt).toLocaleString(isRtl ? 'ar-SA' : 'en-US'),
+      date: new Date(sale.createdAt).toLocaleString(isRtl ? 'ar-SA' : 'en-GB'),
       voucherNumber: sale.receiptNumber,
       party: sale.customerName || (isRtl ? 'عميل نقدي' : 'Walk-in Customer'),
       quantity: item.quantity,
@@ -678,7 +679,7 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
     )
     .map(({ voucher, returnItem, sale, saleItem }) => ({
       id: `sales-return-${voucher.id}-${returnItem.saleItemId}`,
-      date: new Date(voucher.createdAt).toLocaleString(isRtl ? 'ar-SA' : 'en-US'),
+      date: new Date(voucher.createdAt).toLocaleString(isRtl ? 'ar-SA' : 'en-GB'),
       voucherNumber: voucher.voucherNumber,
       party: sale?.customerName || (isRtl ? 'عميل نقدي' : 'Walk-in Customer'),
       quantity: returnItem.quantity,
@@ -1542,7 +1543,7 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
             'purchase-invoice',
             settings.paperWidth || '80mm'
           );
-          const bilingual = settings.multiLanguageInvoices === true;
+          const bilingual = false;
           const localize = (english: string, arabic: string) =>
             bilingual ? `${english} / ${arabic}` : isRtl ? arabic : english;
           const data: PrintDocumentData = {
@@ -1961,12 +1962,10 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
                 <label className="sr-only" htmlFor="purchase-history-date-from">
                   {isRtl ? 'من تاريخ' : 'From date'}
                 </label>
-                <input
+                <AppDateInput
                   id="purchase-history-date-from"
-                  type="date"
                   value={historyDateFrom}
-                  onChange={(event) => {
-                    const nextDate = event.target.value;
+                  onChange={(nextDate) => {
                     setHistoryDateFrom(nextDate);
                     if (historyDateTo && nextDate && historyDateTo < nextDate) {
                       setHistoryDateTo('');
@@ -1978,12 +1977,11 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
                 <label className="sr-only" htmlFor="purchase-history-date-to">
                   {isRtl ? 'إلى تاريخ' : 'To date'}
                 </label>
-                <input
+                <AppDateInput
                   id="purchase-history-date-to"
-                  type="date"
                   value={historyDateTo}
                   min={historyDateFrom || undefined}
-                  onChange={(event) => setHistoryDateTo(event.target.value)}
+                  onChange={setHistoryDateTo}
                   aria-label={isRtl ? 'إلى تاريخ' : 'To date'}
                   className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs text-slate-700 focus:border-blue-700 focus:outline-none sm:w-36 sm:flex-none"
                 />
@@ -2395,16 +2393,15 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
                       ? (isRtl ? 'تاريخ المرتجع' : 'Return Date')
                       : (isRtl ? 'تاريخ الاستلام' : 'Date Received')}
                   </label>
-                  <input
+                  <AppDateInput
                     id="purchase-received-date"
                     ref={receivedDateInputRef}
                     form="purchase-entry-form"
-                    type="date"
                     required
                     value={receivedDate}
-                    onChange={(event) => {
+                    onChange={(nextDate) => {
                       receivedDateEditedRef.current = true;
-                      setReceivedDate(event.target.value);
+                      setReceivedDate(nextDate);
                     }}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter') {

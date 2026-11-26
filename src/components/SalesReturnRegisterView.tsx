@@ -391,7 +391,11 @@ export const SalesReturnRegisterView: React.FC<SalesReturnRegisterViewProps> = (
                           {sale.receiptNumber}
                         </p>
                         <p className="truncate text-xs text-slate-500">
-                          {sale.customerName} · {new Date(sale.createdAt).toLocaleDateString()}
+                          {sale.customerName} · {new Date(sale.createdAt).toLocaleDateString('en-GB', {
+                            day: '2-digit',
+                            month: '2-digit',
+                            year: 'numeric',
+                          })}
                         </p>
                       </div>
                       <button

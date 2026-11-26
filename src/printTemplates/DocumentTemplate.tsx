@@ -25,6 +25,7 @@ const colors: Record<PrintTemplateVariant, { accent: string; muted: string; bord
   'tax-compact': { accent: '#1e293b', muted: '#475569', border: '#94a3b8' },
   'shift-summary': { accent: '#1e3a8a', muted: '#475569', border: '#94a3b8' },
   'shift-detailed': { accent: '#0f172a', muted: '#475569', border: '#64748b' },
+  flyerp: { accent: '#1e3a8a', muted: '#475569', border: '#cbd5e1' },
 };
 
 const thermalFontSize: Record<PaperWidth, string> = {
@@ -43,8 +44,16 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
   variant,
 }) => {
   const palette = format === 'A4' ? colors[variant] : monochromePalette;
+  const isKot = data.documentType === 'kot';
+  const hasSerialColumn =
+    data.documentType === 'sales-invoice' ||
+    data.documentType === 'sales-return' ||
+    data.documentType === 'purchase-invoice' ||
+    data.documentType === 'purchase-return';
   const compact = format !== 'A4' || variant === 'minimal' || variant === 'kitchen-compact' || variant === 'tax-compact';
-  const tableFontSize = format === '58mm' ? '8px' : format === '80mm' ? '9px' : '9px';
+  const tableFontSize = isKot
+    ? format === '58mm' ? '12px' : format === '80mm' ? '14px' : '16px'
+    : format === '58mm' ? '8px' : format === '80mm' ? '9px' : '9px';
   const foreground = format === 'A4' ? '#111827' : '#000000';
 
   return (
@@ -53,11 +62,10 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
       dir={data.direction || 'ltr'}
       style={{
         boxSizing: 'border-box',
-        width: format === 'A4' ? '190mm' : format,
-        maxWidth: format === 'A4' ? '190mm' : format,
-        minHeight: format === 'A4' ? '277mm' : undefined,
+        width: '100%',
+        maxWidth: '100%',
         margin: '0 auto',
-        padding: format === 'A4' ? '0' : '2mm',
+        padding: 0,
         background: '#fff',
         color: foreground,
         fontFamily: screenTextFont,
@@ -88,28 +96,36 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
             }}
           />
         )}
-        <div style={{ color: palette.accent, fontSize: compact ? '1.2em' : '1.5em', fontWeight: 800 }}>
-          {data.companyName || 'aptPOS'}
-        </div>
-        {data.companyNameAr && (
+        {!isKot && (
+          <div style={{ color: palette.accent, fontSize: compact ? '1.2em' : '1.5em', fontWeight: 800 }}>
+            {data.companyName || 'aptPOS'}
+          </div>
+        )}
+        {!isKot && data.companyNameAr && (
           <div dir="rtl" style={{ fontSize: '1.1em', fontWeight: 700 }}>{data.companyNameAr}</div>
         )}
-        {(data.companyAddress || data.companyPhone) && (
+        {!isKot && (data.companyAddress || data.companyPhone) && (
           <div style={{ color: palette.muted, marginTop: '3px' }}>
             {[data.companyAddress, data.companyPhone].filter(Boolean).join(' · ')}
           </div>
         )}
-        {data.companyTaxId && (
+        {!isKot && data.companyTaxId && (
           <div style={{ color: palette.muted, marginTop: '2px' }}>
             {data.multiLanguage ? 'VAT / الرقم الضريبي' : data.direction === 'rtl' ? 'الرقم الضريبي' : 'VAT'}:{' '}
             <span style={{ fontFamily: screenDigitFont, fontVariantNumeric: 'tabular-nums' }}>{data.companyTaxId}</span>
           </div>
         )}
-        <h1 style={{ color: palette.accent, fontSize: compact ? '1.25em' : '1.55em', margin: '7px 0 2px', fontWeight: 800 }}>
+        <h1 style={{ color: palette.accent, fontSize: isKot ? '1.8em' : compact ? '1.25em' : '1.55em', margin: '7px 0 2px', fontWeight: 800 }}>
           {data.title}
         </h1>
         {data.number && (
-          <div style={{ color: palette.muted, fontWeight: 700, fontFamily: screenDigitFont, fontVariantNumeric: 'tabular-nums' }}>
+          <div style={{
+            color: palette.muted,
+            fontWeight: isKot ? 900 : 700,
+            fontSize: isKot ? '2em' : undefined,
+            fontFamily: screenDigitFont,
+            fontVariantNumeric: 'tabular-nums',
+          }}>
             {data.number}
           </div>
         )}
@@ -150,7 +166,10 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
                   style={{
                     borderBottom: `1px solid ${palette.border}`,
                     padding: compact ? '3px 2px' : '5px 4px',
-                    textAlign: index === 0 ? 'center' : 'start',
+                    textAlign: data.documentType === 'kot' && index === 1 ? 'end' : index === 0 ? 'center' : 'start',
+                    ...(hasSerialColumn && index === 0
+                      ? { width: format === '58mm' ? '8%' : '6%', paddingLeft: '1px', paddingRight: '1px', whiteSpace: 'nowrap' as const }
+                      : {}),
                     fontWeight: 700,
                   }}
                 >
@@ -173,6 +192,15 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
                         : columnIndex === 0
                           ? 'center'
                           : 'start',
+                      ...(hasSerialColumn && columnIndex === 0
+                        ? { width: format === '58mm' ? '8%' : '6%', paddingLeft: '1px', paddingRight: '1px', whiteSpace: 'nowrap' as const }
+                        : {}),
+                      ...(isKot && columnIndex === 0
+                        ? { fontWeight: 800, whiteSpace: 'pre-line' as const }
+                        : {}),
+                      ...(data.documentType === 'sales-invoice' && columnIndex === 1
+                        ? { whiteSpace: 'pre-line' as const }
+                        : {}),
                       ...(data.numericColumns?.includes(columnIndex)
                         ? { fontFamily: screenDigitFont, fontVariantNumeric: 'tabular-nums' }
                         : {}),
@@ -219,16 +247,20 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
         </section>
       )}
 
-      {data.qrDataUrl && (
-        <div style={{ marginTop: '10px', textAlign: 'center' }}>
-          <img src={data.qrDataUrl} alt="E-invoice QR code" style={{ width: '25mm', height: '25mm' }} />
-        </div>
-      )}
-
       {data.footer && (
         <footer style={{ marginTop: compact ? '8px' : '14px', paddingTop: '5px', borderTop: `1px solid ${palette.border}`, textAlign: 'center', color: palette.muted }}>
           {data.footer}
         </footer>
+      )}
+
+      {data.qrDataUrl && (
+        <div style={{ marginTop: '10px', textAlign: 'center', breakInside: 'avoid', pageBreakInside: 'avoid' }}>
+          <img
+            src={data.qrDataUrl}
+            alt="ZATCA e-invoice QR code"
+            style={{ display: 'inline-block', width: `${data.qrSizeMm ?? 25}mm`, height: `${data.qrSizeMm ?? 25}mm` }}
+          />
+        </div>
       )}
     </article>
   );

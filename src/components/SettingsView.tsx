@@ -2,7 +2,6 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Check,
   Copy,
-  Printer,
   Store,
   Percent,
   Database,
@@ -24,15 +23,11 @@ import {
   Moon,
   FileText,
   Globe,
-  QrCode,
   Sun,
 } from 'lucide-react';
 import type {
   AppScreenMode,
   AppVersion,
-  PaperWidth,
-  PrintJob,
-  PrintDocumentType,
   StoreSettings,
   SettingsSectionId,
   TaxType,
@@ -43,9 +38,7 @@ import type {
 import { APP_COMPONENTS, APP_VERSIONS } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
 import { BUILT_IN_PAYMENT_METHODS, getPaymentMethods } from '../utils/paymentMethods';
-import { getPrintFormats, getPrintTemplates, PRINT_DOCUMENT_OPTIONS } from '../printTemplates/catalog';
-import { createPrintTemplateJob } from '../printTemplates/render';
-import type { PrintDocumentData } from '../printTemplates/types';
+import { APP_SCREEN_MODE_STORAGE_KEY } from '../utils/appScreenMode';
 import type { UpdateStatus } from '../../electron/updateStatus';
 
 interface SettingsViewProps {
@@ -55,13 +48,13 @@ interface SettingsViewProps {
   activeSection: SettingsSectionId;
   onActiveSectionChange: (section: SettingsSectionId) => void;
   showSectionNavigation?: boolean;
-  printQueue: PrintJob[];
   isAppAdmin: boolean;
   canRegisterSystem: boolean;
   theme: ThemeMode;
   onThemeChange: (theme: ThemeMode) => void;
   iconOnlyLauncher: boolean;
   onIconOnlyLauncherChange: (enabled: boolean) => void;
+  onSaveLauncherBackground: (dataUrl: string) => Promise<void>;
   onSaveSettings: (updated: StoreSettings) => Promise<void>;
   onActivateVersion: (input: {
     appVersion: AppVersion;
@@ -72,12 +65,12 @@ interface SettingsViewProps {
     appVersion: AppVersion;
   }>;
   onLoadVersionComponentPolicies: () => Promise<VersionComponentPolicies>;
-  onFlushPrintQueue: () => Promise<void>;
   onResetDatabase?: (password: string) => Promise<void>;
   onRestoreDatabase?: (buffer: ArrayBuffer) => Promise<void>;
 }
 
 type BackupMode = 'on-close' | 'manual' | 'scheduled';
+type UpdateSettingsPanel = 'software' | 'version';
 type CardDimensionField =
   | 'productCardWidthIn'
   | 'productCardHeightIn'
@@ -96,7 +89,11 @@ function formatRegistrationDate(value: string | null | undefined, locale: string
   ) {
     return value;
   }
-  return new Intl.DateTimeFormat(locale, { dateStyle: 'medium' }).format(date);
+  return new Intl.DateTimeFormat(locale === 'en' ? 'en-GB' : locale, {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(date);
 }
 
 const CARD_DIMENSION_DEFAULTS: Record<CardDimensionField, number> = {
@@ -108,8 +105,9 @@ const CARD_DIMENSION_DEFAULTS: Record<CardDimensionField, number> = {
 
 const MAX_STORE_LOGO_FILE_SIZE = 1_000_000;
 const STORE_LOGO_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const MAX_LAUNCHER_BACKGROUND_FILE_SIZE = 5_000_000;
 
-function readStoreLogoDataUrl(file: File): Promise<string> {
+function readImageDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -146,55 +144,6 @@ function getCardDimensionInputs(settings: StoreSettings): Record<CardDimensionFi
   };
 }
 
-function getPrintTemplatePreviewData(
-  documentType: PrintDocumentType,
-  isRtl: boolean,
-  multiLanguage: boolean
-): PrintDocumentData {
-  const documentLabel = PRINT_DOCUMENT_OPTIONS.find((option) => option.id === documentType)?.label || 'Document';
-  const arabicTitle: Partial<Record<PrintDocumentType, string>> = {
-    'sales-invoice': 'فاتورة مبيعات',
-    'sales-return': 'مرتجع مبيعات',
-    'purchase-invoice': 'فاتورة مشتريات',
-    'purchase-return': 'مرتجع مشتريات',
-    kot: 'طلب المطبخ',
-    'ledger-statement': 'كشف دفتر الأستاذ',
-    'shift-report': 'تقرير الوردية',
-    'saudi-vat-report': 'ملخص ضريبة القيمة المضافة',
-  };
-  const localize = (english: string, arabic: string) =>
-    multiLanguage ? `${english} / ${arabic}` : isRtl ? arabic : english;
-  return {
-    documentType,
-    title: localize(documentLabel, arabicTitle[documentType] || 'مستند'),
-    number: 'APT-2026-00125',
-    date: new Date().toLocaleDateString(isRtl ? 'ar-SA' : 'en-GB'),
-    companyName: 'aptPOS Retail',
-    companyNameAr: multiLanguage || isRtl ? 'متجر aptPOS' : undefined,
-    companyAddress: 'King Fahd Road, Riyadh',
-    companyPhone: '+966 11 234 5678',
-    companyTaxId: '300000000000003',
-    fields: [
-      { label: localize('Customer / Supplier', 'العميل / المورد'), value: localize('Sample customer', 'عميل تجريبي') },
-      { label: localize('Cashier', 'الكاشير'), value: localize('Demo cashier', 'كاشير تجريبي') },
-    ],
-    columns: ['#', localize('Description', 'الوصف'), localize('Qty', 'الكمية'), localize('Total', 'الإجمالي')],
-    numericColumns: [0, 2, 3],
-    rows: [
-      { values: ['1', 'Sample product', '2', 'SAR 30.00'] },
-      { values: ['2', 'Another item', '1', 'SAR 15.00'] },
-    ],
-    totals: [
-      { label: localize('Subtotal', 'المجموع الفرعي'), value: 'SAR 39.13' },
-      { label: localize('VAT', 'ضريبة القيمة المضافة'), value: 'SAR 5.87' },
-      { label: localize('Total', 'الإجمالي'), value: 'SAR 45.00' },
-    ],
-    multiLanguage,
-    footer: localize('Thank you for your business', 'شكراً لتعاملكم معنا'),
-    direction: isRtl && !multiLanguage ? 'rtl' : 'ltr',
-  };
-}
-
 interface SettingsSectionTabsProps {
   activeSection: SettingsSectionId | null;
   isAppAdmin: boolean;
@@ -211,20 +160,20 @@ export const SettingsSectionTabs: React.FC<SettingsSectionTabsProps> = ({
     id: SettingsSectionId;
     label: string;
   }> = [
-    { id: 'sales', label: isRtl ? t.secSalesTax : 'Vouchers' },
-    { id: 'screen', label: isRtl ? 'المظهر' : 'Theme' },
-    { id: 'store', label: isRtl ? t.secStoreInfo : 'My Store' },
-    { id: 'printer', label: isRtl ? t.secPrintTemplate : 'Print' },
-    { id: 'users', label: isRtl ? t.secUsersPerms : 'Users' },
+    { id: 'general', label: isRtl ? 'عام' : 'General' },
+    { id: 'business', label: isRtl ? 'الأعمال' : 'Business' },
+    { id: 'billing', label: isRtl ? 'الفوترة' : 'Billing' },
+    { id: 'customers', label: isRtl ? 'العملاء' : 'Customers' },
+    { id: 'payment', label: isRtl ? 'الدفع' : 'Payment' },
     { id: 'database', label: isRtl ? t.secDatabase : 'Database' },
     { id: 'registration', label: isRtl ? 'التسجيل' : 'Registration' },
-    { id: 'version', label: isRtl ? 'الإصدار' : 'Version' },
-    { id: 'updates', label: isRtl ? 'التحديثات' : 'Update' },
+    { id: 'updates', label: isRtl ? 'التحديثات' : 'Updates' },
+    { id: 'users', label: isRtl ? t.secUsersPerms : 'Users' },
   ];
   return (
     <div className="settings-section-tabs">
       {allSections
-        .filter((section) => isAppAdmin || (section.id !== 'users' && section.id !== 'version'))
+        .filter((section) => isAppAdmin || section.id !== 'users')
         .map((section) => {
         const active = activeSection === section.id;
         return (
@@ -252,18 +201,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   activeSection,
   onActiveSectionChange,
   showSectionNavigation = true,
-  printQueue,
   isAppAdmin,
   canRegisterSystem,
   theme,
   onThemeChange,
   iconOnlyLauncher,
   onIconOnlyLauncherChange,
+  onSaveLauncherBackground,
   onSaveSettings,
   onActivateVersion,
   onActivateRegistrationKey,
   onLoadVersionComponentPolicies,
-  onFlushPrintQueue,
   onResetDatabase,
   onRestoreDatabase,
 }) => {
@@ -272,18 +220,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [cardDimensionInputs, setCardDimensionInputs] = useState<Record<CardDimensionField, string>>(
     () => getCardDimensionInputs(settings)
   );
-  const [selectedTemplate, setSelectedTemplate] = useState<PaperWidth>(settings.paperWidth || '80mm');
-  const [selectedPrintDocument, setSelectedPrintDocument] = useState<PrintDocumentType>('sales-invoice');
-  const [printPreviewHtml, setPrintPreviewHtml] = useState<string | null>(null);
-  const [printPreviewError, setPrintPreviewError] = useState<string | null>(null);
-  const [isPreparingPrintPreview, setIsPreparingPrintPreview] = useState(false);
-  const [isFlushingPrintQueue, setIsFlushingPrintQueue] = useState(false);
-  const [printQueueError, setPrintQueueError] = useState<string | null>(null);
-  const [availablePrinters, setAvailablePrinters] = useState<Array<{ name: string; displayName: string }>>([]);
-  const [printerListError, setPrinterListError] = useState<string | null>(null);
-  const [printerDialogOpen, setPrinterDialogOpen] = useState(false);
-  const [printerDialogTarget, setPrinterDialogTarget] = useState<'template' | 'kot'>('template');
-  const [printersLoading, setPrintersLoading] = useState(false);
   const activeSettingsSection = activeSection;
   const settingsViewRef = useRef<HTMLDivElement>(null);
   const [saving, setSaving] = useState(false);
@@ -317,6 +253,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [resetSuccess, setResetSuccess] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: 'idle' });
+  const [updateSettingsPanel, setUpdateSettingsPanel] = useState<UpdateSettingsPanel>('software');
   const [updateActionError, setUpdateActionError] = useState<string | null>(null);
   const [selectedScreenMode, setSelectedScreenMode] = useState<AppScreenMode>(appScreenMode);
   const [screenModeActionBusy, setScreenModeActionBusy] = useState(false);
@@ -341,7 +278,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [googleDriveNotice, setGoogleDriveNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const storeLogoInputRef = useRef<HTMLInputElement>(null);
+  const launcherBackgroundInputRef = useRef<HTMLInputElement>(null);
   const [storeLogoError, setStoreLogoError] = useState<string | null>(null);
+  const [launcherBackgroundError, setLauncherBackgroundError] = useState<string | null>(null);
+  const [launcherBackgroundSaving, setLauncherBackgroundSaving] = useState(false);
 
   useEffect(() => {
     setSelectedScreenMode(appScreenMode);
@@ -367,7 +307,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
 
     try {
-      const dataUrl = await readStoreLogoDataUrl(file);
+      const dataUrl = await readImageDataUrl(file);
       const image = new Image();
       await new Promise<void>((resolve, reject) => {
         image.onload = () => resolve();
@@ -384,6 +324,69 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       setForm((current) => ({ ...current, storeLogoDataUrl: dataUrl }));
     } catch (error) {
       setStoreLogoError(error instanceof Error ? error.message : 'The selected logo could not be loaded.');
+    }
+  };
+
+  const handleLauncherBackgroundChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = '';
+    setLauncherBackgroundError(null);
+    if (!file) return;
+    if (!STORE_LOGO_MIME_TYPES.has(file.type)) {
+      setLauncherBackgroundError(isRtl
+        ? 'اختر صورة بصيغة PNG أو JPEG أو WebP.'
+        : 'Choose a PNG, JPEG, or WebP image.');
+      return;
+    }
+    if (file.size > MAX_LAUNCHER_BACKGROUND_FILE_SIZE) {
+      setLauncherBackgroundError(isRtl
+        ? 'يجب ألا يتجاوز حجم صورة الخلفية 5 ميجابايت.'
+        : 'The background image must be 5 MB or smaller.');
+      return;
+    }
+
+    setLauncherBackgroundSaving(true);
+    try {
+      const dataUrl = await readImageDataUrl(file);
+      const image = new Image();
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error('The selected file is not a valid image.'));
+        image.src = dataUrl;
+      });
+      if (
+        image.naturalWidth > 8192 ||
+        image.naturalHeight > 8192 ||
+        image.naturalWidth * image.naturalHeight > 40_000_000
+      ) {
+        throw new Error(isRtl
+          ? 'اختر صورة خلفية لا تتجاوز أبعادها 8192 × 8192 بكسل.'
+          : 'Choose a background image no larger than 8192 × 8192 pixels.');
+      }
+      await onSaveLauncherBackground(dataUrl);
+      setForm((current) => ({ ...current, launcherBackgroundDataUrl: dataUrl }));
+    } catch (error) {
+      setLauncherBackgroundError(
+        error instanceof Error ? error.message : 'The selected background image could not be loaded.'
+      );
+    } finally {
+      setLauncherBackgroundSaving(false);
+    }
+  };
+
+  const handleRemoveLauncherBackground = async () => {
+    setLauncherBackgroundError(null);
+    setLauncherBackgroundSaving(true);
+    try {
+      await onSaveLauncherBackground('');
+      setForm((current) => ({ ...current, launcherBackgroundDataUrl: '' }));
+    } catch (error) {
+      setLauncherBackgroundError(
+        error instanceof Error ? error.message : 'The launcher background could not be removed.'
+      );
+    } finally {
+      setLauncherBackgroundSaving(false);
     }
   };
 
@@ -522,24 +525,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
-  const updatePrintDocumentProfile = (
-    update: Partial<NonNullable<NonNullable<StoreSettings['printDocumentProfiles']>[PrintDocumentType]>[PaperWidth]>
-  ) => {
-    setForm((current) => ({
-      ...current,
-      printDocumentProfiles: {
-        ...current.printDocumentProfiles,
-        [selectedPrintDocument]: {
-          ...current.printDocumentProfiles?.[selectedPrintDocument],
-          [selectedTemplate]: {
-            ...current.printDocumentProfiles?.[selectedPrintDocument]?.[selectedTemplate],
-            ...update,
-          },
-        },
-      },
-    }));
-  };
-
   const handleCheckForUpdates = async () => {
     const api = window.electronAPI;
     if (!api?.checkForUpdates) return;
@@ -574,15 +559,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
-  const handleSetDefaultScreenMode = async () => {
+  const handleSetDefaultScreenMode = async (mode: AppScreenMode) => {
     const api = window.electronAPI;
-    if (!api?.setDefaultScreenMode) return;
     setScreenModeActionBusy(true);
     setScreenModeActionError(null);
     setScreenModeApplied(false);
+    onAppScreenModeChange(mode);
     try {
-      await api.setDefaultScreenMode(selectedScreenMode);
-      onAppScreenModeChange(selectedScreenMode);
+      if (api?.setDefaultScreenMode) {
+        await api.setDefaultScreenMode(mode);
+      } else {
+        window.localStorage.setItem(APP_SCREEN_MODE_STORAGE_KEY, mode);
+      }
       setScreenModeApplied(true);
     } catch (error) {
       setScreenModeApplied(false);
@@ -638,9 +626,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   useEffect(() => {
     if (
       !isAppAdmin &&
-      (activeSettingsSection === 'users' || activeSettingsSection === 'version')
+      activeSettingsSection === 'users'
     ) {
-      onActiveSectionChange('sales');
+      onActiveSectionChange('general');
     }
   }, [activeSettingsSection, isAppAdmin, onActiveSectionChange]);
 
@@ -826,15 +814,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     const updatedSettings = normalizeCardDimensionSettings(settings);
     setForm(updatedSettings);
     setCardDimensionInputs(getCardDimensionInputs(updatedSettings));
-    const formats = getPrintFormats(selectedPrintDocument);
-    const savedFormat = updatedSettings.printDocumentFormats?.[selectedPrintDocument];
-    setSelectedTemplate(
-      savedFormat && formats.includes(savedFormat)
-        ? savedFormat
-        : formats.includes(settings.paperWidth || '80mm')
-          ? settings.paperWidth || '80mm'
-          : formats[0]
-    );
   }, [settings]);
 
   const updateCardDimensionInput = (field: CardDimensionField, value: string) => {
@@ -859,7 +838,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   }, [settings.appVersion]);
 
   useEffect(() => {
-    if (activeSettingsSection !== 'version') {
+    if (activeSettingsSection !== 'updates' || updateSettingsPanel !== 'version') {
       setVersionPoliciesLoaded(false);
       return;
     }
@@ -889,6 +868,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     };
   }, [
     activeSettingsSection,
+    updateSettingsPanel,
     settings.registeredSystem,
     onLoadVersionComponentPolicies,
     versionPolicyLoadAttempt,
@@ -898,112 +878,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     settingsViewRef.current?.querySelectorAll<HTMLElement>('.settings-content-scroll').forEach((pane) => {
       pane.scrollTop = 0;
     });
-  }, [activeSettingsSection]);
-
-  const loadAvailablePrinters = async () => {
-    if (!window.electronAPI?.isElectron) {
-      setPrinterListError('Available printers can only be listed in the desktop app.');
-      return;
-    }
-
-    setPrintersLoading(true);
-    setPrinterListError(null);
-    try {
-      setAvailablePrinters(await window.electronAPI.listPrinters());
-    } catch (error) {
-      console.error('Failed to load installed printers:', error);
-      setPrinterListError('Could not load installed printers.');
-    } finally {
-      setPrintersLoading(false);
-    }
-  };
-
-  const openPrinterDialog = (target: 'template' | 'kot' = 'template') => {
-    setPrinterDialogTarget(target);
-    setPrinterDialogOpen(true);
-    void loadAvailablePrinters();
-  };
-
-  const selectPrinter = (printerName: string) => {
-    if (printerDialogTarget === 'kot') {
-      setForm((current) => ({
-        ...current,
-        kotPrinter: printerName,
-        printDocumentProfiles: {
-          ...current.printDocumentProfiles,
-          kot: {
-            ...current.printDocumentProfiles?.kot,
-            [selectedTemplate]: {
-              ...current.printDocumentProfiles?.kot?.[selectedTemplate],
-              printerName,
-              printerMode: printerName ? 'saved-printer' : 'system-default',
-            },
-          },
-        },
-      }));
-    } else {
-      updatePrintDocumentProfile({
-        printerName,
-        printerMode: printerName ? 'saved-printer' : 'system-default',
-      });
-    }
-    setPrinterDialogOpen(false);
-  };
-
-  const handleSavePrintSelection = async () => {
-    setSaving(true);
-    setSavedNotice(false);
-    setSettingsSaveError(null);
-    try {
-      const settingsToSave = { ...form };
-      delete settingsToSave.versionComponentPolicies;
-      await onSaveSettings(settingsToSave);
-      setSavedNotice(true);
-      setTimeout(() => setSavedNotice(false), 3000);
-    } catch (error) {
-      setSettingsSaveError(error instanceof Error ? error.message : 'Could not save print settings.');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleFlushPrintQueue = async () => {
-    setIsFlushingPrintQueue(true);
-    setPrintQueueError(null);
-    try {
-      await onFlushPrintQueue();
-    } catch (error) {
-      setPrintQueueError(error instanceof Error ? error.message : 'Could not print queued receipts.');
-    } finally {
-      setIsFlushingPrintQueue(false);
-    }
-  };
-
-  const handlePreviewPrintTemplate = async () => {
-    setIsPreparingPrintPreview(true);
-    setPrintPreviewError(null);
-    try {
-      const profile = form.printDocumentProfiles?.[selectedPrintDocument]?.[selectedTemplate];
-      const templates = getPrintTemplates(selectedPrintDocument, selectedTemplate);
-      const templateId = profile?.templateId || templates[0]?.id;
-      if (!templateId) throw new Error('No template is available for this document and paper size.');
-      const job = await createPrintTemplateJob(
-        getPrintTemplatePreviewData(
-          selectedPrintDocument,
-          isRtl,
-          form.multiLanguageInvoices === true
-        ),
-        form,
-        selectedTemplate,
-        templateId
-      );
-      setPrintPreviewHtml(job.html);
-    } catch (error) {
-      setPrintPreviewError(error instanceof Error ? error.message : 'Could not prepare the template preview.');
-    } finally {
-      setIsPreparingPrintPreview(false);
-    }
-  };
+  }, [activeSettingsSection, updateSettingsPanel]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1030,7 +905,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setVersionActivationBusy(true);
     setVersionActivationError(null);
     try {
-      const appVersion = form.appVersion || 'Standard';
+      const appVersion = policyVersion || 'Standard';
       await onActivateVersion({ appVersion, password: versionAdminPassword });
       setVersionActivationOpen(false);
       setVersionAdminPassword('');
@@ -1208,17 +1083,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
-  const selectedPrintFormats = getPrintFormats(selectedPrintDocument);
-  const selectedPrintTemplates = getPrintTemplates(selectedPrintDocument, selectedTemplate);
-  const selectedPrintProfile = form.printDocumentProfiles?.[selectedPrintDocument]?.[selectedTemplate];
-  const selectedPrintTemplateId = selectedPrintProfile?.templateId || selectedPrintTemplates[0]?.id || '';
-  const selectedPrintTemplateLabel =
-    selectedPrintTemplates.find((template) => template.id === selectedPrintTemplateId)?.label
-    || selectedPrintTemplates[0]?.label
-    || 'No template available';
-  const selectedPrinterName = selectedPrintProfile?.printerName
-    || (selectedPrintDocument === 'kot' ? form.kotPrinter : '')
-    || '';
+  const renderUpdatePanelTabs = () => (
+    <div
+      className="flex flex-wrap gap-2"
+      role="tablist"
+      aria-label={isRtl ? 'إعدادات التحديث والإصدار' : 'Update and version settings'}
+    >
+      {([
+        { id: 'software', label: isRtl ? 'تحديثات البرنامج' : 'Software Updates' },
+        { id: 'version', label: isRtl ? 'إصدار التطبيق' : 'App Version' },
+      ] as const)
+        .filter((panel) => isAppAdmin || panel.id !== 'version')
+        .map((panel) => (
+          <button
+            key={panel.id}
+            type="button"
+            role="tab"
+            aria-selected={updateSettingsPanel === panel.id}
+            onClick={() => setUpdateSettingsPanel(panel.id)}
+            className={`rounded-md border px-3 py-2 text-xs font-semibold ${
+              updateSettingsPanel === panel.id
+                ? 'border-blue-700 bg-blue-50 text-blue-800'
+                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            {panel.label}
+          </button>
+        ))}
+    </div>
+  );
+
   return (
     <div ref={settingsViewRef} className="settings-view flex min-h-0 flex-1 flex-col overflow-hidden">
       {showSectionNavigation && (
@@ -1235,9 +1129,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </nav>
       )}
 
-      <div className={`settings-content-scroll min-w-0 min-h-0 overflow-y-auto ${activeSettingsSection === 'updates' ? 'hidden' : 'flex-1'}`}>
+      <div className={`settings-content-scroll min-w-0 min-h-0 overflow-y-auto ${
+        activeSettingsSection === 'updates' && updateSettingsPanel === 'software' ? 'hidden' : 'flex-1'
+      }`}>
         <div className="settings-content-inner p-4 sm:p-6 max-w-5xl mx-auto space-y-4">
-          {activeSettingsSection === 'screen' && (
+          {activeSettingsSection === 'updates' && updateSettingsPanel === 'version' && renderUpdatePanelTabs()}
+          {activeSettingsSection === 'general' && (
             <section className="settings-item-list settings-item-row settings-input-row">
               <div className="settings-item-copy">
                 <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
@@ -1269,8 +1166,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </section>
           )}
 
-          {activeSettingsSection === 'screen' && (
-            window.electronAPI?.setDefaultScreenMode && (
+          {activeSettingsSection === 'general' && (
               <section className="settings-item-list settings-item-row settings-input-row">
                 <div className="settings-item-copy">
                   <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
@@ -1278,9 +1174,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     {isRtl ? 'وضع شاشة المبيعات' : 'Sales Screen Mode'}
                   </h2>
                   <p className="mt-1 text-xs text-slate-500">
-                    {isRtl
-                      ? 'اختر aptERP أو aptPOS أو aptRPOS. يتغير إطار المبيعات الآن، ويظهر تصميم تسجيل الدخول عند تشغيل التطبيق مرة أخرى.'
-                      : 'Choose aptERP, aptPOS, or aptRPOS. The sales window changes now; login branding updates the next time the app starts.'}
+                    {window.electronAPI?.setDefaultScreenMode
+                      ? isRtl
+                        ? 'عند اختيار الوضع، يتغير رأس التطبيق وشعار شاشة تسجيل الدخول فوراً، ويُحفظ الاختيار لمرات التشغيل القادمة.'
+                        : 'Selecting a mode immediately updates the app header, login branding, and app icon, and saves it for future launches.'
+                      : isRtl
+                        ? 'عند اختيار الوضع، يتغير رأس التطبيق وشعار شاشة تسجيل الدخول فوراً، ويُحفظ الاختيار في هذا المتصفح.'
+                        : 'Selecting a mode immediately updates the app header and login branding, and saves it in this browser.'}
                   </p>
                 </div>
                 <div className="settings-item-control flex flex-col gap-2">
@@ -1292,42 +1192,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       if (
                         event.target.value === 'pos' ||
                         event.target.value === 'rpos' ||
-                        event.target.value === 'erp'
+                        event.target.value === 'erp' ||
+                        event.target.value === 'flyerp'
                       ) {
                         setSelectedScreenMode(event.target.value);
                         setScreenModeActionError(null);
                         setScreenModeApplied(false);
+                        void handleSetDefaultScreenMode(event.target.value);
                       }
                     }}
                     className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:opacity-60"
                   >
                     <option value="erp">aptERP</option>
+                    <option value="flyerp">aptFlyERP</option>
                     <option value="pos">aptPOS</option>
                     <option value="rpos">aptRPOS</option>
                   </select>
-                  <button
-                    type="button"
-                    onClick={() => void handleSetDefaultScreenMode()}
-                    disabled={screenModeActionBusy}
-                    className={`inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold text-white transition-colors duration-200 ${
-                      screenModeApplied ? 'bg-green-700 hover:bg-green-800' : 'bg-blue-700 hover:bg-blue-800'
-                    } disabled:cursor-not-allowed disabled:opacity-60`}
-                    aria-live="polite"
-                  >
-                    {screenModeActionBusy ? (
-                      <>
-                        <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
-                        {isRtl ? 'جارٍ تطبيق الوضع وحفظه...' : 'Applying mode and saving...'}
-                      </>
-                    ) : screenModeApplied ? (
-                      <>
-                        <Check className="h-4 w-4" aria-hidden="true" />
-                        {isRtl ? 'تم التطبيق' : 'Applied'}
-                      </>
-                    ) : (
-                      isRtl ? 'تطبيق وتعيين كافتراضي' : 'Apply & Set as Default'
-                    )}
-                  </button>
+                  <p className="min-h-4 text-xs" role="status" aria-live="polite">
+                    {screenModeActionBusy
+                      ? isRtl ? 'جارٍ حفظ الوضع...' : 'Saving selected mode...'
+                      : screenModeApplied
+                        ? isRtl ? 'تم حفظ الوضع' : 'Mode saved'
+                        : ''}
+                  </p>
                 </div>
                 {screenModeActionError && (
                   <p className="settings-item-copy text-xs text-red-700" role="alert">
@@ -1335,10 +1222,85 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </p>
                 )}
               </section>
-            )
           )}
 
-          {activeSettingsSection === 'screen' && (
+          {activeSettingsSection === 'general' && (
+            <section
+              className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs"
+              aria-label={isRtl ? 'خلفية مشغل التطبيقات' : 'Launcher background'}
+            >
+              <h2 className="text-sm font-semibold text-slate-900">
+                {isRtl ? 'خلفية مشغل التطبيقات' : 'Launcher Background'}
+              </h2>
+              <p className="mt-1 text-xs text-slate-500">
+                {isRtl
+                  ? 'اختر صورة لتظهر خلف أيقونات مشغل التطبيقات. PNG أو JPEG أو WebP، بحد أقصى 5 ميجابايت.'
+                  : 'Choose an image to display behind the app launcher. PNG, JPEG, or WebP; maximum 5 MB.'}
+              </p>
+              <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-start">
+                <div className="flex h-32 w-full max-w-sm items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+                  {form.launcherBackgroundDataUrl ? (
+                    <img
+                      src={form.launcherBackgroundDataUrl}
+                      alt={isRtl ? 'معاينة خلفية مشغل التطبيقات' : 'Launcher background preview'}
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <div className="text-center text-slate-400">
+                      <Monitor className="mx-auto h-7 w-7" aria-hidden="true" />
+                      <span className="mt-1 block text-xs">
+                        {isRtl ? 'لا توجد صورة محددة' : 'No image selected'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-col items-start gap-2">
+                  <input
+                    ref={launcherBackgroundInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    onChange={(event) => void handleLauncherBackgroundChange(event)}
+                    disabled={launcherBackgroundSaving}
+                    className="hidden"
+                    aria-label={isRtl ? 'اختيار صورة خلفية المشغل' : 'Choose launcher background image'}
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => launcherBackgroundInputRef.current?.click()}
+                      disabled={launcherBackgroundSaving}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-wait disabled:opacity-60"
+                    >
+                      <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+                      {launcherBackgroundSaving
+                        ? isRtl ? 'جارٍ الحفظ...' : 'Saving...'
+                        : form.launcherBackgroundDataUrl
+                          ? isRtl ? 'تغيير الصورة' : 'Choose image'
+                          : isRtl ? 'رفع صورة' : 'Choose image'}
+                    </button>
+                    {form.launcherBackgroundDataUrl && (
+                      <button
+                        type="button"
+                        onClick={() => void handleRemoveLauncherBackground()}
+                        disabled={launcherBackgroundSaving}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-wait disabled:opacity-60"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                        {isRtl ? 'إزالة الصورة' : 'Remove image'}
+                      </button>
+                    )}
+                  </div>
+                  {launcherBackgroundError && (
+                    <p role="alert" className="text-xs font-medium text-red-700">
+                      {launcherBackgroundError}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {activeSettingsSection === 'general' && (
             <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
               <h2 className="text-sm font-semibold text-slate-900">
                 {isRtl ? 'أبعاد بطاقات الكتالوج' : 'Catalog Card Dimensions'}
@@ -1401,6 +1363,51 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <p className="mt-3 text-[11px] text-slate-500">
                 {isRtl ? 'الأبعاد الافتراضية لكلا النوعين هي 2 × 3 بوصات.' : 'Both default to 2 × 3 inches.'}
               </p>
+            </section>
+          )}
+
+          {activeSettingsSection === 'general' && (
+            <section className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center gap-3">
+                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-700">
+                  <Globe className="h-4 w-4" />
+                </span>
+                <h2 className="text-sm font-semibold text-slate-900">{t.languageSelect}</h2>
+              </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLanguage('en');
+                    setForm((current) => ({ ...current, appLanguage: 'en' }));
+                  }}
+                  aria-pressed={language === 'en'}
+                  className={`inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 ${
+                    language === 'en'
+                      ? 'border-blue-700 bg-blue-700 text-white'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <Globe className="h-4 w-4" />
+                  <span>{t.english}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLanguage('ar');
+                    setForm((current) => ({ ...current, appLanguage: 'ar' }));
+                  }}
+                  aria-pressed={language === 'ar'}
+                  className={`inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 ${
+                    language === 'ar'
+                      ? 'border-blue-700 bg-blue-700 text-white'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <Globe className="h-4 w-4" />
+                  <span>{t.arabic}</span>
+                </button>
+              </div>
             </section>
           )}
 
@@ -1493,12 +1500,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                             [isRtl ? 'الإصدار' : 'Version', settings.registrationDetails.appVersion],
                             [
                               isRtl ? 'تاريخ بداية AMC' : 'AMC start date',
-                              formatRegistrationDate(settings.registrationDetails.amcStartDate, isRtl ? 'ar' : 'en'),
+                              formatRegistrationDate(settings.registrationDetails.amcStartDate, isRtl ? 'ar' : 'en-GB'),
                             ],
                             [
                               isRtl ? 'تاريخ انتهاء AMC' : 'AMC expiry date',
                               settings.registrationDetails.amcEndDate
-                                ? formatRegistrationDate(settings.registrationDetails.amcEndDate, isRtl ? 'ar' : 'en')
+                                ? formatRegistrationDate(settings.registrationDetails.amcEndDate, isRtl ? 'ar' : 'en-GB')
                                 : (isRtl ? 'بدون AMC' : 'No AMC'),
                             ],
                           ].map(([label, value]) => (
@@ -1576,7 +1583,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 )}
               </section>
             )}
-            {isAppAdmin && activeSettingsSection === 'version' && (
+            {isAppAdmin && activeSettingsSection === 'updates' && updateSettingsPanel === 'version' && (
               <div className="space-y-4">
                 {settings.registeredSystem && (
                   <section className="rounded-xl border border-blue-200 bg-blue-50 p-4 shadow-xs">
@@ -1608,13 +1615,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </label>
                   <select
                     id="app-version"
-                    value={form.appVersion || 'Standard'}
+                    value={policyVersion}
                     onChange={(event) => {
                       const appVersion = APP_VERSIONS.find(
                         (version) => version === event.target.value
                       );
                       if (appVersion) {
-                        setForm((current) => ({ ...current, appVersion }));
+                        setPolicyVersion(appVersion);
                       }
                     }}
                     className="mt-1 w-full max-w-sm rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100"
@@ -1715,10 +1722,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
             )}
 
-            {/* SECTION 1: SALES & TAX SETTINGS */}
-            {activeSettingsSection === 'sales' && (
+            {/* General, billing, customer, and payment settings */}
+            {(
+              activeSettingsSection === 'general' ||
+              activeSettingsSection === 'billing' ||
+              activeSettingsSection === 'customers' ||
+              activeSettingsSection === 'payment'
+            ) && (
               <div className="space-y-4">
+                {activeSettingsSection !== 'payment' && (
                 <div className="settings-item-list">
+                  {activeSettingsSection === 'general' && (
                   <label className="settings-item-row cursor-pointer">
                     <span className="settings-item-copy">
                       <span className="block text-sm font-semibold text-slate-700">
@@ -1745,6 +1759,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     />
                     <span className="relative h-5 w-9 shrink-0 rounded-full bg-slate-300 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-blue-600 peer-checked:after:translate-x-4 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-blue-600 rtl:peer-checked:after:-translate-x-4" />
                   </label>
+                  )}
+                  {activeSettingsSection === 'general' && (
                   <label className="settings-item-row cursor-pointer">
                     <span className="settings-item-copy">
                       <span className="block text-sm font-semibold text-slate-700">
@@ -1766,6 +1782,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     />
                     <span className="relative h-5 w-9 shrink-0 rounded-full bg-slate-300 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-blue-600 peer-checked:after:translate-x-4 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-blue-600 rtl:peer-checked:after:-translate-x-4" />
                   </label>
+                  )}
+                  {activeSettingsSection === 'billing' && (
                   <label className="settings-item-row cursor-pointer">
                     <span className="settings-item-copy text-sm font-normal text-slate-700">
                       {isRtl ? 'سعر البيع شامل الضريبة' : 'Selling Price include tax'}
@@ -1785,6 +1803,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     />
                     <span className="relative h-5 w-9 shrink-0 rounded-full bg-slate-300 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-blue-600 peer-checked:after:translate-x-4 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-blue-600 rtl:peer-checked:after:-translate-x-4" />
                   </label>
+                  )}
+                  {activeSettingsSection === 'billing' && (
                   <div className="settings-item-row settings-input-row">
                     <label className="settings-item-copy text-sm font-semibold text-slate-700">
                       Currency Symbol
@@ -1797,7 +1817,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       className="settings-item-control border border-slate-200 px-3 py-2 font-mono text-slate-900 focus:border-blue-700 focus:outline-none"
                     />
                   </div>
-
+                  )}
+                  {activeSettingsSection === 'customers' && (
                   <div className="settings-item-row settings-input-row">
                     <label className="settings-item-copy text-sm font-semibold text-slate-700">
                       Default Walk-in Customer Label
@@ -1810,7 +1831,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       className="settings-item-control border border-slate-200 px-3 py-2 text-slate-900 focus:border-blue-700 focus:outline-none"
                     />
                   </div>
-
+                  )}
+                  {activeSettingsSection === 'general' && (
                   <div className="settings-item-row settings-input-row">
                     <label className="settings-item-copy text-sm font-semibold text-slate-700">
                       Active Cashier Shift Name
@@ -1822,8 +1844,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       className="settings-item-control border border-slate-200 px-3 py-2 text-slate-900 focus:border-blue-700 focus:outline-none"
                     />
                   </div>
+                  )}
                 </div>
+                )}
 
+                {activeSettingsSection === 'payment' && (
                 <section className="space-y-2">
                   <div className="px-1">
                     <h3 className="text-sm font-semibold text-slate-900">
@@ -1929,14 +1954,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     </p>
                   </div>
                 </section>
+                )}
 
                 {/* Operational Toggles */}
+                {(activeSettingsSection === 'general' || activeSettingsSection === 'billing') && (
                 <section className="space-y-2">
                   <h3 className="px-1 text-sm font-semibold text-slate-900">
-                    Checkout & Inventory Safeguards
+                    {activeSettingsSection === 'billing'
+                      ? (isRtl ? 'إعدادات الفوترة' : 'Billing Options')
+                      : (isRtl ? 'سلوك التطبيق' : 'App Behavior')}
                   </h3>
 
                   <div className="settings-item-list">
+                  {activeSettingsSection === 'general' && (
                   <div className="settings-item-row settings-toggle-row">
                     <div className="settings-item-copy">
                       <span className="font-semibold text-slate-900 block">
@@ -1974,7 +2004,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       />
                     </button>
                   </div>
+                  )}
 
+                  {activeSettingsSection === 'billing' && (
                   <div className="settings-item-row settings-toggle-row">
                     <div className="settings-item-copy">
                       <span className="font-semibold text-slate-900 block">
@@ -2012,7 +2044,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       />
                     </button>
                   </div>
+                  )}
 
+                  {activeSettingsSection === 'general' && (
                   <div className="settings-item-row settings-toggle-row">
                     <div className="settings-item-copy">
                       <span className="font-semibold text-slate-900 block">
@@ -2050,13 +2084,28 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       />
                     </button>
                   </div>
+                  )}
                   </div>
                 </section>
+                )}
+
+                {activeSettingsSection === 'billing' && (
+                  <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+                    <h3 className="text-sm font-semibold text-slate-900">
+                      {isRtl ? 'ترقيم الفواتير' : 'Invoice Numbering'}
+                    </h3>
+                    <p className="mt-1 text-xs leading-5 text-slate-600">
+                      {isRtl
+                        ? 'يتم إصدار أرقام فواتير المبيعات تلقائياً والتحقق من تفردها عند إتمام البيع.'
+                        : 'Sales invoice numbers are issued automatically and checked for uniqueness when a sale is completed.'}
+                    </p>
+                  </section>
+                )}
               </div>
             )}
 
             {/* SECTION 2: STORE & RECEIPT INFO */}
-            {activeSettingsSection === 'store' && (
+            {activeSettingsSection === 'business' && (
               <div className="space-y-4">
                 <div className="px-1">
                   <h2 className="text-[15px] font-semibold text-[#1f1f1f] flex items-center gap-2">
@@ -2299,213 +2348,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       placeholder="شكراً لتسوقكم معنا! البضاعة المباعة ترد خلال 7 أيام."
                       className="w-full px-3 py-2 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
                     />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* SECTION 4: PRINT & INVOICE TEMPLATE SETTINGS */}
-            {activeSettingsSection === 'printer' && (
-              <div className="space-y-4">
-                <div className="px-1">
-                  <h2 className="text-[15px] font-semibold text-[#1f1f1f] flex items-center gap-2">
-                    <Printer className="w-4 h-4 text-[#0f6cbd]" />
-                    <span>{t.printTemplateTitle}</span>
-                  </h2>
-                  <p className="text-xs text-[#666] mt-1">
-                    {t.printTemplateDesc}
-                  </p>
-                </div>
-
-                <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm space-y-4">
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900">
-                      {isRtl ? 'اختيار قالب الطباعة' : 'Built-in TSX Print Templates'}
-                    </h3>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {isRtl
-                        ? 'اختر نوع المستند والقالب والطابعة. تتم إضافة القوالب الجديدة عند تحديث التطبيق.'
-                        : 'Choose a document, paper size, bundled template, and printer. New templates arrive with app updates.'}
-                    </p>
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <label className="space-y-1 text-xs font-semibold text-slate-700">
-                      {isRtl ? 'نوع المستند' : 'Document type'}
-                      <select
-                        aria-label="Print document type"
-                        value={selectedPrintDocument}
-                        onChange={(event) => {
-                          const documentType = event.target.value as PrintDocumentType;
-                          const formats = getPrintFormats(documentType);
-                          setSelectedPrintDocument(documentType);
-                          const savedFormat = form.printDocumentFormats?.[documentType];
-                          setSelectedTemplate(
-                            savedFormat && formats.includes(savedFormat)
-                              ? savedFormat
-                              : formats.includes(settings.paperWidth || '80mm')
-                                ? settings.paperWidth || '80mm'
-                                : formats[0]
-                          );
-                        }}
-                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal"
-                      >
-                        {PRINT_DOCUMENT_OPTIONS.map((option) => (
-                          <option key={option.id} value={option.id}>{option.label}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="space-y-1 text-xs font-semibold text-slate-700">
-                      {isRtl ? 'حجم الورق' : 'Paper size'}
-                      <select
-                        aria-label="Print paper size"
-                        value={selectedTemplate}
-                        onChange={(event) => {
-                          const format = event.target.value as PaperWidth;
-                          setSelectedTemplate(format);
-                          setForm((current) => ({
-                            ...current,
-                            ...(selectedPrintDocument === 'sales-invoice' ? { paperWidth: format } : {}),
-                            printDocumentFormats: {
-                              ...current.printDocumentFormats,
-                              [selectedPrintDocument]: format,
-                            },
-                          }));
-                        }}
-                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal"
-                      >
-                        {selectedPrintFormats.map((format) => (
-                          <option key={format} value={format}>{format}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="space-y-1 text-xs font-semibold text-slate-700">
-                      {isRtl ? 'القالب' : 'Template'}
-                      <select
-                        aria-label="Print template"
-                        value={selectedPrintTemplateId}
-                        onChange={(event) => updatePrintDocumentProfile({ templateId: event.target.value })}
-                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal"
-                      >
-                        {selectedPrintTemplates.map((template) => (
-                          <option key={template.id} value={template.id}>{template.label}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <div className="space-y-1 text-xs font-semibold text-slate-700">
-                      <span>{isRtl ? 'الطابعة' : 'Printer'}</span>
-                      <div className="flex items-center gap-2">
-                        <span className="min-w-0 flex-1 truncate rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 font-normal">
-                          {selectedPrinterName || (isRtl ? 'افتراضية النظام' : 'System default')}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => openPrinterDialog(selectedPrintDocument === 'kot' ? 'kot' : 'template')}
-                          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50"
-                        >
-                          <Printer className="h-3.5 w-3.5" />
-                          {isRtl ? 'اختيار' : 'Choose'}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                  <label className="flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-                    <input
-                      type="checkbox"
-                      checked={form.multiLanguageInvoices === true}
-                      onChange={(event) => setForm((current) => ({
-                        ...current,
-                        multiLanguageInvoices: event.target.checked,
-                      }))}
-                      className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-600"
-                    />
-                    <span>
-                      <span className="block text-xs font-semibold text-slate-800">
-                        {isRtl ? 'طباعة الفواتير باللغتين' : 'Enable bilingual invoices'}
-                      </span>
-                      <span className="mt-1 block text-xs font-normal text-slate-600">
-                        {isRtl
-                          ? 'يعرض العناوين والحقول والإجماليات بالإنجليزية والعربية في جميع قوالب الفواتير.'
-                          : 'Show headings, fields, and totals in English and Arabic on all sales and purchase invoices and returns.'}
-                      </span>
-                    </span>
-                  </label>
-                  {printPreviewError && <p role="alert" className="text-xs text-rose-700">{printPreviewError}</p>}
-                  {settingsSaveError && <p role="alert" className="text-xs text-rose-700">{settingsSaveError}</p>}
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">
-                    <span className="text-xs text-slate-500">{selectedPrintTemplateLabel}</span>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        disabled={isPreparingPrintPreview}
-                        onClick={() => void handlePreviewPrintTemplate()}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-                      >
-                        <FileText className="h-3.5 w-3.5" />
-                        {isPreparingPrintPreview
-                          ? (isRtl ? 'جارٍ التحضير...' : 'Preparing...')
-                          : (isRtl ? 'معاينة' : 'Preview')}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={saving}
-                        onClick={() => void handleSavePrintSelection()}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-60"
-                      >
-                        <Check className="h-3.5 w-3.5" />
-                        {saving ? (isRtl ? 'جارٍ الحفظ...' : 'Saving...') : (isRtl ? 'حفظ' : 'Save')}
-                      </button>
-                    </div>
-                  </div>
-                </section>
-
-                <div className="settings-item-list">
-                <div className="settings-item-row">
-                  <div className="settings-item-copy">
-                    <h3 className="text-sm font-semibold text-slate-900">Kitchen Order Ticket</h3>
-                    <p className="mt-1 text-xs text-slate-600">
-                      Enable KOT printing. The template and printer are selected in the template controls above.
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-4">
-                    <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700">
-                      Enable
-                      <input
-                        type="checkbox"
-                        checked={form.enableKot === true}
-                        onChange={(event) => setForm((current) => ({ ...current, enableKot: event.target.checked }))}
-                        className="h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-600"
-                      />
-                    </label>
-                  </div>
-                </div>
-                </div>
-
-                {/* Decimal formatting remains a business display setting. */}
-                <div className="p-4 bg-white border border-slate-200 rounded-xl space-y-2 shadow-2xs">
-                  <label className="block font-semibold text-slate-800">
-                    Decimal Places (Price &amp; Quantity)
-                  </label>
-                  <p className="text-[11px] text-slate-500">
-                    Number of decimal digits shown in prices and quantities across register, receipts, and invoices.
-                  </p>
-                  <div className="flex items-center gap-2 flex-wrap pt-1">
-                    {[0, 1, 2, 3, 4].map((n) => (
-                      <button
-                        key={n}
-                        type="button"
-                        onClick={() => setForm({ ...form, decimalPoints: n })}
-                        className={`w-10 h-10 rounded-lg border text-sm font-bold transition-all cursor-pointer ${
-                          (form.decimalPoints ?? 2) === n
-                            ? 'border-blue-700 bg-blue-50 ring-2 ring-blue-700/20 text-blue-700 shadow-2xs'
-                            : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                        }`}
-                      >
-                        {n}
-                      </button>
-                    ))}
-                    <span className="text-xs text-slate-400 ml-2 font-mono">
-                      Preview: {(9.5).toFixed(form.decimalPoints ?? 2)} / qty {(1).toFixed(form.decimalPoints ?? 2)}
-                    </span>
                   </div>
                 </div>
               </div>
@@ -3039,53 +2881,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
           </form>
 
-          {/* Printer status and queue controls belong to the printer settings section. */}
-          {activeSettingsSection === 'printer' && (
-            <div className="bg-white border border-slate-200 rounded-xl p-4 text-xs shadow-xs">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-semibold text-slate-900 flex items-center gap-2">
-                  <Printer className="w-4 h-4 text-slate-500" />
-                  Thermal Hardware
-                </h3>
-                <div className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${form.printerOnline ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                  {form.printerOnline ? 'Online' : 'Offline'}
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-lg">
-                <button
-                  type="button"
-                  onClick={() => { const next = { ...form, printerOnline: true }; setForm(next); onSaveSettings(next); }}
-                  className={`py-1.5 text-xs font-medium rounded-md transition-colors ${form.printerOnline ? 'bg-white text-emerald-700 shadow-sm font-semibold' : 'text-slate-600 hover:text-slate-900'}`}
-                >
-                  Online
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { const next = { ...form, printerOnline: false }; setForm(next); onSaveSettings(next); }}
-                  className={`py-1.5 text-xs font-medium rounded-md transition-colors ${!form.printerOnline ? 'bg-white text-amber-700 shadow-sm font-semibold' : 'text-slate-600 hover:text-slate-900'}`}
-                >
-                  Offline
-                </button>
-              </div>
-              {printQueue.length > 0 && (
-                <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between">
-                  <span className="text-slate-500 font-mono tabular-nums">{printQueue.length} job{printQueue.length !== 1 ? 's' : ''} queued</span>
-                  <button
-                    type="button"
-                    disabled={isFlushingPrintQueue}
-                    onClick={() => void handleFlushPrintQueue()}
-                    className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg shadow-sm"
-                  >
-                    <Printer className="w-3 h-3" />
-                    {isFlushingPrintQueue ? 'Printing...' : 'Print All'}
-                  </button>
-                </div>
-              )}
-              {printQueueError && (
-                <p role="alert" className="mt-2 text-xs text-rose-700">{printQueueError}</p>
-              )}
-            </div>
-          )}
+
 
         </div>{/* /max-w-3xl */}
       </div>{/* /main content */}
@@ -3164,9 +2960,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       )}
 
-      {activeSettingsSection === 'updates' && (
+      {activeSettingsSection === 'updates' && updateSettingsPanel === 'software' && (
         <div className="settings-content-scroll flex-1 min-h-0 overflow-y-auto">
           <div className="mx-auto max-w-5xl space-y-5 p-4 sm:p-6">
+          {renderUpdatePanelTabs()}
           <div className="flex items-center gap-3">
             <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-700">
               <RefreshCw className="h-5 w-5" />
@@ -3175,48 +2972,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {isRtl ? 'تحديثات aptPOS' : 'Software Updates'}
             </h2>
           </div>
-          <section className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-            <div className="mb-2 flex items-center gap-3">
-              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-700">
-                <Globe className="h-4 w-4" />
-              </span>
-              <h3 className="text-sm font-semibold text-slate-900">{t.languageSelect}</h3>
-            </div>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setLanguage('en');
-                  setForm((current) => ({ ...current, appLanguage: 'en' }));
-                }}
-                aria-pressed={language === 'en'}
-                className={`inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 ${
-                  language === 'en'
-                    ? 'border-blue-700 bg-blue-700 text-white'
-                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                <Globe className="h-4 w-4" />
-                <span>{t.english}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setLanguage('ar');
-                  setForm((current) => ({ ...current, appLanguage: 'ar' }));
-                }}
-                aria-pressed={language === 'ar'}
-                className={`inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 ${
-                  language === 'ar'
-                    ? 'border-blue-700 bg-blue-700 text-white'
-                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                <Globe className="h-4 w-4" />
-                <span>{t.arabic}</span>
-              </button>
-            </div>
-          </section>
           {!window.electronAPI?.checkForUpdates ? (
             <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-5 text-slate-600 shadow-sm" role="status">
               <Monitor className="h-5 w-5 shrink-0 text-slate-400" />
@@ -3606,141 +3361,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
       )}
-      {printPreviewHtml && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/70 p-3 sm:p-6" role="dialog" aria-modal="true" aria-label="Print template preview">
-          <section className="flex max-h-[94vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
-            <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-              <div>
-                <h2 className="text-sm font-bold text-slate-900">{selectedPrintTemplateLabel}</h2>
-                <p className="text-xs text-slate-500">{selectedPrintDocument} · {selectedTemplate}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setPrintPreviewHtml(null)}
-                className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-              >
-                {isRtl ? 'إغلاق' : 'Close'}
-              </button>
-            </header>
-            <iframe
-              title="Print template preview"
-              srcDoc={printPreviewHtml}
-              className="min-h-0 flex-1 bg-slate-100"
-              style={{ height: '78vh', border: 0 }}
-            />
-          </section>
-        </div>
-      )}
 
-      {printerDialogOpen && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setPrinterDialogOpen(false);
-          }}
-        >
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="printer-dialog-title"
-            className="w-full max-w-md overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl"
-          >
-            <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-              <div>
-                <h2 id="printer-dialog-title" className="text-sm font-bold text-slate-900">
-                  {printerDialogTarget === 'kot' ? 'Select KOT Printer' : 'Select a Printer'}
-                </h2>
-                <p className="mt-0.5 text-[11px] text-slate-500">
-                  {printerDialogTarget === 'kot'
-                    ? 'Available system printers for kitchen order tickets'
-                    : `Available system printers for ${selectedTemplate}`}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setPrinterDialogOpen(false)}
-                aria-label="Close printer selection"
-                className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </header>
-            <div className="max-h-80 space-y-1 overflow-y-auto p-3">
-              <button
-                type="button"
-                onClick={() => selectPrinter('')}
-                className={`flex w-full items-center justify-between rounded-lg border px-3 py-2.5 text-left text-xs ${
-                  !(printerDialogTarget === 'kot' ? form.kotPrinter : selectedPrinterName)
-                    ? 'border-blue-300 bg-blue-50 text-blue-900'
-                    : 'border-slate-200 text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                <span>System Default</span>
-                {!(printerDialogTarget === 'kot' ? form.kotPrinter : selectedPrinterName) && (
-                  <Check className="h-4 w-4" />
-                )}
-              </button>
 
-              {printersLoading && (
-                <div className="flex items-center justify-center gap-2 py-6 text-xs text-slate-500">
-                  <RefreshCw className="h-4 w-4 animate-spin" />
-                  Loading available printers...
-                </div>
-              )}
-              {!printersLoading && printerListError && (
-                <p role="alert" className="px-2 py-4 text-center text-xs text-rose-600">
-                  {printerListError}
-                </p>
-              )}
-              {!printersLoading && !printerListError && availablePrinters.length === 0 && (
-                <p className="px-2 py-4 text-center text-xs text-slate-500">
-                  No printers were found on this system.
-                </p>
-              )}
-              {!printersLoading && availablePrinters.map((printer) => (
-                <button
-                  type="button"
-                  key={printer.name}
-                  onClick={() => selectPrinter(printer.name)}
-                  className={`flex w-full items-center justify-between rounded-lg border px-3 py-2.5 text-left text-xs ${
-                    (printerDialogTarget === 'kot' ? form.kotPrinter : selectedPrinterName) === printer.name
-                      ? 'border-blue-300 bg-blue-50 text-blue-900'
-                      : 'border-slate-200 text-slate-700 hover:bg-slate-50'
-                  }`}
-                >
-                  <span className="min-w-0">
-                    <span className="block truncate font-semibold">{printer.displayName || printer.name}</span>
-                    {printer.displayName && printer.displayName !== printer.name && (
-                      <span className="mt-0.5 block truncate text-[10px] text-slate-500">{printer.name}</span>
-                    )}
-                  </span>
-                  {(printerDialogTarget === 'kot' ? form.kotPrinter : selectedPrinterName) === printer.name && (
-                    <Check className="ml-3 h-4 w-4 shrink-0" />
-                  )}
-                </button>
-              ))}
-            </div>
-            <footer className="flex justify-between border-t border-slate-200 px-4 py-3">
-              <button
-                type="button"
-                onClick={() => void loadAvailablePrinters()}
-                disabled={printersLoading}
-                className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${printersLoading ? 'animate-spin' : ''}`} />
-                Refresh
-              </button>
-              <button
-                type="button"
-                onClick={() => setPrinterDialogOpen(false)}
-                className="rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200"
-              >
-                Cancel
-              </button>
-            </footer>
-          </section>
-        </div>
-      )}
       {versionActivationOpen && (
         <div
           className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/60 p-4"
@@ -3769,8 +3391,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </h2>
                 <p className="mt-1 text-xs text-slate-500">
                   {isRtl
-                    ? `أدخل كلمة مرور aptadmin لتفعيل ${form.appVersion || 'Standard'} وتطبيق خيارات المكونات.`
-                    : `Enter the aptadmin password to activate ${form.appVersion || 'Standard'} and apply its component access settings.`}
+                    ? `أدخل كلمة مرور aptadmin لتفعيل ${policyVersion || 'Standard'} وتطبيق خيارات المكونات.`
+                    : `Enter the aptadmin password to activate ${policyVersion || 'Standard'} and apply its component access settings.`}
                 </p>
               </div>
             </div>
@@ -3831,9 +3453,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {isRtl ? 'تم تفعيل الإصدار' : 'Version activated'}
             </span>
           )}
-          {activeSettingsSection === 'registration' ? null : activeSettingsSection === 'version' ? (
+          {activeSettingsSection === 'registration' ? null : activeSettingsSection === 'updates' && updateSettingsPanel === 'version' ? (
             <>
-              {!settings.registeredSystem && (form.appVersion === 'Soft' || form.appVersion === 'Silver') && (
+              {!settings.registeredSystem && (policyVersion === 'Soft' || policyVersion === 'Silver') && (
                 <button
                   type="button"
                   disabled={versionActivationBusy || !versionPoliciesLoaded}
@@ -3844,7 +3466,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   }}
                   className="settings-save-button"
                 >
-                  {isRtl ? 'تفعيل الإصدار' : `Activate ${form.appVersion}`}
+                  {isRtl ? 'تفعيل الإصدار' : `Activate ${policyVersion}`}
                 </button>
               )}
             </>

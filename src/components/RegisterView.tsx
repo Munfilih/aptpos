@@ -668,28 +668,25 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   };
 
   const kotFormat: PaperWidth = getPrintDocumentFormat(settings, 'kot', settings.paperWidth || '80mm');
-  const kotProfile = settings.printDocumentProfiles?.kot?.[kotFormat];
-  const kotTemplate = resolvePrintTemplate('kot', kotFormat, kotProfile?.templateId);
+  const kotTemplate = resolvePrintTemplate('kot', kotFormat);
   const getKotPrintData = (kotNumber: string): PrintDocumentData => ({
     documentType: 'kot',
     title: isRtl ? 'طلب المطبخ' : 'Kitchen Order',
     number: kotNumber,
     date: new Date().toLocaleString(isRtl ? 'ar-SA' : 'en-GB'),
-    companyName: settings.storeName,
-    companyNameAr: settings.storeNameAr,
-    companyAddress: settings.address,
-    companyPhone: settings.phone,
+    companyName: '',
     companyLogo: settings.storeLogoDataUrl,
     fields: [{
       label: isRtl ? 'العميل' : 'Customer',
       value: customerName || defaultCustomerName,
     }],
-    columns: [isRtl ? 'الكمية' : 'Qty', isRtl ? 'الصنف' : 'Item'],
+    columns: [isRtl ? 'الصنف' : 'Item', isRtl ? 'الكمية' : 'Qty'],
+    numericColumns: [1],
     rows: cart.map((item) => {
       const itemName = isRtl && item.product.nameAr ? item.product.nameAr : item.product.name;
       const unit = item.unitId && item.unitName ? ` (${item.unitName})` : '';
       const description = item.description?.trim() ? `\n${item.description.trim()}` : '';
-      return { values: [String(item.quantity), `${itemName}${unit}${description}`] };
+      return { values: [`${itemName}${unit}${description}`, String(item.quantity)] };
     }),
     totals: [],
     direction: isRtl ? 'rtl' : 'ltr',

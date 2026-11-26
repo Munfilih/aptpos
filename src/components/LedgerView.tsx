@@ -6,6 +6,7 @@ import { useLanguage } from '../i18n/LanguageContext';
 import { createPrintTemplateJob, printTemplateJob } from '../printTemplates/render';
 import { getPrintDocumentFormat, resolvePrintTemplate } from '../printTemplates/catalog';
 import type { PrintDocumentData } from '../printTemplates/types';
+import { getSaleAppliedPayment } from '../utils/saleBalances';
 
 interface LedgerViewProps {
   customers: Customer[];
@@ -49,11 +50,12 @@ export const LedgerView: React.FC<LedgerViewProps> = ({
       const customerRefunds = returnVouchers
         .filter((voucher) => customerSales.some((sale) => voucher.sourceInvoices.includes(sale.receiptNumber)))
         .reduce((sum, voucher) => sum + voucher.refundAmount, 0);
-      const debit = customerSales.reduce((sum, sale) => {
-        if (String(sale.paymentMethod).toUpperCase() !== 'CREDIT') return sum;
-        return sum + Math.max(0, sale.total);
-      }, 0);
-      const credit = customerRefunds;
+      const debit = customerSales.reduce((sum, sale) => sum + Math.max(0, sale.total), 0);
+      const paymentsReceived = customerSales.reduce(
+        (sum, sale) => sum + getSaleAppliedPayment(sale),
+        0
+      );
+      const credit = customerRefunds + paymentsReceived;
 
       return {
         party: isRtl ? customer.nameAr || customer.name : customer.name,
@@ -225,14 +227,24 @@ export const LedgerView: React.FC<LedgerViewProps> = ({
       );
       return [
         ...customerSales
-          .filter((sale) => String(sale.paymentMethod).toUpperCase() === 'CREDIT')
           .map((sale) => ({
             date: sale.invoiceDate || new Date(sale.createdAt).toISOString().slice(0, 10),
             reference: sale.receiptNumber,
-            particulars: 'Credit sale',
+            particulars: String(sale.paymentMethod).toUpperCase() === 'CREDIT'
+              ? 'Credit sale'
+              : 'Sales invoice',
             debit: sale.total,
             credit: 0,
           })),
+        ...customerSales
+          .map((sale) => ({
+            date: sale.invoiceDate || new Date(sale.createdAt).toISOString().slice(0, 10),
+            reference: sale.receiptNumber,
+            particulars: 'Payment received',
+            debit: 0,
+            credit: getSaleAppliedPayment(sale),
+          }))
+          .filter((payment) => payment.credit > 0),
         ...returnVouchers
           .filter((voucher) => customerSales.some((sale) => voucher.sourceInvoices.includes(sale.receiptNumber)))
           .map((voucher) => ({
@@ -312,8 +324,7 @@ export const LedgerView: React.FC<LedgerViewProps> = ({
         'ledger-statement',
         settings.paperWidth === 'A4' ? 'A4' : '80mm'
       );
-      const profile = settings.printDocumentProfiles?.['ledger-statement']?.[format];
-      const template = resolvePrintTemplate('ledger-statement', format, profile?.templateId);
+      const template = resolvePrintTemplate('ledger-statement', format);
       let data: PrintDocumentData;
 
       if (selectedAccount) {

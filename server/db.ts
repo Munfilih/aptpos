@@ -43,6 +43,7 @@ import { APP_COMPONENTS, APP_VERSIONS } from '../src/types/pos';
 import { parseVersionComponentPolicies } from '../src/utils/versionComponentPolicies';
 import { calculateSaleReturnRefund } from '../src/utils/saleReturns';
 import { calculateSalesTax } from '../src/utils/salesTax';
+import { isFlyErpServiceCategory } from '../src/utils/flyErpServices';
 import { getKotNumberFromInvoice } from '../src/utils/documentNumbers';
 
 const DATA_DIR = process.env.POS_DATA_DIR || path.resolve(process.cwd(), 'data');
@@ -104,6 +105,9 @@ export async function getDb(): Promise<Database> {
 }
 
 function migrateOptionalProductBarcodes(database: Database): void {
+  const hasProductItinerary = database
+    .exec('PRAGMA table_info(products)')[0]?.values
+    .some((row) => String(row[1]) === 'requires_itinerary') || false;
   const indexes = database.exec('PRAGMA index_list(products)')[0]?.values ?? [];
   const hasLegacyBarcodeConstraint = indexes.some((index) => {
     if (Number(index[2]) !== 1 || Number(index[4]) === 1) return false;
@@ -131,6 +135,7 @@ function migrateOptionalProductBarcodes(database: Database): void {
           image_path TEXT NOT NULL DEFAULT '',
           cost_price REAL NOT NULL DEFAULT 0,
           retail_price REAL NOT NULL DEFAULT 0,
+          requires_itinerary INTEGER NOT NULL DEFAULT 0,
           stock INTEGER NOT NULL DEFAULT 0,
           reorder_level INTEGER NOT NULL DEFAULT 5,
           unit TEXT NOT NULL DEFAULT 'ea',
@@ -142,11 +147,13 @@ function migrateOptionalProductBarcodes(database: Database): void {
       database.run(`
         INSERT INTO products_new (
           id, sku, barcode, name, name_ar, category, brand, image_data, image_path,
-          cost_price, retail_price, stock, reorder_level, unit, multi_units, updated_at, tax_rate
+          cost_price, retail_price, stock, reorder_level, unit, multi_units, updated_at, tax_rate,
+          requires_itinerary
         )
         SELECT
           id, sku, barcode, name, name_ar, category, brand, image_data, image_path,
-          cost_price, retail_price, stock, reorder_level, unit, multi_units, updated_at, tax_rate
+          cost_price, retail_price, stock, reorder_level, unit, multi_units, updated_at, tax_rate,
+          ${hasProductItinerary ? 'requires_itinerary' : '0'}
         FROM products
       `);
       database.run('DROP TABLE products');
@@ -197,6 +204,7 @@ function initSchema(database: Database): void {
       image_path TEXT NOT NULL DEFAULT '',
       cost_price REAL NOT NULL DEFAULT 0,
       retail_price REAL NOT NULL DEFAULT 0,
+      requires_itinerary INTEGER NOT NULL DEFAULT 0,
       stock INTEGER NOT NULL DEFAULT 0,
       reorder_level INTEGER NOT NULL DEFAULT 5,
       unit TEXT NOT NULL DEFAULT 'ea',
@@ -229,7 +237,8 @@ function initSchema(database: Database): void {
       payment_method TEXT NOT NULL,
       amount_tendered REAL NOT NULL,
       change_due REAL NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'COMPLETED'
+      status TEXT NOT NULL DEFAULT 'COMPLETED',
+      app_screen_mode TEXT NOT NULL DEFAULT 'pos'
     );
 
     CREATE TABLE IF NOT EXISTS issued_invoice_numbers (
@@ -517,12 +526,14 @@ function initSchema(database: Database): void {
     'ALTER TABLE sales ADD COLUMN tax_type TEXT',
     'ALTER TABLE sales ADD COLUMN customer_id INTEGER',
     'ALTER TABLE sales ADD COLUMN invoice_date TEXT',
+    'ALTER TABLE sales ADD COLUMN app_screen_mode TEXT NOT NULL DEFAULT "pos"',
     'ALTER TABLE inventory_options ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE sale_returns ADD COLUMN voucher_id INTEGER',
     'ALTER TABLE sale_returns ADD COLUMN tax_refund_amount REAL NOT NULL DEFAULT 0',
     'ALTER TABLE cashbook_entries ADD COLUMN payment_type TEXT',
     'ALTER TABLE cashbook_entries ADD COLUMN account_name TEXT',
     'ALTER TABLE products ADD COLUMN tax_rate REAL DEFAULT 15',
+    'ALTER TABLE products ADD COLUMN requires_itinerary INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT ""',
     'ALTER TABLE purchases ADD COLUMN paid_amount REAL NOT NULL DEFAULT 0',
     'CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)',
@@ -1096,6 +1107,7 @@ function mapProductRow(row: unknown[]): Product {
     brand: row[13] ? String(row[13]) : '',
     imageData: row[14] ? String(row[14]) : '',
     imagePath: row[15] ? String(row[15]) : '',
+    requiresItinerary: Number(row[17]) === 1,
     multiUnits,
     additionalBarcodes: [],
   };
@@ -1128,7 +1140,7 @@ export async function listProducts(filters?: {
 }): Promise<Product[]> {
   const database = await getDb();
   const res = database.exec(
-    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units
+    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary
      FROM products ORDER BY name ASC`
   );
   if (!res[0]) return [];
@@ -1386,6 +1398,12 @@ function getDefaultInventoryTaxRate(database: Database): number {
 export async function createProduct(
   input: Omit<Product, 'id' | 'updatedAt'>
 ): Promise<Product> {
+  if (
+    input.requiresItinerary !== undefined &&
+    typeof input.requiresItinerary !== 'boolean'
+  ) {
+    throw new Error('Itinerary fields setting must be a boolean.');
+  }
   const database = await getDb();
   const now = new Date().toISOString();
   const multiUnits = normalizeProductMultiUnits(input.multiUnits);
@@ -1401,8 +1419,8 @@ export async function createProduct(
   let newId: number;
   try {
     database.run(
-      `INSERT INTO products (sku, barcode, name, name_ar, category, cost_price, retail_price, tax_rate, stock, reorder_level, unit, updated_at, brand, image_data, image_path, multi_units)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO products (sku, barcode, name, name_ar, category, cost_price, retail_price, tax_rate, stock, reorder_level, unit, updated_at, brand, image_data, image_path, multi_units, requires_itinerary)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         input.sku.trim(),
         barcode,
@@ -1420,6 +1438,7 @@ export async function createProduct(
         normalizeProductImageData(input.imageData),
         normalizeProductImagePath(input.imagePath),
         JSON.stringify(multiUnits),
+        input.requiresItinerary === true ? 1 : 0,
       ]
     );
     newId = Number(database.exec('SELECT last_insert_rowid()')[0].values[0][0]);
@@ -1432,7 +1451,7 @@ export async function createProduct(
   saveDatabase();
 
   const created = database.exec(
-    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units
+    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary
      FROM products WHERE id = ?`,
     [newId]
   );
@@ -1446,9 +1465,15 @@ export async function updateProduct(
   id: number,
   input: Partial<Omit<Product, 'id' | 'updatedAt'>>
 ): Promise<Product | null> {
+  if (
+    input.requiresItinerary !== undefined &&
+    typeof input.requiresItinerary !== 'boolean'
+  ) {
+    throw new Error('Itinerary fields setting must be a boolean.');
+  }
   const database = await getDb();
   const existingRes = database.exec(
-    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units
+    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary
      FROM products WHERE id = ?`,
     [id]
   );
@@ -1477,7 +1502,7 @@ export async function updateProduct(
   try {
     database.run(
       `UPDATE products
-       SET sku = ?, barcode = ?, name = ?, name_ar = ?, category = ?, cost_price = ?, retail_price = ?, tax_rate = ?, stock = ?, reorder_level = ?, unit = ?, updated_at = ?, brand = ?, image_data = ?, image_path = ?, multi_units = ?
+       SET sku = ?, barcode = ?, name = ?, name_ar = ?, category = ?, cost_price = ?, retail_price = ?, tax_rate = ?, stock = ?, reorder_level = ?, unit = ?, updated_at = ?, brand = ?, image_data = ?, image_path = ?, multi_units = ?, requires_itinerary = ?
        WHERE id = ?`,
       [
         input.sku !== undefined ? input.sku.trim() : current.sku,
@@ -1498,6 +1523,9 @@ export async function updateProduct(
         input.imageData !== undefined ? normalizeProductImageData(input.imageData) : current.imageData || '',
         input.imagePath !== undefined ? normalizeProductImagePath(input.imagePath) : current.imagePath || '',
         JSON.stringify(multiUnits),
+        input.requiresItinerary !== undefined
+          ? (input.requiresItinerary ? 1 : 0)
+          : current.requiresItinerary ? 1 : 0,
         id,
       ]
     );
@@ -1511,7 +1539,7 @@ export async function updateProduct(
   saveDatabase();
 
   const updatedRes = database.exec(
-    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units
+    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary
      FROM products WHERE id = ?`,
     [id]
   );
@@ -1691,6 +1719,7 @@ export async function getSettings(): Promise<StoreSettings> {
     storeName: map.storeName || 'aptPOS Retail',
     storeNameAr: map.storeNameAr || 'ابت بوس للتجزئة',
     storeLogoDataUrl: map.storeLogoDataUrl || undefined,
+    launcherBackgroundDataUrl: map.launcherBackgroundDataUrl || undefined,
     crNumber: map.crNumber || '1010123456',
     address: map.address || 'King Fahd Road, Al Olaya, Riyadh, Saudi Arabia',
     buildingNo: map.buildingNo || '1234',
@@ -1765,6 +1794,17 @@ export async function updateSettings(
       throw new Error('Store logo must be a PNG, JPEG, or WebP image no larger than 1 MB.');
     }
   }
+  if (partial.launcherBackgroundDataUrl !== undefined) {
+    const background = partial.launcherBackgroundDataUrl;
+    if (
+      typeof background !== 'string' ||
+      (background !== '' &&
+        (background.length > 6_700_000 ||
+          !/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(background)))
+    ) {
+      throw new Error('Launcher background must be a PNG, JPEG, or WebP image no larger than 5 MB.');
+    }
+  }
 
   const database = await getDb();
   const stmt = database.prepare(
@@ -1828,7 +1868,8 @@ export async function listSales(): Promise<Sale[]> {
     `SELECT id, receipt_number, created_at, cashier_name, customer_name,
             subtotal, discount_type, discount_value, discount_amount,
             tax_rate, tax_amount, total, payment_method,
-            amount_tendered, change_due, status, tax_type, customer_id, invoice_date
+            amount_tendered, change_due, status, tax_type, customer_id, invoice_date,
+            app_screen_mode
      FROM sales ORDER BY id DESC`
   );
 
@@ -1926,6 +1967,9 @@ export async function listSales(): Promise<Sale[]> {
       customerName: String(row[4]),
       customerId: row[17] === null || row[17] === undefined ? null : Number(row[17]),
       invoiceDate: String(row[18] || String(row[2]).slice(0, 10)),
+      appScreenMode: row[19] === 'rpos' || row[19] === 'erp' || row[19] === 'flyerp'
+        ? row[19]
+        : 'pos',
       subtotal: Number(row[5]),
       discountType: String(row[6]) === 'percent' ? 'percent' : 'fixed',
       discountValue: Number(row[7]),
@@ -1959,6 +2003,7 @@ export interface CreateSaleInput {
   customerName?: string;
   customerId?: number | null;
   appScreenMode?: AppScreenMode;
+  taxType?: 'inclusive' | 'exclusive';
   invoiceDate?: string;
   invoiceNumber?: string;
   discountType: 'percent' | 'fixed';
@@ -1980,6 +2025,12 @@ export async function createSale(input: CreateSaleInput): Promise<{
 }> {
   const database = await getDb();
   const settings = await getSettings();
+  const appScreenMode = input.appScreenMode || 'pos';
+  const tracksInventory = appScreenMode !== 'flyerp';
+  if (input.taxType !== undefined && input.taxType !== 'inclusive' && input.taxType !== 'exclusive') {
+    throw new Error('Invoice tax type must be inclusive or exclusive.');
+  }
+  const saleTaxType = settings.taxType;
 
   if (!input.items || input.items.length === 0) {
     throw new Error('Cart cannot be empty.');
@@ -2005,7 +2056,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
       throw new Error('Product description must be text.');
     }
     const prodRes = database.exec(
-      `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units
+      `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary
        FROM products WHERE id = ?`,
       [reqItem.productId]
     );
@@ -2013,6 +2064,9 @@ export async function createSale(input: CreateSaleInput): Promise<{
       throw new Error(`Product #${reqItem.productId} not found.`);
     }
     const product = mapProductRow(prodRes[0].values[0]);
+    if (appScreenMode === 'flyerp' && !isFlyErpServiceCategory(product.category)) {
+      throw new Error('flyERP invoices can only include products in the Travel Service category.');
+    }
     if (!Number.isFinite(reqItem.quantity) || reqItem.quantity <= 0) {
       throw new Error(`Invalid quantity for ${product.name}.`);
     }
@@ -2065,7 +2119,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
   const taxBreakdown = calculateSalesTax(
     resolvedItems.map((item) => ({ amount: item.lineTotal, taxRate: item.taxRate })),
     discountAmount,
-    settings.taxType
+    saleTaxType
   );
   const { subtotal, taxAmount } = taxBreakdown;
   const totalTaxRates = [...new Set(resolvedItems.map((item) => item.taxRate))];
@@ -2085,8 +2139,8 @@ export async function createSale(input: CreateSaleInput): Promise<{
   ].join('-');
   const invoiceDate = input.invoiceDate ?? todayDate;
   if (input.invoiceDate !== undefined) {
-    if (input.appScreenMode !== 'erp') {
-      throw new Error('Invoice date can only be edited in aptERP.');
+    if (input.appScreenMode !== 'erp' && input.appScreenMode !== 'flyerp') {
+      throw new Error('Invoice date can only be edited in aptERP or aptFlyERP.');
     }
     if (!settings.allowInvoiceDateEdit) {
       throw new Error('Invoice date editing is disabled in Settings → Vouchers.');
@@ -2121,12 +2175,22 @@ export async function createSale(input: CreateSaleInput): Promise<{
   if (isCreditInvoice && customerId === null) {
     throw new Error('Select a customer for a credit invoice.');
   }
+  const cashReceivedAmount = Number(input.amountTendered ?? total);
+  if (
+    input.paymentMethod === 'Cash' &&
+    (!Number.isFinite(cashReceivedAmount) || cashReceivedAmount < 0)
+  ) {
+    throw new Error('Cash received amount must be a non-negative number.');
+  }
   const amountTendered =
     isCreditInvoice
       ? 0
       : input.paymentMethod === 'Cash'
-      ? Math.max(total, Number(input.amountTendered || total))
+      ? cashReceivedAmount
       : total;
+  if (amountTendered < total && customerId === null) {
+    throw new Error('Select a customer for an invoice with an outstanding balance.');
+  }
   const changeDue =
     isCreditInvoice
       ? 0
@@ -2149,7 +2213,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
     const existingSale = database.exec(
       `SELECT id, customer_name, subtotal, discount_type, discount_value, discount_amount,
               tax_rate, tax_amount, total, payment_method, amount_tendered, change_due, status, tax_type,
-              customer_id, invoice_date, created_at
+              customer_id, invoice_date, created_at, app_screen_mode
        FROM sales WHERE receipt_number = ?`,
       [receiptNumber]
     );
@@ -2187,9 +2251,10 @@ export async function createSale(input: CreateSaleInput): Promise<{
         Number(row[10]) === amountTendered &&
         Number(row[11]) === changeDue &&
         String(row[12]) === 'COMPLETED' &&
-        String(row[13]) === settings.taxType &&
+        String(row[13]) === saleTaxType &&
         (row[14] === null || row[14] === undefined ? null : Number(row[14])) === customerId &&
         String(row[15] || String(row[16]).slice(0, 10)) === invoiceDate &&
+        String(row[17] || 'pos') === appScreenMode &&
         sameItems;
       if (sameRequest) {
         const sale = (await listSales()).find((entry) => entry.id === saleId);
@@ -2202,7 +2267,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
     }
   }
 
-  if (!settings.allowNegativeStock) {
+  if (tracksInventory && !settings.allowNegativeStock) {
     const requestedBaseUnits = new Map<number, number>();
     for (const item of resolvedItems) {
       requestedBaseUnits.set(
@@ -2228,8 +2293,8 @@ export async function createSale(input: CreateSaleInput): Promise<{
       receipt_number, created_at, cashier_name, customer_name, customer_id, invoice_date,
       subtotal, discount_type, discount_value, discount_amount,
       tax_rate, tax_type, tax_amount, total, payment_method,
-      amount_tendered, change_due, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED')`,
+      amount_tendered, change_due, status, app_screen_mode
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?)`,
     [
       receiptNumber,
       now,
@@ -2242,12 +2307,13 @@ export async function createSale(input: CreateSaleInput): Promise<{
       discountValue,
       discountAmount,
       saleTaxRate,
-      settings.taxType,
+      saleTaxType,
       taxAmount,
       total,
       input.paymentMethod,
       amountTendered,
       changeDue,
+      appScreenMode,
     ]
   );
 
@@ -2300,11 +2366,13 @@ export async function createSale(input: CreateSaleInput): Promise<{
       discountAmount: taxLine.discountAmount,
     });
 
-    database.run('UPDATE products SET stock = stock - ?, updated_at = ? WHERE id = ?', [
-      item.quantity * item.unitsPerBase,
-      now,
-      item.product.id,
-    ]);
+    if (tracksInventory) {
+      database.run('UPDATE products SET stock = stock - ?, updated_at = ? WHERE id = ?', [
+        item.quantity * item.unitsPerBase,
+        now,
+        item.product.id,
+      ]);
+    }
   }
 
   let queuedOfflinePrint = false;
@@ -2321,6 +2389,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
 
   const sale: Sale = {
     id: saleId,
+    appScreenMode,
     receiptNumber,
     kotNumber,
     createdAt: now,
@@ -2332,7 +2401,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
     discountType: input.discountType,
     discountValue,
     discountAmount,
-    taxType: settings.taxType,
+    taxType: saleTaxType,
     taxRate: saleTaxRate,
     taxAmount,
     total,
@@ -2357,12 +2426,14 @@ export async function voidSale(saleId: number): Promise<Sale | null> {
   const now = new Date().toISOString();
   database.run("UPDATE sales SET status = 'VOIDED' WHERE id = ?", [saleId]);
 
-  for (const item of target.items) {
-    database.run('UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?', [
-      item.quantity * (item.unitsPerBase || 1),
-      now,
-      item.productId,
-    ]);
+  if (target.appScreenMode !== 'flyerp') {
+    for (const item of target.items) {
+      database.run('UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?', [
+        item.quantity * (item.unitsPerBase || 1),
+        now,
+        item.productId,
+      ]);
+    }
   }
 
   saveDatabase();
@@ -2587,11 +2658,13 @@ export async function createSalesReturnVoucher(
            VALUES (?, ?, ?, ?, ?)`,
           [returnId, item.id, item.productId, requested.quantity, allocation.refundAmount]
         );
-        database.run('UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?', [
-          requested.quantity * (item.unitsPerBase || 1),
-          now,
-          item.productId,
-        ]);
+        if (entry.sale.appScreenMode !== 'flyerp') {
+          database.run('UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?', [
+            requested.quantity * (item.unitsPerBase || 1),
+            now,
+            item.productId,
+          ]);
+        }
       }
     }
     database.run('COMMIT');
@@ -2673,7 +2746,9 @@ export async function updateSalesReturnVoucher(
     `SELECT ri.product_id, SUM(ri.returned_quantity * si.units_per_base)
      FROM sale_return_items ri
      JOIN sale_items si ON si.id = ri.sale_item_id
-     WHERE ri.return_id IN (SELECT id FROM sale_returns WHERE voucher_id = ?)
+     JOIN sale_returns sr ON sr.id = ri.return_id
+     JOIN sales s ON s.id = sr.sale_id
+     WHERE sr.voucher_id = ? AND s.app_screen_mode != 'flyerp'
      GROUP BY ri.product_id`,
     [voucherId]
   )[0]?.values || [];
@@ -2685,6 +2760,7 @@ export async function updateSalesReturnVoucher(
     );
   }
   for (const entry of validatedSales) {
+    if (entry.sale.appScreenMode === 'flyerp') continue;
     for (const requested of entry.requestedItems) {
       const saleItem = saleItemsById.get(requested.saleItemId);
       if (!saleItem) throw new Error(`Could not find returned item ${requested.saleItemId}.`);
@@ -2800,7 +2876,9 @@ export async function deleteSalesReturnVoucher(voucherId: number): Promise<boole
     `SELECT ri.product_id, SUM(ri.returned_quantity * si.units_per_base)
      FROM sale_return_items ri
      JOIN sale_items si ON si.id = ri.sale_item_id
-     WHERE ri.return_id IN (SELECT id FROM sale_returns WHERE voucher_id = ?)
+     JOIN sale_returns sr ON sr.id = ri.return_id
+     JOIN sales s ON s.id = sr.sale_id
+     WHERE sr.voucher_id = ? AND s.app_screen_mode != 'flyerp'
      GROUP BY ri.product_id`,
     [voucherId]
   )[0]?.values || [];
@@ -4782,7 +4860,7 @@ export async function deleteSale(saleId: number): Promise<boolean> {
 
   database.run('BEGIN');
   try {
-    if (target.status === 'COMPLETED') {
+    if (target.status === 'COMPLETED' && target.appScreenMode !== 'flyerp') {
       for (const item of target.items) {
         const remainingQuantity = item.quantity - (item.returnedQuantity || 0);
         if (remainingQuantity <= 0) continue;
@@ -4874,7 +4952,11 @@ export async function updateSale(
   const newStatus = input.status !== undefined ? input.status : target.status;
 
   // If status is transitioning from COMPLETED to VOIDED or vice versa, handle inventory
-  if (target.status === 'COMPLETED' && newStatus === 'VOIDED') {
+  if (
+    target.appScreenMode !== 'flyerp' &&
+    target.status === 'COMPLETED' &&
+    newStatus === 'VOIDED'
+  ) {
     const now = new Date().toISOString();
     for (const item of target.items) {
       database.run(
@@ -4882,7 +4964,11 @@ export async function updateSale(
         [item.quantity * (item.unitsPerBase || 1), now, item.productId]
       );
     }
-  } else if (target.status === 'VOIDED' && newStatus === 'COMPLETED') {
+  } else if (
+    target.appScreenMode !== 'flyerp' &&
+    target.status === 'VOIDED' &&
+    newStatus === 'COMPLETED'
+  ) {
     const now = new Date().toISOString();
     for (const item of target.items) {
       database.run(
@@ -4916,6 +5002,13 @@ export async function updateSaleInvoice(
   if (!input.items?.length) throw new Error('Invoice cannot be empty.');
 
   const settings = await getSettings();
+  const appScreenMode = input.appScreenMode ?? target.appScreenMode ?? 'pos';
+  const tracksInventory = appScreenMode !== 'flyerp';
+  const targetTracksInventory = target.appScreenMode !== 'flyerp';
+  if (input.taxType !== undefined && input.taxType !== 'inclusive' && input.taxType !== 'exclusive') {
+    throw new Error('Invoice tax type must be inclusive or exclusive.');
+  }
+  const saleTaxType = settings.taxType;
   let customerName = (input.customerName || '').trim() || target.customerName;
   let customerId =
     input.customerId !== undefined
@@ -4974,7 +5067,7 @@ export async function updateSaleInvoice(
     }
 
     const productResult = database.exec(
-      `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units
+      `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary
        FROM products WHERE id = ?`,
       [item.productId]
     );
@@ -4983,6 +5076,9 @@ export async function updateSaleInvoice(
     }
 
     const product = mapProductRow(productResult[0].values[0]);
+    if (appScreenMode === 'flyerp' && !isFlyErpServiceCategory(product.category)) {
+      throw new Error('flyERP invoices can only include products in the Travel Service category.');
+    }
     const multiUnit = item.unitId
       ? product.multiUnits?.find((unit) => unit.id === item.unitId)
       : undefined;
@@ -5014,11 +5110,11 @@ export async function updateSaleInvoice(
     );
     availableStocks.set(
       product.id,
-      product.stock + (previousQuantities.get(product.id) || 0)
+      product.stock + (targetTracksInventory ? previousQuantities.get(product.id) || 0 : 0)
     );
   }
 
-  if (!settings.allowNegativeStock) {
+  if (tracksInventory && !settings.allowNegativeStock) {
     for (const [productId, requestedQuantity] of requestedQuantities) {
       const availableStock = availableStocks.get(productId) || 0;
       if (requestedQuantity > availableStock) {
@@ -5042,7 +5138,7 @@ export async function updateSaleInvoice(
   const taxBreakdown = calculateSalesTax(
     resolvedItems.map((item) => ({ amount: item.lineTotal, taxRate: item.taxRate })),
     discountAmount,
-    settings.taxType
+    saleTaxType
   );
   const { subtotal, taxAmount } = taxBreakdown;
   const totalTaxRates = [...new Set(resolvedItems.map((item) => item.taxRate))];
@@ -5053,11 +5149,21 @@ export async function updateSaleInvoice(
   }
 
   const isCreditInvoice = input.paymentMethod.toUpperCase() === 'CREDIT';
+  const cashReceivedAmount = Number(input.amountTendered ?? total);
+  if (
+    input.paymentMethod === 'Cash' &&
+    (!Number.isFinite(cashReceivedAmount) || cashReceivedAmount < 0)
+  ) {
+    throw new Error('Cash received amount must be a non-negative number.');
+  }
   const amountTendered = isCreditInvoice
     ? 0
     : input.paymentMethod === 'Cash'
-      ? Math.max(total, Number(input.amountTendered || total))
+      ? cashReceivedAmount
       : total;
+  if (amountTendered < total && customerId === null) {
+    throw new Error('Select a customer for an invoice with an outstanding balance.');
+  }
   const changeDue = isCreditInvoice
     ? 0
     : input.paymentMethod === 'Cash'
@@ -5068,19 +5174,23 @@ export async function updateSaleInvoice(
 
   database.run('BEGIN TRANSACTION');
   try {
-    for (const item of target.items) {
-      database.run('UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?', [
-        item.quantity * (item.unitsPerBase || 1),
-        now,
-        item.productId,
-      ]);
+    if (targetTracksInventory) {
+      for (const item of target.items) {
+        database.run('UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?', [
+          item.quantity * (item.unitsPerBase || 1),
+          now,
+          item.productId,
+        ]);
+      }
     }
-    for (const item of resolvedItems) {
-      database.run('UPDATE products SET stock = stock - ?, updated_at = ? WHERE id = ?', [
-        item.quantity * item.unitsPerBase,
-        now,
-        item.product.id,
-      ]);
+    if (tracksInventory) {
+      for (const item of resolvedItems) {
+        database.run('UPDATE products SET stock = stock - ?, updated_at = ? WHERE id = ?', [
+          item.quantity * item.unitsPerBase,
+          now,
+          item.product.id,
+        ]);
+      }
     }
 
     database.run('DELETE FROM sale_items WHERE sale_id = ?', [saleId]);
@@ -5115,7 +5225,7 @@ export async function updateSaleInvoice(
       `UPDATE sales
        SET cashier_name = ?, customer_name = ?, customer_id = ?, subtotal = ?, discount_type = ?, discount_value = ?,
            discount_amount = ?, tax_rate = ?, tax_type = ?, tax_amount = ?, total = ?, payment_method = ?,
-           amount_tendered = ?, change_due = ?, status = 'COMPLETED'
+           amount_tendered = ?, change_due = ?, status = 'COMPLETED', app_screen_mode = ?
        WHERE id = ?`,
       [
         target.cashierName,
@@ -5126,12 +5236,13 @@ export async function updateSaleInvoice(
         discountValue,
         discountAmount,
         saleTaxRate,
-        settings.taxType,
+        saleTaxType,
         taxAmount,
         total,
         input.paymentMethod,
         amountTendered,
         changeDue,
+        appScreenMode,
         saleId,
       ]
     );

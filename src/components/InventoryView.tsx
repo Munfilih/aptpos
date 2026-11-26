@@ -34,6 +34,9 @@ import type {
 } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
 import { ProductImage } from './ProductImage';
+import { isFlyErpServiceCategory } from '../utils/flyErpServices';
+
+const TRAVEL_SERVICES_CATEGORY = 'Travel Services';
 
 interface InventoryViewProps {
   products: Product[];
@@ -46,6 +49,7 @@ interface InventoryViewProps {
   onRefreshProducts: () => Promise<void>;
   createProductRequest?: number;
   createProductBarcode?: string;
+  createServiceRequest?: boolean;
   onCreateProductRequestHandled?: () => void;
   returnToSourceAfterCreate?: boolean;
   onProductCreated?: () => void;
@@ -53,6 +57,7 @@ interface InventoryViewProps {
   editProductRequest?: { product: Product; requestId: number } | null;
   editProductOnly?: boolean;
   onProductEditorClosed?: (requestId: number) => void;
+  isFlyErpMode?: boolean;
 }
 
 const DEFAULT_UNITS = ['ea', 'pcs', 'box', 'pack', 'btl', 'kg', 'g', 'L', 'ml'];
@@ -107,6 +112,7 @@ interface ProductFormState {
   costPrice: string;
   retailPrice: string;
   taxRate: string;
+  requiresItinerary: boolean;
   stock: string;
   reorderLevel: string;
   unit: string;
@@ -122,6 +128,7 @@ const EMPTY_FORM: ProductFormState = {
   costPrice: '',
   retailPrice: '',
   taxRate: '15',
+  requiresItinerary: false,
   stock: '0',
   reorderLevel: '5',
   unit: 'ea',
@@ -347,6 +354,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   onRefreshProducts,
   createProductRequest = 0,
   createProductBarcode = '',
+  createServiceRequest = false,
   onCreateProductRequestHandled,
   returnToSourceAfterCreate = false,
   onProductCreated,
@@ -354,6 +362,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   editProductRequest,
   editProductOnly = false,
   onProductEditorClosed,
+  isFlyErpMode = false,
 }) => {
   const { t, isRtl } = useLanguage();
   const isRposMode = settings.posScreenLayout === 'rpos';
@@ -391,7 +400,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const [inventoryOptions, setInventoryOptions] = useState<InventoryOption[]>([]);
   const [optionsLoading, setOptionsLoading] = useState(true);
   const [optionsError, setOptionsError] = useState<string | null>(null);
-  const [inventorySection, setInventorySection] = useState<'products' | 'manage'>('products');
+  const [servicesSearch, setServicesSearch] = useState('');
+  const [inventorySection, setInventorySection] = useState<'products' | 'services' | 'manage'>(
+    isFlyErpMode ? 'services' : 'products'
+  );
   const [managementType, setManagementType] = useState<InventoryOptionType>('category');
   const [optionDialogOpen, setOptionDialogOpen] = useState(false);
   const [editingOption, setEditingOption] = useState<InventoryOption | null>(null);
@@ -406,6 +418,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const productNameInputRef = useRef<HTMLInputElement>(null);
   const productLookupInputRef = useRef<HTMLInputElement>(null);
   const handledEditRequestIdRef = useRef<number | null>(null);
+  const isServiceInventory = isFlyErpMode || inventorySection === 'services';
+
+  useEffect(() => {
+    setInventorySection(isFlyErpMode ? 'services' : 'products');
+  }, [isFlyErpMode]);
 
   useEffect(() => {
     if (!modalOpen) return;
@@ -512,9 +529,28 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     ? productHistoryRows
     : productHistoryRows.filter((row) => row.type === productHistoryFilter);
   const categories = useMemo(
-    () => [...new Set([...inventoryOptions.filter((option) => option.type === 'category').map((option) => option.value), ...products.map((product) => product.category)])].sort(),
+    () => [...new Set([
+      ...inventoryOptions.filter((option) => option.type === 'category').map((option) => option.value),
+      ...products.map((product) => product.category),
+      TRAVEL_SERVICES_CATEGORY,
+    ])].sort(),
     [inventoryOptions, products]
   );
+  const filteredServices = useMemo(() => {
+    const query = servicesSearch.trim().toLocaleLowerCase();
+    return products
+      .filter((product) => isFlyErpServiceCategory(product.category))
+      .filter((product) => !query ||
+        product.name.toLocaleLowerCase().includes(query) ||
+        (product.nameAr?.toLocaleLowerCase().includes(query) ?? false) ||
+        product.sku.toLocaleLowerCase().includes(query))
+      .sort((left, right) =>
+        (isRtl ? left.nameAr || left.name : left.name)
+          .localeCompare(isRtl ? right.nameAr || right.name : right.name, undefined, {
+            sensitivity: 'base',
+          })
+      );
+  }, [isRtl, products, servicesSearch]);
   const brands = useMemo(
     () => [...new Set([...inventoryOptions.filter((option) => option.type === 'brand').map((option) => option.value), ...products.map((product) => product.brand || '').filter(Boolean)])].sort(),
     [inventoryOptions, products]
@@ -827,7 +863,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     }
   };
 
-  const openCreateModal = (initialBarcode = '') => {
+  const openCreateModal = (initialBarcode = '', initialCategory = '') => {
     setEditingProduct(null);
     setActiveProductTab('general');
     setProductHistoryFilter('all');
@@ -835,7 +871,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       ...EMPTY_FORM,
       sku: generateNextSku(),
       barcode: initialBarcode,
-      category: categories[0] || EMPTY_FORM.category,
+      category: initialCategory || categories[0] || EMPTY_FORM.category,
       brand: '',
       taxRate: String(defaultTaxRate),
       unit: defaultUnit,
@@ -853,10 +889,19 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
   useEffect(() => {
     if (createProductRequest > 0 && !optionsLoading) {
-      openCreateModal(createProductBarcode);
+      openCreateModal(
+        createProductBarcode,
+        createServiceRequest ? TRAVEL_SERVICES_CATEGORY : ''
+      );
       onCreateProductRequestHandled?.();
     }
-  }, [createProductRequest, createProductBarcode, optionsLoading, onCreateProductRequestHandled]);
+  }, [
+    createProductRequest,
+    createProductBarcode,
+    createServiceRequest,
+    optionsLoading,
+    onCreateProductRequestHandled,
+  ]);
 
   const openEditModal = (product: Product) => {
     setEditingProduct(product);
@@ -886,6 +931,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       costPrice: product.costPrice.toFixed(2),
       retailPrice: product.retailPrice.toFixed(2),
       taxRate: String(product.taxRate ?? 15),
+      requiresItinerary: product.requiresItinerary === true,
       stock: '',
       reorderLevel: String(product.reorderLevel),
       unit: product.unit,
@@ -1125,6 +1171,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         taxRate: Number.isFinite(enteredTaxRate)
           ? Math.min(100, Math.max(0, enteredTaxRate))
           : 15,
+        requiresItinerary: isServiceInventory && form.requiresItinerary,
         ...(editingProduct ? {} : { stock: Math.max(0, parseInt(form.stock, 10) || 0) }),
         reorderLevel: Math.max(0, parseInt(form.reorderLevel, 10) || 0),
         unit: form.unit.trim() || defaultUnit,
@@ -1157,12 +1204,19 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         setModalOpen(false);
         onProductCreated?.();
       } else {
-        setForm({ ...EMPTY_FORM, sku: generateNextSku(form.sku), unit: defaultUnit });
+        setForm({
+          ...EMPTY_FORM,
+          sku: generateNextSku(form.sku),
+          unit: defaultUnit,
+          ...(isServiceInventory ? { category: TRAVEL_SERVICES_CATEGORY } : {}),
+        });
         setMultiUnitDrafts([]);
         setAdditionalBarcodeDrafts([]);
         setProductImagePath('');
         setProductImageData('');
-        setFormSuccess('Product created. You can add another product.');
+        setFormSuccess(isServiceInventory
+          ? 'Service created. You can add another service.'
+          : 'Product created. You can add another product.');
       }
     } catch (err) {
       setFormError((err as Error).message);
@@ -1635,10 +1689,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       )}
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-xl font-bold text-slate-900">{isRtl ? 'المخزون' : 'Inventory'}</h1>
+        <h1 className="text-xl font-bold text-slate-900">
+          {isFlyErpMode ? (isRtl ? 'الخدمات' : 'Services') : (isRtl ? 'المخزون' : 'Inventory')}
+        </h1>
         <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-xs">
           {([
-            { id: 'products', label: isRtl ? 'المنتجات' : 'Products' },
+            ...(!isFlyErpMode ? [{ id: 'products' as const, label: isRtl ? 'المنتجات' : 'Products' }] : []),
+            { id: 'services' as const, label: isRtl ? 'الخدمات' : 'Services' },
             { id: 'manage', label: isRtl ? 'إدارة الخيارات' : 'Manage' },
           ] as const).map((section) => (
             <button
@@ -1657,7 +1714,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         </div>
       </div>
 
-      {inventorySection === 'products' ? (
+      {inventorySection === 'products' && !isFlyErpMode ? (
       <>
       {/* Toolbar & Content */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
@@ -1968,6 +2025,82 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         )}
       </div>
       </>
+      ) : inventorySection === 'services' ? (
+        <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xs">
+          <div className="flex flex-col gap-3 border-b border-slate-200 p-3 sm:flex-row sm:items-center sm:justify-between sm:p-4">
+            <div className="relative min-w-0 flex-1 sm:max-w-sm">
+              <Search className={`pointer-events-none absolute ${isRtl ? 'right-3' : 'left-3'} top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400`} />
+              <input
+                type="search"
+                value={servicesSearch}
+                onChange={(event) => setServicesSearch(event.target.value)}
+                placeholder={isRtl ? 'البحث عن الخدمات المحفوظة...' : 'Search saved services...'}
+                aria-label={isRtl ? 'البحث عن الخدمات' : 'Search services'}
+                className={`w-full rounded-lg border border-slate-200 bg-slate-50 py-2 text-xs text-slate-900 focus:border-blue-700 focus:bg-white focus:outline-none ${isRtl ? 'pl-3 pr-9' : 'pl-9 pr-3'}`}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => openCreateModal('', TRAVEL_SERVICES_CATEGORY)}
+              disabled={optionsLoading}
+              className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-blue-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {isRtl ? 'إضافة خدمة' : 'Add Service'}
+            </button>
+          </div>
+          <div className="max-h-[min(70vh,640px)] overflow-auto">
+            <table className={`w-full min-w-[620px] border-collapse ${isRtl ? 'text-right' : 'text-left'}`}>
+              <thead className="sticky top-0 z-10 bg-slate-50 text-xs font-semibold text-slate-600">
+                <tr>
+                  <th className="border-b border-slate-200 px-4 py-2.5">{isRtl ? 'اسم الخدمة' : 'Service'}</th>
+                  <th className="border-b border-slate-200 px-4 py-2.5">{isRtl ? 'الرمز' : 'Code'}</th>
+                  <th className={`border-b border-slate-200 px-4 py-2.5 ${isRtl ? 'text-left' : 'text-right'}`}>{isRtl ? 'السعر' : 'Price'}</th>
+                  <th className={`border-b border-slate-200 px-4 py-2.5 ${isRtl ? 'text-left' : 'text-right'}`}>{isRtl ? 'الضريبة' : 'Tax'}</th>
+                  <th className="border-b border-slate-200 px-4 py-2.5 text-center">{isRtl ? 'الإجراء' : 'Action'}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-xs">
+                {filteredServices.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-12 text-center text-slate-500">
+                      {servicesSearch.trim()
+                        ? (isRtl ? 'لا توجد خدمات تطابق البحث.' : 'No services match your search.')
+                        : (isRtl ? 'لا توجد خدمات محفوظة. أضف خدمة للبدء.' : 'No saved services yet. Add a service to get started.')}
+                    </td>
+                  </tr>
+                ) : filteredServices.map((service) => (
+                  <tr key={service.id} className="hover:bg-slate-50/80">
+                    <td className="px-4 py-2.5 font-medium text-slate-900">
+                      <div>{isRtl ? service.nameAr || service.name : service.name}</div>
+                      {!isRtl && service.nameAr && (
+                        <div className="mt-0.5 text-[11px] text-slate-500" dir="rtl">{service.nameAr}</div>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-slate-600">{service.sku || '—'}</td>
+                    <td className={`px-4 py-2.5 font-mono font-semibold tabular-nums text-slate-900 ${isRtl ? 'text-left' : 'text-right'}`}>
+                      {c}{service.retailPrice.toFixed(2)}
+                    </td>
+                    <td className={`px-4 py-2.5 font-mono tabular-nums text-slate-600 ${isRtl ? 'text-left' : 'text-right'}`}>
+                      {service.taxRate ?? settings.taxRate}%
+                    </td>
+                    <td className="px-4 py-2.5 text-center">
+                      <button
+                        type="button"
+                        onClick={() => openEditModal(service)}
+                        className="rounded p-1.5 text-slate-500 hover:bg-blue-50 hover:text-blue-700"
+                        aria-label={`${isRtl ? 'تعديل الخدمة' : 'Edit service'} ${service.name}`}
+                        title={isRtl ? 'تعديل الخدمة' : 'Edit service'}
+                      >
+                        <Edit2 className="h-3.5 w-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       ) : (
         <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
           <div className="flex flex-col gap-3 border-b border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
@@ -2377,40 +2510,46 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               <div className="flex flex-wrap items-center gap-2">
                 <h2 id="product-modal-title" className="shrink-0 text-sm font-semibold text-slate-900 sm:text-base">
                   {editingProduct
-                    ? (isRtl ? 'تعديل المنتج' : 'Edit Product')
-                    : (isRtl ? 'إضافة منتج جديد' : 'Add New Product')}
+                    ? (isServiceInventory
+                        ? (isRtl ? 'تعديل الخدمة' : 'Edit Service')
+                        : (isRtl ? 'تعديل المنتج' : 'Edit Product'))
+                    : (isServiceInventory
+                        ? (isRtl ? 'إضافة خدمة جديدة' : 'Add New Service')
+                        : (isRtl ? 'إضافة منتج جديد' : 'Add New Product'))}
                 </h2>
-                <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:max-w-xs">
-                  <label htmlFor="product-code-lookup" className="sr-only">
-                    {isRtl ? 'امسح أو أدخل الباركود أو SKU' : 'Scan or enter a product barcode or SKU'}
-                  </label>
-                  <input
-                    id="product-code-lookup"
-                    ref={productLookupInputRef}
-                    type="text"
-                    autoComplete="off"
-                    value={productLookupCode}
-                    onChange={(event) => {
-                      setProductLookupCode(event.target.value);
-                      setProductLookupMessage(null);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault();
-                        handleProductCodeLookup();
-                      }
-                    }}
-                    placeholder={isRtl ? 'امسح الباركود أو SKU' : 'Scan barcode or SKU'}
-                    className="w-36 min-w-0 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-900 focus:border-blue-700 focus:outline-none sm:w-40"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleProductCodeLookup}
-                    className="shrink-0 rounded-lg bg-blue-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-blue-800"
-                  >
-                    {isRtl ? 'بحث' : 'Find'}
-                  </button>
-                </div>
+                {!isServiceInventory && (
+                  <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:max-w-xs">
+                    <label htmlFor="product-code-lookup" className="sr-only">
+                      {isRtl ? 'امسح أو أدخل الباركود أو SKU' : 'Scan or enter a product barcode or SKU'}
+                    </label>
+                    <input
+                      id="product-code-lookup"
+                      ref={productLookupInputRef}
+                      type="text"
+                      autoComplete="off"
+                      value={productLookupCode}
+                      onChange={(event) => {
+                        setProductLookupCode(event.target.value);
+                        setProductLookupMessage(null);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          handleProductCodeLookup();
+                        }
+                      }}
+                      placeholder={isRtl ? 'امسح الباركود أو SKU' : 'Scan barcode or SKU'}
+                      className="w-36 min-w-0 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-900 focus:border-blue-700 focus:outline-none sm:w-40"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleProductCodeLookup}
+                      className="shrink-0 rounded-lg bg-blue-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-blue-800"
+                    >
+                      {isRtl ? 'بحث' : 'Find'}
+                    </button>
+                  </div>
+                )}
                 <div className="ml-auto flex items-center gap-1.5">
                 <button
                   type="button"
@@ -2434,7 +2573,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   type="submit"
                   form="product-form"
                   disabled={saving}
-                  title={isRtl ? 'حفظ المنتج (Alt+S)' : 'Save product (Alt+S)'}
+                  title={isServiceInventory
+                    ? (isRtl ? 'حفظ الخدمة (Alt+S)' : 'Save service (Alt+S)')
+                    : (isRtl ? 'حفظ المنتج (Alt+S)' : 'Save product (Alt+S)')}
                   aria-keyshortcuts="Alt+S"
                   className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg disabled:opacity-50"
                 >
@@ -2446,7 +2587,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 </button>
                 </div>
               </div>
-              {productLookupMessage && (
+              {!isServiceInventory && productLookupMessage && (
                 <p
                   role={productLookupMessage.type === 'error' ? 'alert' : 'status'}
                   className={`mt-1 text-[11px] ${
@@ -2459,13 +2600,19 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               <nav
                 className={`mt-3 flex gap-1 overflow-x-auto border-b border-slate-200 ${isRtl ? 'flex-row-reverse' : ''}`}
                 role="tablist"
-                aria-label={isRtl ? 'أقسام نموذج المنتج' : 'Product form sections'}
+                aria-label={isServiceInventory
+                  ? (isRtl ? 'أقسام نموذج الخدمة' : 'Service form sections')
+                  : (isRtl ? 'أقسام نموذج المنتج' : 'Product form sections')}
               >
                 {([
                   { id: 'general', label: isRtl ? 'عام' : 'General' },
-                  { id: 'advanced', label: isRtl ? 'متقدم' : 'Advanced' },
+                  ...(!isServiceInventory
+                    ? [{ id: 'advanced' as const, label: isRtl ? 'متقدم' : 'Advanced' }]
+                    : []),
                   { id: 'history', label: isRtl ? 'السجل' : 'History' },
-                  { id: 'settings', label: isRtl ? 'الإعدادات' : 'Settings' },
+                  ...(!isServiceInventory
+                    ? [{ id: 'settings' as const, label: isRtl ? 'الإعدادات' : 'Settings' }]
+                    : []),
                 ] as const).map((tab) => (
                   <button
                     key={tab.id}
@@ -2515,7 +2662,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 <div>
                   <div className="mb-1 flex min-h-5 items-center">
                     <label className="block font-medium text-slate-700">
-                      {isRtl ? 'اسم المنتج (إنجليزي) *' : 'Product Name (English) *'}
+                      {isServiceInventory
+                        ? (isRtl ? 'اسم الخدمة (إنجليزي) *' : 'Service Name (English) *')
+                        : (isRtl ? 'اسم المنتج (إنجليزي) *' : 'Product Name (English) *')}
                     </label>
                   </div>
                   <input
@@ -2526,14 +2675,16 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     value={form.name}
                     onKeyDown={handleProductFieldEnter}
                     onChange={(e) => setForm({ ...form, name: e.target.value.toUpperCase() })}
-                    placeholder="e.g., Cold Brew 330ml"
+                    placeholder={isServiceInventory ? 'e.g., Flight Ticket' : 'e.g., Cold Brew 330ml'}
                     className="w-full px-2.5 py-1.5 uppercase border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
                   />
                 </div>
                 <div>
                   <div className="mb-1 flex min-h-5 items-center justify-between gap-1">
                     <label className="block font-medium text-slate-700">
-                      {isRtl ? 'اسم المنتج (عربي)' : 'Product Name (Arabic)'}
+                      {isServiceInventory
+                        ? (isRtl ? 'اسم الخدمة (عربي)' : 'Service Name (Arabic)')
+                        : (isRtl ? 'اسم المنتج (عربي)' : 'Product Name (Arabic)')}
                     </label>
                     <button
                       type="button"
@@ -2564,7 +2715,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 </div>
               )}
 
-              {activeProductTab === 'advanced' && isRposMode && (
+              {activeProductTab === 'advanced' && isRposMode && !isServiceInventory && (
                 <div className="flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-2.5">
                 <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-white text-slate-400">
                   {productImagePath || productImageData ? (
@@ -2617,7 +2768,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 </div>
               )}
 
-              {activeProductTab === 'general' && (
+              {activeProductTab === 'general' && !isServiceInventory && (
               <div className="grid grid-cols-2 gap-2 sm:gap-3">
                 <div>
                   <label className="block font-medium text-slate-700 mb-1">{isRtl ? 'الرمز (SKU)' : 'SKU'}</label>
@@ -2666,7 +2817,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               )}
 
               {activeProductTab === 'general' && (
-              <div className="grid grid-cols-2 gap-2 sm:gap-3">
+              <div className={`grid gap-2 sm:gap-3 ${isServiceInventory ? 'grid-cols-1' : 'grid-cols-2'}`}>
+                {!isServiceInventory && (
                 <div>
                   <label className="mb-1 block font-medium text-slate-700">
                     {isRtl ? `سعر التكلفة (${c})` : `Cost Price (${c})`}
@@ -2684,9 +2836,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 font-mono tabular-nums text-slate-900 focus:border-blue-700 focus:outline-none"
                   />
                 </div>
+                )}
                 <div>
                   <label className="mb-1 block font-medium text-slate-700">
-                    {isRtl ? `سعر البيع (${c})` : `Selling Price (${c})`}
+                    {isServiceInventory
+                      ? (isRtl ? `سعر الخدمة (${c})` : `Service Price (${c})`)
+                      : (isRtl ? `سعر البيع (${c})` : `Selling Price (${c})`)}
                   </label>
                   <input
                     type="number"
@@ -2704,9 +2859,111 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               </div>
               )}
 
-              {activeProductTab === 'settings' && (
+              {activeProductTab === 'general' && isServiceInventory && (
+                <div className="space-y-3">
+                  <section className="rounded-lg border border-slate-200 bg-white p-3">
+                    <h3 className="font-semibold text-slate-800">
+                      {isRtl ? 'إعدادات الخدمة' : 'Service Settings'}
+                    </h3>
+                    <p className="mb-3 mt-0.5 text-[10px] text-slate-500">
+                      {isRtl
+                        ? 'إعدادات الضريبة وبيانات المسافر والرحلة.'
+                        : 'Configure service tax and itinerary details.'}
+                    </p>
+                    <div>
+                      <label className="mb-1 block font-medium text-slate-700">
+                        {isRtl ? 'نسبة الضريبة (%)' : 'Tax Rate (%)'}
+                      </label>
+                      <select
+                        data-product-field="taxRate"
+                        onKeyDown={handleProductFieldEnter}
+                        value={form.taxRate}
+                        onChange={(event) => setForm({ ...form, taxRate: event.target.value })}
+                        className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono tabular-nums text-slate-900 focus:border-blue-700 focus:outline-none"
+                      >
+                        {taxRates.map((rate) => <option key={rate} value={rate}>{rate}%</option>)}
+                      </select>
+                    </div>
+                    <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={form.requiresItinerary}
+                        onChange={(event) => setForm({
+                          ...form,
+                          requiresItinerary: event.target.checked,
+                        })}
+                        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-600"
+                      />
+                      <span>
+                        <span className="block font-semibold text-slate-800">
+                          {isRtl ? 'طلب بيانات المسافر والرحلة عند البيع' : 'Enable passenger and itinerary fields in sales'}
+                        </span>
+                        <span className="mt-0.5 block text-slate-500">
+                          {isRtl
+                            ? 'عند اختيار هذه الخدمة في flyERP، ستظهر حقول بيانات المسافر والرحلة.'
+                            : 'Selecting this service in flyERP opens passenger and flight detail fields.'}
+                        </span>
+                      </span>
+                    </label>
+                  </section>
+                  <section className="flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+                    <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-white text-slate-400">
+                      {productImagePath || productImageData ? (
+                        <ProductImage
+                          imagePath={productImagePath}
+                          imageData={productImageData}
+                          alt={form.name || (isRtl ? 'معاينة صورة الخدمة' : 'Service image preview')}
+                          className="h-auto w-auto max-h-full max-w-full object-contain"
+                        />
+                      ) : (
+                        <Upload className="h-5 w-5" />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <div>
+                        <span className="mb-1 block font-medium text-slate-700">
+                          {isRtl ? 'صورة الخدمة' : 'Service Image'}
+                        </span>
+                        <input
+                          ref={productImageInputRef}
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          className="hidden"
+                          onChange={handleProductImageChange}
+                        />
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => productImageInputRef.current?.click()}
+                            className="rounded-md border border-blue-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-blue-700 hover:bg-blue-50"
+                          >
+                            {isRtl ? 'اختيار صورة' : 'Choose image'}
+                          </button>
+                          {(productImageData || productImagePath) && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setProductImageData('');
+                                setProductImagePath('');
+                              }}
+                              className="text-[10px] font-medium text-slate-600 hover:text-red-700"
+                            >
+                              {isRtl ? 'إزالة الصورة' : 'Remove image'}
+                            </button>
+                          )}
+                          <span className="text-[10px] text-slate-500">JPEG, PNG, WebP · max 1.5 MB</span>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+                </div>
+              )}
+
+              {activeProductTab === 'settings' && !isServiceInventory && (
                 <section className="rounded-lg border border-slate-200 bg-white p-3">
-                  <h3 className="font-semibold text-slate-800">{isRtl ? 'إعدادات المنتج' : 'Product Settings'}</h3>
+                  <h3 className="font-semibold text-slate-800">
+                    {isRtl ? 'إعدادات المنتج' : 'Product Settings'}
+                  </h3>
                   <p className="mb-3 mt-0.5 text-[10px] text-slate-500">
                     {isRtl
                       ? 'إعدادات الضريبة والوحدة وتنبيه المخزون لهذا المنتج.'
@@ -2750,7 +3007,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                         {units.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
                       </select>
                     </div>
-                    {!editingProduct && (
+                    {!editingProduct && !isServiceInventory && (
                       <div>
                         <label className="mb-1 block font-medium text-slate-700">
                           {isRtl ? 'المخزون الافتتاحي' : 'Opening Stock'}
@@ -2768,27 +3025,29 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                         />
                       </div>
                     )}
-                    <div>
-                      <label className="mb-1 block font-medium text-slate-700">
-                        {isRtl ? 'حد إعادة الطلب' : 'Low Stock Reorder Level'}
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        data-product-field="reorderLevel"
-                        onFocus={(event) => event.currentTarget.select()}
-                        onClick={(event) => event.currentTarget.select()}
-                        onKeyDown={handleProductFieldEnter}
-                        value={form.reorderLevel}
-                        onChange={(e) => setForm({ ...form, reorderLevel: e.target.value })}
-                        className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 font-mono tabular-nums text-slate-900 focus:border-blue-700 focus:outline-none"
-                      />
-                    </div>
+                    {!isServiceInventory && (
+                      <div>
+                        <label className="mb-1 block font-medium text-slate-700">
+                          {isRtl ? 'حد إعادة الطلب' : 'Low Stock Reorder Level'}
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          data-product-field="reorderLevel"
+                          onFocus={(event) => event.currentTarget.select()}
+                          onClick={(event) => event.currentTarget.select()}
+                          onKeyDown={handleProductFieldEnter}
+                          value={form.reorderLevel}
+                          onChange={(e) => setForm({ ...form, reorderLevel: e.target.value })}
+                          className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 font-mono tabular-nums text-slate-900 focus:border-blue-700 focus:outline-none"
+                        />
+                      </div>
+                    )}
                   </div>
                 </section>
               )}
 
-              {activeProductTab === 'advanced' && (
+              {activeProductTab === 'advanced' && !isServiceInventory && (
               <>
               <section className="rounded-lg border border-slate-200 bg-white p-2.5">
                 <div className="mb-2 flex items-center justify-between gap-2">
@@ -2960,7 +3219,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               </>
               )}
 
-              {activeProductTab === 'general' && (
+              {activeProductTab === 'general' && !isServiceInventory && (
               <div className="grid grid-cols-2 gap-2 sm:gap-3">
                 <div>
                   <div className="mb-1 flex items-center justify-between">
@@ -3061,7 +3320,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                             }[row.type];
                             return (
                               <tr key={row.id} className="text-slate-700">
-                                <td className="whitespace-nowrap px-3 py-2">{new Date(row.date).toLocaleString(isRtl ? 'ar-SA' : 'en-US')}</td>
+                                <td className="whitespace-nowrap px-3 py-2">{new Date(row.date).toLocaleString(isRtl ? 'ar-SA' : 'en-GB')}</td>
                                 <td className="whitespace-nowrap px-3 py-2">{typeLabel}</td>
                                 <td className="whitespace-nowrap px-3 py-2 font-mono">{row.reference || '—'}</td>
                                 <td className="px-3 py-2">{row.party || '—'}</td>

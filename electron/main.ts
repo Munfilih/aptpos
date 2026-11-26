@@ -23,7 +23,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PRODUCTION_PORT = 43187;
 const LEGACY_APP_NAME = 'Counterline POS';
-type AppScreenMode = 'pos' | 'rpos' | 'erp';
+type AppScreenMode = 'pos' | 'rpos' | 'erp' | 'flyerp';
 
 function parseAppScreenMode(value: string | undefined): AppScreenMode | null {
   switch (value?.toLowerCase()) {
@@ -36,13 +36,16 @@ function parseAppScreenMode(value: string | undefined): AppScreenMode | null {
     case 'erp':
     case 'apterp':
       return 'erp';
+    case 'flyerp':
+    case 'aptflyerp':
+      return 'flyerp';
     default:
       return null;
   }
 }
 
 function isAppScreenMode(value: unknown): value is AppScreenMode {
-  return value === 'pos' || value === 'rpos' || value === 'erp';
+  return value === 'pos' || value === 'rpos' || value === 'erp' || value === 'flyerp';
 }
 
 function getAppScreenMode(args: readonly string[]): AppScreenMode {
@@ -51,7 +54,13 @@ function getAppScreenMode(args: readonly string[]): AppScreenMode {
 }
 
 function getAppProductName(mode: AppScreenMode): string {
-  return mode === 'rpos' ? 'aptRPOS' : mode === 'erp' ? 'aptERP' : 'aptPOS';
+  return mode === 'rpos'
+    ? 'aptRPOS'
+    : mode === 'erp'
+      ? 'aptERP'
+      : mode === 'flyerp'
+        ? 'aptFlyERP'
+        : 'aptPOS';
 }
 
 function getScreenModePreferencesPath(): string {
@@ -83,7 +92,11 @@ async function writeDefaultScreenMode(mode: AppScreenMode): Promise<void> {
 }
 
 function getAppIconPath(mode: AppScreenMode): string {
-  const iconFile = mode === 'rpos' ? 'aptrpos.ico' : mode === 'erp' ? 'apterp.ico' : 'aptpos.ico';
+  const iconFile = mode === 'rpos'
+    ? 'aptrpos.ico'
+    : mode === 'erp' || mode === 'flyerp'
+      ? 'apterp.ico'
+      : 'aptpos.ico';
   return app.isPackaged
     ? path.join(process.resourcesPath, iconFile)
     : path.resolve(__dirname, '..', 'build-resources', iconFile);
@@ -1096,8 +1109,7 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
       const pdfBuffer = await printWindow.webContents.printToPDF({
         printBackground: true,
         pageSize: { width: widthIn, height: heightIn },
-        margins: { top: 0, bottom: 0, left: 0, right: 0 },
-        preferCSSPageSize: false,
+        preferCSSPageSize: true,
       });
 
       const winToClose = printWindow;
@@ -1256,7 +1268,7 @@ ipcMain.handle('pos:export-design-pdf', async (event, rawOptions: unknown) => {
 
   const safeFileName = options.fileName.replace(/[<>:"/\\|?*\x00-\x1F]/g, '-');
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
-    title: 'Export voucher as PDF',
+    title: 'Save document as PDF',
     defaultPath: safeFileName.toLowerCase().endsWith('.pdf')
       ? safeFileName
       : `${safeFileName}.pdf`,
@@ -1399,6 +1411,9 @@ ipcMain.handle('pos:app:set-default-screen-mode', async (event, rawMode: unknown
   }
 
   await writeDefaultScreenMode(rawMode);
+  currentScreenMode = rawMode;
+  mainWindow?.setTitle(getAppProductName(rawMode));
+  mainWindow?.setIcon(getAppIconPath(rawMode));
 });
 
 ipcMain.handle('pos:backup:get-directory', (event) => {

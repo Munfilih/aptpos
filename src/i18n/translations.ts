@@ -218,31 +218,6 @@ export interface Translations {
   receiptFooterMsg: string;
   receiptFooterMsgAr: string;
 
-  // Print Template Settings
-  printTemplateTitle: string;
-  printTemplateDesc: string;
-  paperFormat: string;
-  thermal80: string;
-  thermal58: string;
-  a4Sheet: string;
-  defaultPrinter: string;
-  defaultPrinterPlaceholder: string;
-  defaultAction: string;
-  actionPrint: string;
-  actionWithoutPrint: string;
-  invoiceDisplayOptions: string;
-  invoiceDisplayOptionsDesc: string;
-  showProductName: string;
-  showProductNameAr: string;
-  showBarcode: string;
-  showCustomerInfo: string;
-  showCashierName: string;
-  showTaxDetails: string;
-  showStoreAddress: string;
-  showReceiptBarcode: string;
-  showFooter: string;
-  showQrCode: string;
-
   // Users & Database
   userAccounts: string;
   addNewStaff: string;
@@ -486,31 +461,6 @@ export const translations: Record<Language, Translations> = {
     receiptFooterMsg: 'Receipt Footer Notice (English)',
     receiptFooterMsgAr: 'Receipt Footer Notice (Arabic)',
 
-    // Print Template Settings
-    printTemplateTitle: 'Print Format & Invoice Customization',
-    printTemplateDesc: 'Choose your default printer hardware, print layout (Thermal roll vs. A4 invoice), and customize which fields appear on receipts.',
-    paperFormat: 'Receipt & Invoice Paper Format',
-    thermal80: '80mm Thermal Receipt (Standard Roll)',
-    thermal58: '58mm Thermal Receipt (Compact Roll)',
-    a4Sheet: 'A4 Full Page Commercial Tax Invoice',
-    defaultPrinter: 'Default Printer Name / Path',
-    defaultPrinterPlaceholder: 'e.g. EPSON TM-T88VI or Office Laser Printer',
-    defaultAction: 'Default Sale Completion Action',
-    actionPrint: 'Print Receipt & Advance (Default)',
-    actionWithoutPrint: 'Done Without Printing (Save Paper)',
-    invoiceDisplayOptions: 'Invoice Line Item Display Elements',
-    invoiceDisplayOptionsDesc: 'Check or uncheck which product metadata items appear on customer invoices and receipts:',
-    showProductName: 'Show Product English Name',
-    showProductNameAr: 'Show Product Arabic Name (الاسم بالعربية)',
-    showBarcode: 'Show Product SKU / Barcode in Item Line',
-    showCustomerInfo: 'Show Customer Ledger & Contact Details',
-    showCashierName: 'Show Cashier Name on Header',
-    showTaxDetails: 'Show Subtotal Excl. Tax & VAT Breakdown',
-    showStoreAddress: 'Show Store Address & Contact Telephone',
-    showReceiptBarcode: 'Show Barcode at Bottom for Returns',
-    showFooter: 'Show Thank You Footer Message',
-    showQrCode: 'Show ZATCA Compliant QR Code',
-
     // Users & Database
     userAccounts: 'System User Accounts',
     addNewStaff: 'Add Staff User',
@@ -752,31 +702,6 @@ export const translations: Record<Language, Translations> = {
     currency: 'رمز العملة (ر.س / SAR)',
     receiptFooterMsg: 'رسالة تذييل الفاتورة (بالإنجليزية)',
     receiptFooterMsgAr: 'رسالة تذييل الفاتورة (بالعربية)',
-
-    // Print Template Settings
-    printTemplateTitle: 'تخصيص نماذج الطباعة والفواتير',
-    printTemplateDesc: 'اختر الطابعة الافتراضية، مقاس ورق الفاتورة (ورق حراري رول أو صفحة A4 كاملة)، وتحديد العناصر التي تظهر بالفاتورة.',
-    paperFormat: 'مقاس الورق ونموذج الفاتورة',
-    thermal80: 'ورق حراري 80 ملم (الرول القياسي)',
-    thermal58: 'ورق حراري 58 ملم (الرول الصغير)',
-    a4Sheet: 'فاتورة ضريبية رسمية نموذج A4 كامل',
-    defaultPrinter: 'اسم الطابعة الافتراضية في النظام',
-    defaultPrinterPlaceholder: 'مثال: EPSON TM-T88 أو طابعة A4 المكتبية',
-    defaultAction: 'الإجراء التلقائي بعد إتمام البيع',
-    actionPrint: 'طباعة الفاتورة تلقائياً وبدء بيع جديد',
-    actionWithoutPrint: 'إنهاء البيع بدون طباعة (توفير الورق)',
-    invoiceDisplayOptions: 'عناصر صنف الفاتورة المعروضة',
-    invoiceDisplayOptionsDesc: 'حدد العناصر المراد إظهارها أو إخفاؤها في الفاتورة المطبوعة للعميل:',
-    showProductName: 'إظهار اسم المنتج باللغة الإنجليزية',
-    showProductNameAr: 'إظهار اسم المنتج باللغة العربية',
-    showBarcode: 'إظهار الباركود / رمز الصنف مع السطر',
-    showCustomerInfo: 'إظهار بيانات العميل والرقم الضريبي للعميل',
-    showCashierName: 'إظهار اسم الكاشير المنفذ',
-    showTaxDetails: 'إظهار تفاصيل الضريبة والمجموع غير الشامل',
-    showStoreAddress: 'إظهار عنوان المتجر وأرقام التواصل',
-    showReceiptBarcode: 'إظهار باركود المعاملة أسفل الفاتورة للاسترجاع',
-    showFooter: 'إظهار رسالة الترحيب والشكر بأسفل الفاتورة',
-    showQrCode: 'إظهار رمز الاستجابة السريع للضريبة (ZATCA QR)',
 
     // Users & Database
     userAccounts: 'حسابات مستخدمي النظام',

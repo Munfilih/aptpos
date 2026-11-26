@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { AlertCircle, Lock, User, ShoppingBag, Sparkles, Globe, ArrowRight, ReceiptText, BarChart3, PackageCheck, BadgeCheck } from 'lucide-react';
+import { AlertCircle, Lock, User, ShoppingBag, Sparkles, Globe, ArrowRight, ReceiptText, BarChart3, PackageCheck, BadgeCheck, Plane } from 'lucide-react';
 import type { AppScreenMode, DemoAccessStatus, UserSession } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
 import { parseDemoActivationResult } from '../utils/demoActivation';
@@ -477,7 +477,9 @@ export const LoginForm: React.FC<LoginFormProps> = ({
             {/* Animated Logo Badge */}
             <div className="relative mb-6">
               <div className="login-logo-badge flex h-20 w-20 items-center justify-center rounded-2xl">
-                <ShoppingBag className="h-10 w-10 text-violet-100" />
+                {appScreenMode === 'flyerp'
+                  ? <Plane className="h-10 w-10 text-amber-100" />
+                  : <ShoppingBag className="h-10 w-10 text-violet-100" />}
               </div>
               <div className="absolute -top-1.5 -right-1.5 flex h-7 w-7 items-center justify-center rounded-full border border-fuchsia-300/30 bg-violet-500/20">
                 <Sparkles className="h-4 w-4 animate-spin text-violet-200" style={{ animationDuration: '6s' }} />
@@ -486,10 +488,12 @@ export const LoginForm: React.FC<LoginFormProps> = ({
 
             {/* POS Name */}
             <h1 className="font-display text-4xl sm:text-5xl font-black tracking-tight text-white mb-2">
-              apt<span className={appScreenMode === 'erp' ? 'text-violet-300' : 'text-blue-400'}>{appNameSuffix}</span>
+              apt<span className={appScreenMode === 'erp' ? 'text-violet-300' : appScreenMode === 'flyerp' ? 'text-amber-300' : 'text-blue-400'}>{appNameSuffix}</span>
             </h1>
             <p className="text-sm sm:text-base font-medium text-slate-400 max-w-xs">
-              {isRtl ? 'نظام نقاط البيع وإدارة المخزون والتجزئة' : 'Retail Point-of-Sale & Inventory Management'}
+              {appScreenMode === 'flyerp'
+                ? isRtl ? 'نظام فواتير السفر وتذاكر الطيران' : 'Flight Ticket & Travel Billing'
+                : isRtl ? 'نظام نقاط البيع وإدارة المخزون والتجزئة' : 'Retail Point-of-Sale & Inventory Management'}
             </p>
 
             {/* Smooth animated progress line */}
@@ -792,31 +796,39 @@ export const LoginForm: React.FC<LoginFormProps> = ({
               aria-label={language === 'ar' ? `تسجيل الدخول إلى ${appName}` : `Sign in to ${appName}`}
               className="login-brand-mark cursor-pointer transition-transform hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300"
             >
-              <ShoppingBag className="h-7 w-7 text-violet-100" />
+              {appScreenMode === 'flyerp'
+                ? <Plane className="h-7 w-7 text-amber-100" />
+                : <ShoppingBag className="h-7 w-7 text-violet-100" />}
             </button>
             <p className="login-eyebrow">
-              {isRtl ? 'منصة البيع الذكية' : 'SMART RETAIL PLATFORM'}
+              {appScreenMode === 'flyerp'
+                ? isRtl ? 'منصة السفر والطيران' : 'TRAVEL & FLIGHT PLATFORM'
+                : isRtl ? 'منصة البيع الذكية' : 'SMART RETAIL PLATFORM'}
             </p>
             <h1 className="font-display text-4xl font-extrabold tracking-tight text-white">
-              apt<span className={appScreenMode === 'erp' ? 'text-violet-300' : 'text-blue-400'}>{appNameSuffix}</span>
+              apt<span className={appScreenMode === 'erp' ? 'text-violet-300' : appScreenMode === 'flyerp' ? 'text-amber-300' : 'text-blue-400'}>{appNameSuffix}</span>
             </h1>
             <p className="mt-3 max-w-xs text-sm leading-6 text-slate-300">
-              {t.loginSubtitle}
+              {appScreenMode === 'flyerp'
+                ? isRtl
+                  ? 'أدخل بياناتك لإدارة حجوزات السفر وفواتير الرحلات.'
+                  : 'Sign in to manage travel bookings and flight invoices.'
+                : t.loginSubtitle}
             </p>
           </div>
 
           <div className="login-feature-list relative z-10">
             <div className="login-feature">
               <ReceiptText className="h-4 w-4" />
-              <span>{isRtl ? 'فواتير سريعة' : 'Fast billing'}</span>
+              <span>{appScreenMode === 'flyerp' ? isRtl ? 'حجوزات السفر' : 'Travel bookings' : isRtl ? 'فواتير سريعة' : 'Fast billing'}</span>
             </div>
             <div className="login-feature">
               <PackageCheck className="h-4 w-4" />
-              <span>{isRtl ? 'تحكم بالمخزون' : 'Stock control'}</span>
+              <span>{appScreenMode === 'flyerp' ? isRtl ? 'تفاصيل الرحلة' : 'Flight details' : isRtl ? 'تحكم بالمخزون' : 'Stock control'}</span>
             </div>
             <div className="login-feature">
               <BarChart3 className="h-4 w-4" />
-              <span>{isRtl ? 'تقارير واضحة' : 'Clear reports'}</span>
+              <span>{appScreenMode === 'flyerp' ? isRtl ? 'فواتير الخدمات' : 'Service invoices' : isRtl ? 'تقارير واضحة' : 'Clear reports'}</span>
             </div>
           </div>
         </aside>
@@ -836,7 +848,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({
               <ShoppingBag className="h-6 w-6 text-violet-100" />
             </button>
             <span className="font-display text-xl font-extrabold text-white">
-              apt<span className={appScreenMode === 'erp' ? 'text-violet-300' : 'text-blue-400'}>{appNameSuffix}</span>
+              apt<span className={appScreenMode === 'erp' ? 'text-violet-300' : appScreenMode === 'flyerp' ? 'text-amber-300' : 'text-blue-400'}>{appNameSuffix}</span>
             </span>
           </div>
 

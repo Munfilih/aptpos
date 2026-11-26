@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CalendarRange, Pencil, Printer, Receipt, RotateCcw, Search, Trash2 } from 'lucide-react';
 import type { PaperWidth, SalesReturnVoucher, StoreSettings } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
+import { AppDateInput } from './AppDateInput';
 import { matchesDateBounds, resolveDateBounds, type DateFilter } from '../utils/dateFilters';
 import {
   applyThermalPageSize,
@@ -42,11 +43,7 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
   const printAreaRef = useRef<HTMLDivElement>(null);
   const currency = isRtl ? 'ر.س ' : settings.currencySymbol || 'SAR ';
   const activeFormat: PaperWidth = settings.paperWidth || '80mm';
-  const templateSettings = settings.invoiceTemplates?.[activeFormat];
-  const invoiceMarginsMm = resolveInvoiceMarginsMm(
-    activeFormat,
-    templateSettings?.invoiceMarginsMm
-  );
+  const invoiceMarginsMm = resolveInvoiceMarginsMm(activeFormat);
   const hasActions = true;
 
   const handleConfirmDelete = async () => {
@@ -107,10 +104,10 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
   const hasActiveFilter = search.trim() !== '' || dateFilter !== 'ALL';
 
   const formatDate = (date: string) =>
-    new Date(date).toLocaleString(isRtl ? 'ar-SA' : 'en-US', {
-      month: 'short',
-      day: '2-digit',
+    new Date(date).toLocaleString(isRtl ? 'ar-SA' : 'en-GB', {
       year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
     });
@@ -192,13 +189,12 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
                   <label className="sr-only" htmlFor="return-history-date-from">
                     {isRtl ? 'من تاريخ' : 'From date'}
                   </label>
-                  <input
+                  <AppDateInput
                     id="return-history-date-from"
-                    type="date"
                     value={dateFrom}
-                    onChange={(event) => {
-                      setDateFrom(event.target.value);
-                      if (dateTo && event.target.value && dateTo < event.target.value) {
+                    onChange={(nextDate) => {
+                      setDateFrom(nextDate);
+                      if (dateTo && nextDate && dateTo < nextDate) {
                         setDateTo('');
                       }
                     }}
@@ -208,12 +204,11 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
                   <label className="sr-only" htmlFor="return-history-date-to">
                     {isRtl ? 'إلى تاريخ' : 'To date'}
                   </label>
-                  <input
+                  <AppDateInput
                     id="return-history-date-to"
-                    type="date"
                     min={dateFrom || undefined}
                     value={dateTo}
-                    onChange={(event) => setDateTo(event.target.value)}
+                    onChange={setDateTo}
                     aria-label={isRtl ? 'إلى تاريخ' : 'To date'}
                     className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-2 py-2 text-sm text-slate-700 focus:border-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-100 sm:w-36 sm:flex-none"
                   />

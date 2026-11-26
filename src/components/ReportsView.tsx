@@ -21,6 +21,7 @@ import type {
   StoreSettings,
 } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
+import { AppDateInput } from './AppDateInput';
 import {
   getInvoiceDateTime,
   matchesDateBounds,
@@ -29,6 +30,7 @@ import {
   type DateFilter,
 } from '../utils/dateFilters';
 import { getPaymentMethods } from '../utils/paymentMethods';
+import { getSaleAppliedPayment } from '../utils/saleBalances';
 import { createPrintTemplateJob, printTemplateJob } from '../printTemplates/render';
 import { resolvePrintTemplate } from '../printTemplates/catalog';
 import type { PrintDocumentData } from '../printTemplates/types';
@@ -192,7 +194,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     () =>
       [
         ...sales
-          .filter((sale) => sale.status === 'COMPLETED' && sale.paymentMethod === 'Cash')
+          .filter((sale) =>
+            sale.status === 'COMPLETED' &&
+            sale.paymentMethod === 'Cash' &&
+            getSaleAppliedPayment(sale) > 0
+          )
           .map((sale) => dateKeyFor(sale.invoiceDate || sale.createdAt)),
         ...returnVouchers
           .filter((voucher) => voucher.paymentMethod === 'Cash')
@@ -212,13 +218,17 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     const movements: CashMovement[] = [];
     for (const sale of completedSales) {
       if (sale.paymentMethod === 'Cash') {
+        const amountReceived = getSaleAppliedPayment(sale);
+        if (amountReceived <= 0) continue;
         movements.push({
           date: dateKeyFor(sale.invoiceDate || sale.createdAt),
           direction: 'IN',
           source: 'Cash sale',
-          description: `Cash sale ${sale.receiptNumber}`,
+          description: amountReceived < sale.total
+            ? `Partial cash payment ${sale.receiptNumber}`
+            : `Cash sale ${sale.receiptNumber}`,
           reference: sale.receiptNumber,
-          amount: sale.total,
+          amount: amountReceived,
           createdBy: sale.cashierName,
         });
       }
@@ -306,9 +316,12 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       const priorCashSales = sales
         .filter((sale) => {
           const date = dateKeyFor(sale.invoiceDate || sale.createdAt);
-          return sale.status === 'COMPLETED' && sale.paymentMethod === 'Cash' && inPriorPeriod(date);
+          return sale.status === 'COMPLETED' &&
+            sale.paymentMethod === 'Cash' &&
+            getSaleAppliedPayment(sale) > 0 &&
+            inPriorPeriod(date);
         })
-        .reduce((sum, sale) => sum + sale.total, 0);
+        .reduce((sum, sale) => sum + getSaleAppliedPayment(sale), 0);
       const priorCashRefunds = returnVouchers
         .filter((voucher) => {
           const date = dateKeyFor(voucher.createdAt);
@@ -638,8 +651,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   const formatPeriodDate = (dateKey: string) =>
     new Date(`${dateKey}T12:00:00`).toLocaleDateString(isRtl ? 'ar-SA' : 'en-GB', {
       year: 'numeric',
-      month: 'long',
-      day: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
     });
   const reportPeriodLabel = dateBounds.start && dateBounds.end
     ? dateBounds.start === dateBounds.end
@@ -876,8 +889,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       setExportingPdf(true);
       try {
         const format: PaperWidth = 'A4';
-        const profile = settings.printDocumentProfiles?.['saudi-vat-report']?.[format];
-        const template = resolvePrintTemplate('saudi-vat-report', format, profile?.templateId);
+        const template = resolvePrintTemplate('saudi-vat-report', format);
         const data: PrintDocumentData = {
           documentType: 'saudi-vat-report',
           title: isRtl ? 'ملخص ضريبة القيمة المضافة' : 'Saudi VAT Summary',
@@ -1088,12 +1100,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                   >
                     {isRtl ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
                   </button>
-                  <input
+                  <AppDateInput
                     id="reports-summary-day"
-                    type="date"
                     value={selectedDay}
-                    onChange={(event) => {
-                      if (event.target.value) setSelectedDay(event.target.value);
+                    onChange={(nextDate) => {
+                      if (nextDate) setSelectedDay(nextDate);
                     }}
                     className="min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
                   />
@@ -1128,23 +1139,21 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 {dateFilter === 'RANGE' && (
                   <>
                     <label className="sr-only" htmlFor="reports-date-from">From date</label>
-                    <input
+                    <AppDateInput
                       id="reports-date-from"
-                      type="date"
                       value={dateFrom}
-                      onChange={(event) => {
-                        setDateFrom(event.target.value);
-                        if (dateTo && event.target.value && dateTo < event.target.value) setDateTo('');
+                      onChange={(nextDate) => {
+                        setDateFrom(nextDate);
+                        if (dateTo && nextDate && dateTo < nextDate) setDateTo('');
                       }}
                       className="min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
                     />
                     <label className="sr-only" htmlFor="reports-date-to">To date</label>
-                    <input
+                    <AppDateInput
                       id="reports-date-to"
-                      type="date"
                       min={dateFrom || undefined}
                       value={dateTo}
-                      onChange={(event) => setDateTo(event.target.value)}
+                      onChange={setDateTo}
                       className="min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
                     />
                   </>
@@ -1266,7 +1275,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               </div>
               <div className="space-y-1 text-right text-xs text-slate-600">
                 <p>
-                  {isRtl ? 'تم الإنشاء' : 'Generated'}: {new Date().toLocaleString()}
+                  {isRtl ? 'تم الإنشاء' : 'Generated'}: {new Date().toLocaleString(isRtl ? 'ar-SA' : 'en-GB')}
                 </p>
                 {settings.phone && <p>{settings.phone}</p>}
                 {settings.taxId && <p>{isRtl ? 'الرقم الضريبي' : 'Tax ID'}: {settings.taxId}</p>}
@@ -1486,11 +1495,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                     <div className="grid gap-3 sm:grid-cols-2">
                       <label className="space-y-1 text-xs font-medium text-slate-600">
                         Date
-                        <input
+                        <AppDateInput
                           required
-                          type="date"
                           value={entryDate}
-                          onChange={(event) => setEntryDate(event.target.value)}
+                          onChange={setEntryDate}
                           className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                         />
                       </label>

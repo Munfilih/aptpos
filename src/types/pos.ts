@@ -6,14 +6,14 @@ export const APP_VERSIONS = ['Soft', 'Silver', 'Standard'] as const;
 export type AppVersion = (typeof APP_VERSIONS)[number];
 
 export type SettingsSectionId =
-  | 'sales'
-  | 'screen'
-  | 'store'
-  | 'printer'
+  | 'general'
+  | 'business'
+  | 'billing'
+  | 'customers'
+  | 'payment'
   | 'users'
   | 'database'
   | 'registration'
-  | 'version'
   | 'updates';
 
 export const APP_COMPONENTS = [
@@ -73,7 +73,7 @@ export type UserRole = 'admin' | 'cashier' | 'custom';
 
 export type TaxType = 'inclusive' | 'exclusive';
 
-export type AppScreenMode = 'pos' | 'rpos' | 'erp';
+export type AppScreenMode = 'pos' | 'rpos' | 'erp' | 'flyerp';
 
 export type PosScreenLayout = 'pos' | 'rpos';
 
@@ -186,6 +186,7 @@ export interface Product {
   taxRate?: number; // Tax percentage (e.g. 15%)
   imageData?: string;
   imagePath?: string;
+  requiresItinerary?: boolean;
   stock: number;
   reorderLevel: number;
   unit: string;
@@ -229,6 +230,7 @@ export interface SaleItem {
 
 export interface Sale {
   id: number;
+  appScreenMode?: AppScreenMode;
   receiptNumber: string;
   kotNumber?: string;
   createdAt: string;
@@ -509,6 +511,7 @@ export interface StoreSettings {
   storeName: string;
   storeNameAr?: string; // اسم المتجر / الشركة بالعربية
   storeLogoDataUrl?: string;
+  launcherBackgroundDataUrl?: string;
   crNumber?: string; // السجل التجاري (Commercial Registration)
   address: string;
   buildingNo?: string; // رقم المبنى (Building No.)
@@ -550,7 +553,7 @@ export interface StoreSettings {
   kotPrinter?: string;
   enableKot?: boolean;
 
-  // Multi-Language & Invoice Printing Template Customization
+  // Application language
   appLanguage?: 'en' | 'ar';
   multiLanguageInvoices?: boolean;
   defaultPrinter?: string;
@@ -565,6 +568,7 @@ export interface StoreSettings {
   invoiceShowReceiptBarcode?: boolean;
   invoiceShowFooter?: boolean;
   invoiceShowQrCode?: boolean;
+  invoiceQrCodeSizeMm?: number;
   invoiceTemplates?: Partial<Record<PaperWidth, InvoiceTemplateSettings>>;
   printDocumentFormats?: Partial<Record<PrintDocumentType, PaperWidth>>;
   printDocumentProfiles?: Partial<

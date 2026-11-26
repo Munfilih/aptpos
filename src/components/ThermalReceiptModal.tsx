@@ -40,7 +40,6 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
     'sales-invoice',
     settings.paperWidth || '80mm'
   );
-  const templateSettings = settings.invoiceTemplates?.[activeFormat];
   const saleTaxType = sale.taxType || settings.taxType;
   const printedTaxBreakdown = useMemo(
     () => getPrintedSalesTaxBreakdown(sale, settings.taxType),
@@ -128,9 +127,9 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const primaryActionBtnRef = useRef<HTMLButtonElement>(null);
 
   const c = settings.currencySymbol || 'SAR';
-  const formattedDate = getInvoiceDateTime(sale.invoiceDate, sale.createdAt).toLocaleString('en-US', {
+  const formattedDate = getInvoiceDateTime(sale.invoiceDate, sale.createdAt).toLocaleString('en-GB', {
     year: 'numeric',
-    month: 'short',
+    month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
@@ -211,17 +210,16 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   }, [onClose, handlePrintAndClose, showPrintPreview]);
 
   // Visibility settings helpers with defaults
-  const showNameEn = (templateSettings?.invoiceShowProductName ?? settings.invoiceShowProductName) !== false;
-  const showNameAr = (templateSettings?.invoiceShowProductNameAr ?? settings.invoiceShowProductNameAr) !== false;
-  const showBarcode = (templateSettings?.invoiceShowBarcode ?? settings.invoiceShowBarcode) === true;
-  const showCustomer = (templateSettings?.invoiceShowCustomerInfo ?? settings.invoiceShowCustomerInfo) !== false;
-  const showCashier = (templateSettings?.invoiceShowCashierName ?? settings.invoiceShowCashierName) !== false;
-  const showTax = (templateSettings?.invoiceShowTaxDetails ?? settings.invoiceShowTaxDetails) !== false;
-  const showAddress = (templateSettings?.invoiceShowStoreAddress ?? settings.invoiceShowStoreAddress) !== false;
-  const showStoreLogo = (templateSettings?.invoiceShowStoreLogo ?? settings.invoiceShowStoreLogo) !== false;
-  const showFooter = (templateSettings?.invoiceShowFooter ?? settings.invoiceShowFooter) !== false;
-  const showQr = (templateSettings?.invoiceShowQrCode ?? settings.invoiceShowQrCode) !== false;
-  const invoiceMarginsMm = resolveInvoiceMarginsMm(activeFormat, templateSettings?.invoiceMarginsMm);
+  const showNameEn = true;
+  const showNameAr = true;
+  const showBarcode = false;
+  const showCustomer = true;
+  const showCashier = true;
+  const showTax = true;
+  const showAddress = true;
+  const showStoreLogo = true;
+  const showQr = true;
+  const invoiceMarginsMm = resolveInvoiceMarginsMm(activeFormat);
   const a4ItemPages = Array.from(
     { length: Math.max(1, Math.ceil(sale.items.length / A4_ITEMS_PER_PAGE)) },
     (_, pageIndex) => sale.items.slice(
@@ -249,9 +247,9 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const netAfterReturns = Math.max(0, sale.total - totalRefunded);
   const netTaxAfterReturns = Math.max(0, printedTaxBreakdown.taxAmount - taxRefunded);
   const formatReturnDate = (date: string) =>
-    new Date(date).toLocaleString(language === 'ar' ? 'ar-SA' : 'en-US', {
+    new Date(date).toLocaleString(language === 'ar' ? 'ar-SA' : 'en-GB', {
       year: 'numeric',
-      month: 'short',
+      month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
@@ -719,14 +717,6 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
 
               {/* Footer Note */}
               <footer className="a4-invoice-footer">
-                {showFooter && (
-                  <div className="border-t border-slate-200 pt-2 text-center space-y-0.5 text-slate-500 text-[10px]">
-                    <div>{settings.receiptFooter}</div>
-                    {settings.receiptFooterAr && (
-                      <div className="font-arabic" dir="rtl">{settings.receiptFooterAr}</div>
-                    )}
-                  </div>
-                )}
                 <div className="text-right text-[9px] text-slate-500">
                   Page {pageIndex + 1} of {a4ItemPages.length}
                 </div>
@@ -1041,18 +1031,6 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                   </div>
                 )}
 
-                {showFooter && (
-                  <>
-                    <p className="text-[10px] sm:text-[11px] text-slate-700 leading-snug pt-1 break-words">
-                      {settings.receiptFooter}
-                    </p>
-                    {settings.receiptFooterAr && (
-                      <p className="text-[10px] sm:text-[11px] text-slate-700 leading-snug break-words" dir="rtl">
-                        {settings.receiptFooterAr}
-                      </p>
-                    )}
-                  </>
-                )}
               </div>
             </div>
           )}

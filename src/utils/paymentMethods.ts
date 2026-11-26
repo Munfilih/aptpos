@@ -1,6 +1,6 @@
 import type { PaymentMethod } from '../types/pos';
 
-export const BUILT_IN_PAYMENT_METHODS = ['Cash', 'Card', 'Split'] as const;
+export const BUILT_IN_PAYMENT_METHODS = ['Cash', 'Card', 'Bank Transfer', 'Split'] as const;
 
 export function getPaymentMethods(configuredMethods?: readonly string[]): PaymentMethod[] {
   const methods: PaymentMethod[] = [];

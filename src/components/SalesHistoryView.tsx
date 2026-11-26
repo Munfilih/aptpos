@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import type { PaymentMethod, Sale, SalesReturnVoucher, StoreSettings } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
+import { AppDateInput } from './AppDateInput';
 import {
   getInvoiceDateTime,
   matchesDateBounds,
@@ -105,17 +106,18 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
   }, [sales, statusFilter, search, dateBounds]);
 
   const formatSaleDate = (sale: Sale) =>
-    getInvoiceDateTime(sale.invoiceDate, sale.createdAt).toLocaleString(isRtl ? 'ar-SA' : 'en-US', {
-      month: 'short',
+    getInvoiceDateTime(sale.invoiceDate, sale.createdAt).toLocaleString(isRtl ? 'ar-SA' : 'en-GB', {
+      year: 'numeric',
+      month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
     });
 
   const formatReturnVoucherDate = (date: string) =>
-    new Date(date).toLocaleString(isRtl ? 'ar-SA' : 'en-US', {
+    new Date(date).toLocaleString(isRtl ? 'ar-SA' : 'en-GB', {
       year: 'numeric',
-      month: 'short',
+      month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
@@ -136,8 +138,12 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
         type="button"
         onClick={() => onReprintSale(sale)}
         className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 lg:h-8 lg:w-8"
-        title={isRtl ? 'إعادة طباعة الوصل' : 'Reprint receipt'}
-        aria-label={isRtl ? 'إعادة طباعة الوصل' : 'Reprint receipt'}
+        title={sale.appScreenMode === 'flyerp'
+          ? isRtl ? 'طباعة فاتورة السفر' : 'Print travel invoice'
+          : isRtl ? 'إعادة طباعة الوصل' : 'Reprint receipt'}
+        aria-label={sale.appScreenMode === 'flyerp'
+          ? isRtl ? 'طباعة فاتورة السفر' : 'Print travel invoice'
+          : isRtl ? 'إعادة طباعة الوصل' : 'Reprint receipt'}
       >
         <Printer className="h-3.5 w-3.5 lg:h-4 lg:w-4" />
       </button>
@@ -145,11 +151,12 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
         <button
           type="button"
           onClick={() => onEditInvoice(sale)}
-          className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors hover:border-amber-300 hover:bg-amber-50 hover:text-amber-700 lg:h-8 lg:w-8"
+          className="inline-flex h-7 min-w-0 items-center justify-center gap-0.5 whitespace-nowrap rounded-lg border border-amber-200 bg-amber-50 px-1 text-[9px] font-semibold text-amber-800 transition-colors hover:border-amber-300 hover:bg-amber-100 hover:text-amber-900 lg:h-8 lg:gap-1 lg:px-2 lg:text-xs"
           title={isRtl ? 'تعديل الفاتورة' : 'Edit invoice'}
           aria-label={isRtl ? 'تعديل الفاتورة' : 'Edit invoice'}
         >
-          <Edit2 className="h-3.5 w-3.5 lg:h-4 lg:w-4" />
+          <Edit2 className="h-3 w-3 shrink-0 lg:h-3.5 lg:w-3.5" />
+          <span>{isRtl ? 'تعديل' : 'Edit'}</span>
         </button>
       )}
       {onOpenReturnRegister && sale.status === 'COMPLETED' && sale.returnStatus !== 'FULL' && (
@@ -284,12 +291,10 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
                   <label className="sr-only" htmlFor="sales-date-from">
                     {isRtl ? 'من تاريخ' : 'From date'}
                   </label>
-                  <input
+                  <AppDateInput
                     id="sales-date-from"
-                    type="date"
                     value={dateFrom}
-                    onChange={(e) => {
-                      const nextDate = e.target.value;
+                    onChange={(nextDate) => {
                       setDateFrom(nextDate);
                       if (dateTo && nextDate && dateTo < nextDate) setDateTo('');
                     }}
@@ -299,12 +304,11 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
                   <label className="sr-only" htmlFor="sales-date-to">
                     {isRtl ? 'إلى تاريخ' : 'To date'}
                   </label>
-                  <input
+                  <AppDateInput
                     id="sales-date-to"
-                    type="date"
                     value={dateTo}
                     min={dateFrom || undefined}
-                    onChange={(e) => setDateTo(e.target.value)}
+                    onChange={setDateTo}
                     aria-label={isRtl ? 'إلى تاريخ' : 'To date'}
                     className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-2 py-2 text-sm text-slate-700 focus:border-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-100 sm:w-36 sm:flex-none"
                   />

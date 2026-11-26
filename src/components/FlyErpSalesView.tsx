@@ -1,0 +1,1611 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { History, Plus, Save, Ticket, Trash2 } from 'lucide-react';
+import type {
+  Customer,
+  PaymentMethod,
+  Product,
+  Sale,
+  StoreSettings,
+} from '../types/pos';
+import { useLanguage } from '../i18n/LanguageContext';
+import { calculateSalesTax } from '../utils/salesTax';
+import {
+  isFlyErpServiceCategory,
+  parseFlyErpServiceDetails,
+} from '../utils/flyErpServices';
+import { AppDateInput } from './AppDateInput';
+import { CustomerFormModal } from './CustomerFormModal';
+import { ProductImage } from './ProductImage';
+
+const getTodayDate = () => {
+  const date = new Date();
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-');
+};
+
+interface FlyErpSalesViewProps {
+  products: Product[];
+  customers: Customer[];
+  sales: Sale[];
+  settings: StoreSettings;
+  editingSale?: Sale | null;
+  onSaleCompleted: (sale: Sale, queuedOffline: boolean) => void;
+  onCancelEdit?: () => void;
+  onCustomerCreated: (customer: Customer) => void;
+  onOpenServiceMaster?: () => void;
+  onOpenSalesHistory?: () => void;
+  onEditService?: (product: Product) => void;
+}
+
+interface TravelSaleRow {
+  id: number;
+  productId: number | null;
+  isEditing: boolean;
+  serviceSearch: string;
+  unitPrice: string;
+  details: string;
+  passengerName: string;
+  passportNumber: string;
+  bookingReference: string;
+  flightNumber: string;
+  origin: string;
+  destination: string;
+  tripType: 'one-way' | 'round-trip';
+  departureDate: string;
+  returnFlightNumber: string;
+  returnDate: string;
+}
+
+type ServiceField =
+  | 'details'
+  | 'passengerName'
+  | 'passportNumber'
+  | 'bookingReference'
+  | 'flightNumber'
+  | 'origin'
+  | 'destination'
+  | 'tripType'
+  | 'departureDate'
+  | 'returnFlightNumber'
+  | 'returnDate'
+  | 'rate';
+
+type ServiceFieldElement = HTMLInputElement | HTMLSelectElement;
+
+const createEmptyRow = (id: number): TravelSaleRow => ({
+  id,
+  productId: null,
+  isEditing: true,
+  serviceSearch: '',
+  unitPrice: '',
+  details: '',
+  passengerName: '',
+  passportNumber: '',
+  bookingReference: '',
+  flightNumber: '',
+  origin: '',
+  destination: '',
+  tripType: 'one-way',
+  departureDate: '',
+  returnFlightNumber: '',
+  returnDate: '',
+});
+
+export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
+  products,
+  customers,
+  sales = [],
+  settings,
+  editingSale = null,
+  onSaleCompleted,
+  onCancelEdit,
+  onCustomerCreated,
+  onOpenServiceMaster,
+  onOpenSalesHistory,
+  onEditService,
+}) => {
+  const { isRtl } = useLanguage();
+  const text = (english: string, arabic: string) => isRtl ? arabic : english;
+  const currency = settings.currencySymbol || 'SAR';
+  const decimals = settings.decimalPoints ?? 2;
+  const [customerId, setCustomerId] = useState<number | null>(null);
+  const [customerModalOpen, setCustomerModalOpen] = useState(false);
+  const [invoiceDate, setInvoiceDate] = useState(getTodayDate);
+  const [discountType, setDiscountType] = useState<'fixed' | 'percent'>('fixed');
+  const [discountValue, setDiscountValue] = useState('0');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Cash');
+  const [cashTendered, setCashTendered] = useState<string | null>(null);
+  const [rows, setRows] = useState<TravelSaleRow[]>([]);
+  const [nextRowId, setNextRowId] = useState(1);
+  const [serviceModalRowId, setServiceModalRowId] = useState<number | null>(null);
+  const [serviceModalIsNew, setServiceModalIsNew] = useState(false);
+  const [serviceModalOriginalRow, setServiceModalOriginalRow] = useState<TravelSaleRow | null>(null);
+  const [serviceModalError, setServiceModalError] = useState<string | null>(null);
+  const [servicePickerRowId, setServicePickerRowId] = useState<number | null>(null);
+  const [serviceDropdownPosition, setServiceDropdownPosition] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    maxHeight: number;
+  } | null>(null);
+  const [activeServiceSuggestionIndex, setActiveServiceSuggestionIndex] = useState(0);
+  const serviceInputRef = useRef<HTMLInputElement | null>(null);
+  const serviceSearchInputRefs = useRef(new Map<number, HTMLInputElement>());
+  const serviceCardButtonRefs = useRef(new Map<number, HTMLButtonElement>());
+  const serviceFieldRefs = useRef(new Map<number, Partial<Record<ServiceField, ServiceFieldElement>>>());
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveConfirmationOpen, setSaveConfirmationOpen] = useState(false);
+
+  const customer = customers.find((entry) => entry.id === customerId);
+  const invoiceTaxType = settings.taxType;
+  const methods = useMemo(
+    () => [...new Set([
+      'Cash',
+      ...(settings.paymentMethods || []).filter((method) => method.toUpperCase() !== 'CREDIT'),
+      ...(editingSale ? [editingSale.paymentMethod] : []),
+      'Credit',
+    ])],
+    [editingSale, settings.paymentMethods]
+  );
+  const travelServices = useMemo(
+    () => products.filter((product) => isFlyErpServiceCategory(product.category)),
+    [products]
+  );
+  const frequentServices = useMemo(() => {
+    const serviceIds = new Set(travelServices.map((service) => service.id));
+    const usageCounts = new Map<number, number>();
+    sales
+      .filter((sale) => sale.status === 'COMPLETED')
+      .forEach((sale) => {
+        const soldServiceIds = new Set(
+          sale.items
+            .filter((item) => serviceIds.has(item.productId))
+            .map((item) => item.productId)
+        );
+        soldServiceIds.forEach((serviceId) => {
+          usageCounts.set(serviceId, (usageCounts.get(serviceId) || 0) + 1);
+        });
+      });
+    return [...travelServices]
+      .sort((left, right) => {
+        const usageDifference =
+          (usageCounts.get(right.id) || 0) - (usageCounts.get(left.id) || 0);
+        if (usageDifference !== 0) return usageDifference;
+        return (isRtl ? left.nameAr || left.name : left.name)
+          .localeCompare(isRtl ? right.nameAr || right.name : right.name, undefined, {
+            sensitivity: 'base',
+          });
+      })
+      .slice(0, 6);
+  }, [isRtl, sales, travelServices]);
+  const serviceLabel = (product: Product) =>
+    isRtl ? product.nameAr || product.name : product.name;
+  useEffect(() => {
+    if (!editingSale) return;
+
+    setCustomerId(editingSale.customerId ?? null);
+    setInvoiceDate(editingSale.invoiceDate || editingSale.createdAt.slice(0, 10));
+    setDiscountType(editingSale.discountType);
+    setDiscountValue(String(editingSale.discountValue));
+    setPaymentMethod(editingSale.paymentMethod);
+    setCashTendered(
+      editingSale.paymentMethod === 'Cash'
+        ? String(editingSale.amountTendered)
+        : null
+    );
+    const restoredRows = editingSale.items.map((item, index): TravelSaleRow => {
+      const details = parseFlyErpServiceDetails(item.description || '');
+      const tripType = details.values.tripType?.toLocaleLowerCase() || '';
+      return {
+        id: index + 1,
+        productId: item.productId,
+        isEditing: false,
+        serviceSearch: item.productName,
+        unitPrice: String(item.unitPrice),
+        details: details.notes.join('\n'),
+        passengerName: details.values.passenger || '',
+        passportNumber: details.values.passport || '',
+        bookingReference: details.values.pnr || '',
+        flightNumber: details.values.flight || '',
+        origin: details.values.origin || '',
+        destination: details.values.destination || '',
+        tripType: tripType.includes('round trip') || tripType.includes('ذهاب وعودة') ||
+          Boolean(details.values.returnFlight || details.values.returnDate)
+          ? 'round-trip'
+          : 'one-way',
+        departureDate: details.values.travelDate || '',
+        returnFlightNumber: details.values.returnFlight || '',
+        returnDate: details.values.returnDate || '',
+      };
+    });
+    setRows(restoredRows);
+    setNextRowId(restoredRows.length + 1);
+    setServiceModalRowId(null);
+    setServiceModalIsNew(false);
+    setServiceModalOriginalRow(null);
+    setServicePickerRowId(null);
+    setServiceDropdownPosition(null);
+    setError(null);
+  }, [editingSale]);
+
+  const getRowServiceLabel = (row: TravelSaleRow) => {
+    if (row.productId === null) return row.serviceSearch;
+    const product = products.find((entry) => entry.id === row.productId);
+    return product ? serviceLabel(product) : row.serviceSearch;
+  };
+  const getServiceSuggestions = (query: string) => {
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    if (!normalizedQuery) return [];
+    return travelServices.filter((service) => {
+      const searchableText = [
+        service.name,
+        service.nameAr,
+        service.sku,
+        service.barcode,
+        service.category,
+        service.unit,
+      ].filter(Boolean).join(' ').toLocaleLowerCase();
+      return !normalizedQuery || searchableText.includes(normalizedQuery);
+    });
+  };
+  const getServiceDropdownPosition = (input: HTMLInputElement) => {
+    const rect = input.getBoundingClientRect();
+    const width = Math.min(rect.width, window.innerWidth - 16);
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    const openAbove = spaceBelow < 160 && rect.top > spaceBelow;
+    const maxHeight = Math.max(96, Math.min(256, openAbove ? rect.top - 12 : spaceBelow));
+    const top = openAbove
+      ? Math.max(8, rect.top - maxHeight - 4)
+      : Math.min(window.innerHeight - maxHeight - 8, rect.bottom + 4);
+    return { top, left, width, maxHeight };
+  };
+  const activeServiceRow = rows.find((row) => row.id === servicePickerRowId);
+  const serviceModalRow = rows.find((row) => row.id === serviceModalRowId);
+  const activeServiceOptions = activeServiceRow
+    ? getServiceSuggestions(activeServiceRow.serviceSearch)
+    : [];
+  const rowDetails = useMemo(
+    () => rows.map((row) => {
+      const product = products.find((entry) => entry.id === row.productId);
+      const unitPrice = Number(row.unitPrice);
+      const valid = Boolean(product) &&
+        row.unitPrice.trim() !== '' && Number.isFinite(unitPrice) && unitPrice >= 0;
+      return {
+        product,
+        amount: valid ? Number(unitPrice.toFixed(2)) : 0,
+        taxRate: product?.taxRate ?? settings.taxRate,
+      };
+    }),
+    [products, rows, settings.taxRate]
+  );
+  const rowEntries = rows.map((row, index) => ({ row, index }));
+  const displayedRows = [
+    ...rowEntries.filter(({ row }) => row.isEditing),
+    ...rowEntries.filter(({ row }) => !row.isEditing),
+  ];
+  const totals = useMemo(() => {
+    const gross = rowDetails.reduce((sum, item) => sum + item.amount, 0);
+    const discount = Math.max(0, Number(discountValue) || 0);
+    const discountAmount = discountType === 'percent'
+      ? Number((gross * Math.min(100, discount) / 100).toFixed(2))
+      : Number(Math.min(gross, discount).toFixed(2));
+    const tax = calculateSalesTax(
+      rowDetails.flatMap((item) => item.product
+        ? [{ amount: item.amount, taxRate: item.taxRate }]
+        : []),
+      discountAmount,
+      invoiceTaxType
+    );
+    const total = settings.roundTotalToFiveCents
+      ? Number((Math.round(tax.total * 20) / 20).toFixed(2))
+      : tax.total;
+    return {
+      subtotal: tax.subtotal,
+      taxAmount: tax.taxAmount,
+      discountAmount,
+      total,
+    };
+  }, [
+    discountType,
+    discountValue,
+    invoiceTaxType,
+    rowDetails,
+    settings.roundTotalToFiveCents,
+  ]);
+  const cashReceivedAmount = cashTendered === null
+    ? totals.total
+    : cashTendered.trim() === ''
+      ? Number.NaN
+      : Number(cashTendered);
+  const amountPaid = paymentMethod.toUpperCase() === 'CREDIT'
+    ? 0
+    : paymentMethod === 'Cash'
+      ? Number.isFinite(cashReceivedAmount)
+        ? Math.min(totals.total, Math.max(0, cashReceivedAmount))
+        : 0
+      : totals.total;
+  const balanceDue = Math.max(0, Number((totals.total - amountPaid).toFixed(2)));
+  const paymentStatus = balanceDue > 0
+    ? amountPaid > 0 ? 'Partially Paid' : 'Unpaid'
+    : 'Paid';
+
+  const updateRow = (rowId: number, patch: Partial<TravelSaleRow>) => {
+    setServiceModalError(null);
+    setRows((current) => current.map((row) =>
+      row.id === rowId ? { ...row, ...patch } : row
+    ));
+  };
+
+  const setServiceFieldRef = (
+    rowId: number,
+    field: ServiceField,
+    element: ServiceFieldElement | null
+  ) => {
+    const fields = serviceFieldRefs.current.get(rowId) || {};
+    if (element) fields[field] = element;
+    else delete fields[field];
+    if (Object.keys(fields).length) serviceFieldRefs.current.set(rowId, fields);
+    else serviceFieldRefs.current.delete(rowId);
+  };
+
+  const focusNextServiceField = (row: TravelSaleRow, currentField: ServiceField) => {
+    const product = products.find((entry) => entry.id === row.productId);
+    const fields: ServiceField[] = product?.requiresItinerary
+      ? [
+          'details',
+          'passengerName',
+          'passportNumber',
+          'bookingReference',
+          'flightNumber',
+          'origin',
+          'destination',
+          'tripType',
+          'departureDate',
+          ...(row.tripType === 'round-trip' ? ['returnFlightNumber', 'returnDate'] as const : []),
+          'rate',
+        ]
+      : ['details', 'rate'];
+    const nextField = fields[fields.indexOf(currentField) + 1];
+    if (nextField) {
+      window.requestAnimationFrame(() => {
+        serviceFieldRefs.current.get(row.id)?.[nextField]?.focus();
+      });
+    }
+  };
+
+  const addNewServiceRow = () => {
+    const rowId = nextRowId;
+    setRows((current) => [...current, createEmptyRow(rowId)]);
+    setNextRowId((current) => current + 1);
+    setServiceModalRowId(rowId);
+    setServiceModalIsNew(true);
+    setServiceModalOriginalRow(null);
+    setServiceModalError(null);
+    window.requestAnimationFrame(() => serviceSearchInputRefs.current.get(rowId)?.focus());
+  };
+
+  const selectService = (row: TravelSaleRow, service: Product) => {
+    updateRow(row.id, {
+      serviceSearch: serviceLabel(service),
+      productId: service.id,
+      unitPrice: service.retailPrice > 0 ? String(service.retailPrice) : '',
+      ...(row.productId === service.id ? {} : {
+        passengerName: '',
+        passportNumber: '',
+        bookingReference: '',
+        flightNumber: '',
+        origin: '',
+        destination: '',
+        tripType: 'one-way',
+        departureDate: '',
+        returnFlightNumber: '',
+        returnDate: '',
+      }),
+    });
+    setServicePickerRowId(null);
+    setServiceDropdownPosition(null);
+    window.requestAnimationFrame(() => {
+      serviceFieldRefs.current.get(row.id)?.details?.focus();
+    });
+  };
+
+  const completeServiceRow = (rowId: number) => {
+    setRows((current) => current.map((row) =>
+      row.id === rowId ? { ...row, isEditing: false } : row
+    ));
+    setServiceModalRowId(null);
+    setServiceModalIsNew(false);
+    setServiceModalOriginalRow(null);
+    setServiceModalError(null);
+    setServicePickerRowId(null);
+    setServiceDropdownPosition(null);
+    window.requestAnimationFrame(() => serviceCardButtonRefs.current.get(rowId)?.focus());
+  };
+
+  const editServiceRow = (row: TravelSaleRow) => {
+    updateRow(row.id, { isEditing: true });
+    setServiceModalRowId(row.id);
+    setServiceModalIsNew(false);
+    setServiceModalOriginalRow(row);
+    setServiceModalError(null);
+    window.requestAnimationFrame(() => {
+      serviceFieldRefs.current.get(row.id)?.details?.focus();
+    });
+  };
+
+  const removeServiceRow = (rowId: number) => {
+    setRows((current) => current.filter((row) => row.id !== rowId));
+  };
+
+  const closeServiceModal = () => {
+    if (serviceModalRowId !== null) {
+      if (serviceModalIsNew) {
+        removeServiceRow(serviceModalRowId);
+      } else if (serviceModalOriginalRow) {
+        setRows((current) => current.map((row) =>
+          row.id === serviceModalRowId
+            ? { ...serviceModalOriginalRow, isEditing: false }
+            : row
+        ));
+      } else {
+        setRows((current) => current.map((row) =>
+          row.id === serviceModalRowId ? { ...row, isEditing: false } : row
+        ));
+      }
+    }
+    setServiceModalRowId(null);
+    setServiceModalIsNew(false);
+    setServiceModalOriginalRow(null);
+    setServiceModalError(null);
+    setServicePickerRowId(null);
+    setServiceDropdownPosition(null);
+  };
+
+  const saveServiceModal = () => {
+    const row = rows.find((entry) => entry.id === serviceModalRowId);
+    if (!row || row.productId === null) {
+      setServiceModalError(text('Select a service first.', 'اختر خدمة أولاً.'));
+      return;
+    }
+    const unitPrice = Number(row.unitPrice);
+    if (
+      row.unitPrice.trim() === '' ||
+      !Number.isFinite(unitPrice) ||
+      unitPrice < 0
+    ) {
+      setServiceModalError(text(
+        'Enter a valid rate.',
+        'أدخل سعراً صحيحاً.'
+      ));
+      return;
+    }
+    completeServiceRow(row.id);
+  };
+
+  const getRowDescription = (row: TravelSaleRow, separator = '\n') => {
+    const details = row.details.trim() ? [row.details.trim()] : [];
+    const product = products.find((entry) => entry.id === row.productId);
+    const itinerary = product?.requiresItinerary
+      ? [
+          [text('Passenger', 'المسافر'), row.passengerName],
+          [text('Passport / ID', 'رقم الجواز / الهوية'), row.passportNumber],
+          [text('Booking reference (PNR)', 'مرجع الحجز (PNR)'), row.bookingReference],
+          [text('Flight', 'رقم الرحلة'), row.flightNumber],
+          [text('From', 'من'), row.origin],
+          [text('To', 'إلى'), row.destination],
+          [text('Trip type', 'نوع الرحلة'), text(
+            row.tripType === 'round-trip' ? 'Round trip' : 'One way',
+            row.tripType === 'round-trip' ? 'ذهاب وعودة' : 'اتجاه واحد'
+          )],
+          [text('Departure date', 'تاريخ المغادرة'), row.departureDate],
+          ...(row.tripType === 'round-trip'
+            ? [
+                [text('Return flight', 'رحلة العودة'), row.returnFlightNumber],
+                [text('Return date', 'تاريخ العودة'), row.returnDate],
+              ]
+            : []),
+        ]
+      : [];
+    const itineraryDetails = itinerary
+      .filter(([, value]) => value.trim())
+      .map(([label, value]) => `${label}: ${value.trim()}`);
+    return [...details, ...itineraryDetails].join(separator);
+  };
+
+  const addQuickService = (service: Product) => {
+    const rowId = nextRowId;
+    const selectedRow = {
+      ...createEmptyRow(rowId),
+      productId: service.id,
+      serviceSearch: serviceLabel(service),
+      unitPrice: service.retailPrice > 0 ? String(service.retailPrice) : '',
+    };
+    setRows((current) => [...current, selectedRow]);
+    setNextRowId((current) => current + 1);
+    setServiceModalRowId(rowId);
+    setServiceModalIsNew(true);
+    setServiceModalOriginalRow(null);
+    setServiceModalError(null);
+    window.requestAnimationFrame(() => serviceFieldRefs.current.get(rowId)?.details?.focus());
+  };
+
+  useEffect(() => {
+    if (servicePickerRowId === null) return;
+    const repositionDropdown = () => {
+      const input = serviceInputRef.current;
+      if (!input?.isConnected) {
+        setServicePickerRowId(null);
+        setServiceDropdownPosition(null);
+        return;
+      }
+      setServiceDropdownPosition(getServiceDropdownPosition(input));
+    };
+    window.addEventListener('resize', repositionDropdown);
+    window.addEventListener('scroll', repositionDropdown, true);
+    return () => {
+      window.removeEventListener('resize', repositionDropdown);
+      window.removeEventListener('scroll', repositionDropdown, true);
+    };
+  }, [servicePickerRowId]);
+
+  const clearDraft = () => {
+    setCustomerId(null);
+    setInvoiceDate(getTodayDate());
+    setDiscountType('fixed');
+    setDiscountValue('0');
+    setPaymentMethod('Cash');
+    setCashTendered(null);
+    setRows([]);
+    setServiceModalRowId(null);
+    setServiceModalIsNew(false);
+    setServiceModalOriginalRow(null);
+    setServicePickerRowId(null);
+    setServiceDropdownPosition(null);
+    setError(null);
+    setServiceModalError(null);
+  };
+
+  const cancelEdit = () => {
+    clearDraft();
+    onCancelEdit?.();
+  };
+
+  const closeCustomerModal = () => {
+    setCustomerModalOpen(false);
+  };
+
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(null);
+    const billableRows = rows.filter((row) => row.productId !== null);
+    if (!billableRows.length) {
+      setError(text('Select at least one travel service.', 'اختر خدمة سفر واحدة على الأقل.'));
+      return;
+    }
+    if (
+      paymentMethod === 'Cash' &&
+      (!Number.isFinite(cashReceivedAmount) || cashReceivedAmount < 0)
+    ) {
+      setError(text('Enter a valid cash received amount.', 'أدخل مبلغاً نقدياً مستلماً صحيحاً.'));
+      return;
+    }
+    if (
+      (paymentMethod.toUpperCase() === 'CREDIT' || balanceDue > 0) &&
+      !customer
+    ) {
+      setError(text(
+        'Select a customer for an invoice with an outstanding balance.',
+        'اختر عميلاً للفاتورة التي تحتوي على رصيد مستحق.'
+      ));
+      return;
+    }
+    if (billableRows.some((row) =>
+      row.unitPrice.trim() === '' ||
+      !Number.isFinite(Number(row.unitPrice)) ||
+      Number(row.unitPrice) < 0
+    )) {
+      setError(text('Check the rate for each service.', 'تحقق من سعر كل خدمة.'));
+      return;
+    }
+
+    setSaveConfirmationOpen(true);
+  };
+
+  const handleConfirmSave = async () => {
+    if (saving) return;
+    const billableRows = rows.filter((row) => row.productId !== null);
+    setSaving(true);
+    try {
+      const response = await fetch(
+        editingSale ? `/api/sales/${editingSale.id}/invoice` : '/api/sales',
+        {
+          method: editingSale ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            appScreenMode: 'flyerp',
+            customerId: customer?.id ?? null,
+            customerName: customer?.name || settings.defaultCustomer,
+            ...(settings.allowInvoiceDateEdit ? { invoiceDate } : {}),
+            discountType,
+            discountValue: Math.max(0, Number(discountValue) || 0),
+            paymentMethod,
+            amountTendered: paymentMethod.toUpperCase() === 'CREDIT'
+              ? 0
+              : paymentMethod === 'Cash'
+                ? cashReceivedAmount
+                : totals.total,
+            items: billableRows.map((row) => ({
+              productId: row.productId,
+              quantity: 1,
+              unitPrice: Number(row.unitPrice),
+              description: getRowDescription(row),
+            })),
+          }),
+        }
+      );
+      const payload: unknown = await response.json();
+      if (!response.ok) {
+        const message = typeof payload === 'object' && payload !== null && 'error' in payload &&
+          typeof payload.error === 'string'
+          ? payload.error
+          : text('Could not save this travel invoice.', 'تعذر حفظ فاتورة السفر.');
+        throw new Error(message);
+      }
+      if (
+        typeof payload !== 'object' ||
+        payload === null ||
+        !('sale' in payload) ||
+        typeof payload.sale !== 'object' ||
+        payload.sale === null
+      ) {
+        throw new Error(text('The server returned an invalid invoice response.', 'أعاد الخادم استجابة فاتورة غير صالحة.'));
+      }
+      const result = payload as { sale: Sale; queuedOfflinePrint?: boolean };
+      setSaveConfirmationOpen(false);
+      onSaleCompleted(result.sale, result.queuedOfflinePrint === true);
+      clearDraft();
+    } catch (submitError) {
+      setError(submitError instanceof Error
+        ? submitError.message
+        : text('Could not save this travel invoice.', 'تعذر حفظ فاتورة السفر.'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const formatMoney = (value: number) =>
+    `${currency} ${value.toFixed(decimals)}`;
+  const paymentInputClass =
+    'mt-1 block w-full min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-amber-600';
+
+  return (
+    <div className="flex min-h-0 flex-1 min-w-0 flex-col overflow-y-auto bg-slate-50 p-0">
+      <form onSubmit={handleSubmit} className="mx-auto flex min-h-full w-full max-w-[1440px] flex-col border-y border-slate-200 bg-white">
+        <section className="border-b border-slate-200 bg-white">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-3 py-2 sm:px-4">
+            <div>
+              <h2 className="text-xs font-semibold text-slate-800">
+                {editingSale
+                  ? text(`Editing invoice ${editingSale.receiptNumber}`, `تعديل الفاتورة ${editingSale.receiptNumber}`)
+                  : text('Travel services and charges', 'خدمات السفر والرسوم')}
+              </h2>
+              <p className="mt-0.5 text-[10px] text-slate-500">
+                {editingSale
+                  ? text('Update the existing invoice details and save your changes.', 'حدّث تفاصيل الفاتورة الحالية واحفظ التغييرات.')
+                  : travelServices.length === 0
+                    ? text('Add travel services in the Services catalog before creating an invoice.', 'أضف خدمات السفر إلى قائمة الخدمات قبل إنشاء الفاتورة.')
+                    : text('Choose a frequent service or add a new service line to search saved services. Stock is not affected.', 'اختر خدمة متكررة أو أضف سطراً جديداً للبحث عن الخدمات المحفوظة. لا يتأثر المخزون.')}
+              </p>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+              {onOpenSalesHistory && (
+                <button
+                  type="button"
+                  onClick={onOpenSalesHistory}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-amber-200"
+                >
+                  <History className="h-3.5 w-3.5" aria-hidden="true" />
+                  {text('History', 'سجل المبيعات')}
+                </button>
+              )}
+              {onOpenServiceMaster && (
+                <button
+                  type="button"
+                  onClick={onOpenServiceMaster}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-amber-200"
+                >
+                  <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                  {text('Service Master', 'إدارة الخدمات')}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={editingSale ? cancelEdit : clearDraft}
+                disabled={saving}
+                className="inline-flex items-center rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-red-200 disabled:opacity-60"
+              >
+                {editingSale ? text('Cancel edit', 'إلغاء التعديل') : text('Clear', 'مسح')}
+              </button>
+              <button
+                type="submit"
+                disabled={saving || travelServices.length === 0}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Save className="h-3.5 w-3.5" aria-hidden="true" />
+                {saving
+                  ? text('Saving…', 'جارٍ الحفظ…')
+                  : editingSale
+                    ? text('Update invoice', 'تحديث الفاتورة')
+                    : text('Save invoice', 'حفظ الفاتورة')}
+              </button>
+            </div>
+          </div>
+          <div className="border-b border-slate-200 bg-slate-50/70 px-3 py-2 sm:px-4">
+            {frequentServices.length > 0 && (
+              <p className="mb-1.5 text-[10px] font-semibold text-slate-500">
+                {text('Frequent services', 'الخدمات المتكررة')}
+              </p>
+            )}
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              <button
+                type="button"
+                onClick={addNewServiceRow}
+                aria-label={text('Add a new service line', 'إضافة خدمة جديدة')}
+                className={`flex h-[76px] min-w-[200px] max-w-[220px] items-center gap-2 rounded-lg border border-dashed border-amber-300 bg-amber-50 p-2 text-amber-900 shadow-sm transition-colors hover:border-amber-500 hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-200 ${isRtl ? 'flex-row-reverse text-right' : 'text-left'}`}
+              >
+                <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-amber-200 bg-white text-amber-700">
+                  <Plus className="h-6 w-6" aria-hidden="true" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-semibold">
+                    {text('New service', 'خدمة جديدة')}
+                  </span>
+                  <span className="mt-1 block text-[10px] text-amber-800">
+                    {text('Search saved services', 'ابحث عن الخدمات المحفوظة')}
+                  </span>
+                </span>
+              </button>
+              {frequentServices.map((service) => (
+                  <button
+                    key={service.id}
+                    type="button"
+                    onClick={() => addQuickService(service)}
+                    aria-label={text(`Add ${service.name} to the invoice`, `إضافة ${service.nameAr || service.name} إلى الفاتورة`)}
+                    title={service.nameAr ? `${service.name} · ${service.nameAr}` : service.name}
+                    className={`flex h-[76px] min-w-[200px] max-w-[220px] items-center gap-2 rounded-lg border border-slate-200 bg-white p-2 text-slate-700 shadow-sm transition-colors hover:border-amber-400 hover:bg-amber-50 hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-200 ${isRtl ? 'flex-row-reverse text-right' : 'text-left'}`}
+                  >
+                    <span className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border border-slate-200 bg-amber-50 text-amber-700">
+                      {service.imagePath || service.imageData ? (
+                        <ProductImage
+                          imagePath={service.imagePath}
+                          imageData={service.imageData}
+                          alt={isRtl ? service.nameAr || service.name : service.name}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <Ticket className="h-6 w-6" aria-hidden="true" />
+                      )}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-semibold">
+                        {isRtl ? service.nameAr || service.name : service.name}
+                      </span>
+                      <span
+                        dir={service.nameAr && !isRtl ? 'rtl' : undefined}
+                        className="mt-0.5 block truncate text-[10px] text-slate-500"
+                      >
+                        {service.nameAr && !isRtl ? service.nameAr : service.category}
+                      </span>
+                      <span className="mt-1 block font-mono text-[11px] font-semibold tabular-nums text-amber-800">
+                        {formatMoney(service.retailPrice)}
+                      </span>
+                    </span>
+                  </button>
+              ))}
+            </div>
+          </div>
+          {rows.length > 0 && (
+            <div className="min-w-0 p-3">
+              <div className="space-y-3">
+              {displayedRows.map(({ row, index }, displayIndex) => (
+                <article
+                  key={row.id}
+                  role={row.isEditing ? 'dialog' : undefined}
+                  aria-modal={row.isEditing || undefined}
+                  aria-label={row.isEditing
+                    ? text('Service details', 'تفاصيل الخدمة')
+                    : undefined}
+                  className={row.isEditing
+                    ? 'fixed left-1/2 top-1/2 z-[80] max-h-[calc(100dvh-2rem)] w-[min(640px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 shadow-2xl'
+                    : 'rounded-xl border border-slate-200 bg-white p-3 shadow-sm'}
+                >
+                  {row.productId !== null && !row.isEditing ? (
+                    <div className="flex min-w-0 items-center gap-2">
+                      <button
+                        ref={(element) => {
+                          if (element) serviceCardButtonRefs.current.set(row.id, element);
+                          else serviceCardButtonRefs.current.delete(row.id);
+                        }}
+                        type="button"
+                        onClick={() => editServiceRow(row)}
+                        aria-label={text(
+                          `Edit ${rowDetails[index]?.product?.name || row.serviceSearch}`,
+                          `تعديل ${rowDetails[index]?.product?.nameAr || rowDetails[index]?.product?.name || row.serviceSearch}`
+                        )}
+                        className={`flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left focus:outline-none focus:ring-2 focus:ring-amber-200 ${isRtl ? 'flex-row-reverse text-right' : ''}`}
+                      >
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-500">
+                          {displayIndex + 1}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-semibold text-slate-900">
+                            {isRtl
+                              ? rowDetails[index]?.product?.nameAr || rowDetails[index]?.product?.name || row.serviceSearch
+                              : rowDetails[index]?.product?.name || row.serviceSearch}
+                          </span>
+                          {getRowDescription(row, ' · ') && (
+                            <span className="mt-0.5 block truncate text-xs text-slate-500">
+                              {getRowDescription(row, ' · ')}
+                            </span>
+                          )}
+                          <span className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-600">
+                            <span>{text('Rate', 'السعر')}: {formatMoney(Number(row.unitPrice))}</span>
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-right">
+                          <span className="block text-[10px] font-medium text-slate-500">
+                            {text('Amount', 'الإجمالي')}
+                          </span>
+                          <span className="block font-mono text-sm font-semibold tabular-nums text-slate-900">
+                            {formatMoney(rowDetails[index]?.amount || 0)}
+                          </span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeServiceRow(row.id)}
+                        aria-label={text('Remove service', 'حذف الخدمة')}
+                        title={text('Remove service', 'حذف الخدمة')}
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold text-slate-900">
+                      {text('Service details', 'تفاصيل الخدمة')}
+                    </h3>
+                    <div className="flex items-center gap-3">
+                      {row.productId !== null && onEditService && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const product = products.find((entry) => entry.id === row.productId);
+                            if (product) onEditService(product);
+                          }}
+                          className="text-xs font-semibold text-amber-800 underline decoration-amber-300 underline-offset-2 hover:text-amber-900"
+                        >
+                          {text('Edit service details', 'تعديل تفاصيل الخدمة')}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={closeServiceModal}
+                        className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                      >
+                        {text('Cancel', 'إلغاء')}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-500">
+                      {displayIndex + 1}
+                    </span>
+                    <input
+                      type="text"
+                      ref={(element) => {
+                        if (element) serviceSearchInputRefs.current.set(row.id, element);
+                        else serviceSearchInputRefs.current.delete(row.id);
+                      }}
+                      role="combobox"
+                      aria-autocomplete="list"
+                      aria-expanded={servicePickerRowId === row.id && Boolean(row.serviceSearch.trim())}
+                      aria-controls={
+                        servicePickerRowId === row.id && row.serviceSearch.trim()
+                          ? `flyerp-service-options-${row.id}`
+                          : undefined
+                      }
+                      aria-activedescendant={
+                        servicePickerRowId === row.id && activeServiceOptions.length > 0
+                          ? `flyerp-service-option-${row.id}-${activeServiceSuggestionIndex}`
+                          : undefined
+                      }
+                      value={getRowServiceLabel(row)}
+                      onFocus={(event) => {
+                        serviceInputRef.current = event.currentTarget;
+                        setServicePickerRowId(null);
+                        setServiceDropdownPosition(null);
+                      }}
+                      onBlur={() => {
+                        window.setTimeout(() => {
+                          setServicePickerRowId((current) => {
+                            if (current !== row.id) return current;
+                            setServiceDropdownPosition(null);
+                            return null;
+                          });
+                        }, 120);
+                      }}
+                      onChange={(event) => {
+                        const serviceSearch = event.target.value;
+                        const selectedService = travelServices.find(
+                          (service) => serviceLabel(service) === serviceSearch
+                        );
+                        if (selectedService) {
+                          selectService(row, selectedService);
+                          return;
+                        }
+                        updateRow(row.id, {
+                          serviceSearch,
+                          productId: null,
+                          unitPrice: '',
+                        });
+                        if (serviceSearch.trim()) {
+                          setServicePickerRowId(row.id);
+                          setActiveServiceSuggestionIndex(0);
+                          setServiceDropdownPosition(getServiceDropdownPosition(event.currentTarget));
+                        } else {
+                          setServicePickerRowId(null);
+                          setServiceDropdownPosition(null);
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        const suggestions = getServiceSuggestions(row.serviceSearch);
+                        if (
+                          event.key === 'ArrowDown' &&
+                          servicePickerRowId === row.id &&
+                          suggestions.length > 0
+                        ) {
+                          event.preventDefault();
+                          setServicePickerRowId(row.id);
+                          setActiveServiceSuggestionIndex((current) =>
+                            Math.min(current + 1, suggestions.length - 1)
+                          );
+                        } else if (
+                          event.key === 'ArrowUp' &&
+                          servicePickerRowId === row.id &&
+                          suggestions.length > 0
+                        ) {
+                          event.preventDefault();
+                          setServicePickerRowId(row.id);
+                          setActiveServiceSuggestionIndex((current) => Math.max(0, current - 1));
+                        } else if (event.key === 'Enter') {
+                          event.preventDefault();
+                          if (servicePickerRowId === row.id && suggestions.length > 0) {
+                            selectService(
+                              row,
+                              suggestions[Math.min(activeServiceSuggestionIndex, suggestions.length - 1)]
+                            );
+                          }
+                        } else if (event.key === 'Escape') {
+                          setServicePickerRowId(null);
+                          setServiceDropdownPosition(null);
+                        }
+                      }}
+                      className={`min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none focus:ring-2 focus:ring-amber-100 ${isRtl ? 'text-right' : 'text-left'}`}
+                      aria-label={text(`Search service ${displayIndex + 1}`, `ابحث عن الخدمة ${displayIndex + 1}`)}
+                      placeholder={text('Search saved services', 'ابحث عن الخدمات المحفوظة')}
+                    />
+                  </div>
+                  <div className="mt-3">
+                    <label className="block min-w-0 text-xs font-medium text-slate-600">
+                      {text('Details', 'التفاصيل')}
+                      <input
+                        ref={(element) => {
+                          setServiceFieldRef(row.id, 'details', element);
+                        }}
+                        value={row.details}
+                        onChange={(event) => updateRow(row.id, { details: event.target.value })}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            focusNextServiceField(row, 'details');
+                          }
+                        }}
+                        placeholder={text('Optional service details', 'تفاصيل إضافية للخدمة')}
+                        className={`mt-1 block w-full min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none ${isRtl ? 'text-right' : 'text-left'}`}
+                        aria-label={text(`Details for service ${displayIndex + 1}`, `تفاصيل الخدمة ${displayIndex + 1}`)}
+                      />
+                    </label>
+                  </div>
+                  {rowDetails[index]?.product?.requiresItinerary === true && (
+                    <fieldset className="mt-4 rounded-lg border border-amber-200 bg-amber-50/50 p-3">
+                      <legend className="px-1 text-xs font-semibold text-slate-800">
+                        {text('Passenger and flight details', 'بيانات المسافر والرحلة')}
+                      </legend>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                        <label className="block text-xs font-medium text-slate-600">
+                          {text('Passenger name', 'اسم المسافر')}
+                          <input
+                            ref={(element) => {
+                              setServiceFieldRef(row.id, 'passengerName', element);
+                            }}
+                            value={row.passengerName}
+                            onChange={(event) => updateRow(row.id, { passengerName: event.target.value })}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                focusNextServiceField(row, 'passengerName');
+                              }
+                            }}
+                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                            aria-label={text(`Passenger name for service ${displayIndex + 1}`, `اسم المسافر للخدمة ${displayIndex + 1}`)}
+                          />
+                        </label>
+                        <label className="block text-xs font-medium text-slate-600">
+                          {text('Passport / ID number', 'رقم الجواز / الهوية')}
+                          <input
+                            ref={(element) => setServiceFieldRef(row.id, 'passportNumber', element)}
+                            value={row.passportNumber}
+                            onChange={(event) => updateRow(row.id, { passportNumber: event.target.value })}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                focusNextServiceField(row, 'passportNumber');
+                              }
+                            }}
+                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                            aria-label={text(`Passport or ID number for service ${displayIndex + 1}`, `رقم الجواز أو الهوية للخدمة ${displayIndex + 1}`)}
+                          />
+                        </label>
+                        <label className="block text-xs font-medium text-slate-600">
+                          {text('Booking reference (PNR)', 'مرجع الحجز (PNR)')}
+                          <input
+                            ref={(element) => setServiceFieldRef(row.id, 'bookingReference', element)}
+                            value={row.bookingReference}
+                            onChange={(event) => updateRow(row.id, { bookingReference: event.target.value })}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                focusNextServiceField(row, 'bookingReference');
+                              }
+                            }}
+                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                            aria-label={text(`Booking reference for service ${displayIndex + 1}`, `مرجع الحجز للخدمة ${displayIndex + 1}`)}
+                          />
+                        </label>
+                        <label className="block text-xs font-medium text-slate-600">
+                          {text('Flight number', 'رقم الرحلة')}
+                          <input
+                            ref={(element) => setServiceFieldRef(row.id, 'flightNumber', element)}
+                            value={row.flightNumber}
+                            onChange={(event) => updateRow(row.id, { flightNumber: event.target.value })}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                focusNextServiceField(row, 'flightNumber');
+                              }
+                            }}
+                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                            aria-label={text(`Flight number for service ${displayIndex + 1}`, `رقم الرحلة للخدمة ${displayIndex + 1}`)}
+                          />
+                        </label>
+                        <label className="block text-xs font-medium text-slate-600">
+                          {text('From', 'من')}
+                          <input
+                            ref={(element) => setServiceFieldRef(row.id, 'origin', element)}
+                            value={row.origin}
+                            onChange={(event) => updateRow(row.id, { origin: event.target.value })}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                focusNextServiceField(row, 'origin');
+                              }
+                            }}
+                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                            aria-label={text(`Origin for service ${displayIndex + 1}`, `مغادرة الخدمة ${displayIndex + 1}`)}
+                          />
+                        </label>
+                        <label className="block text-xs font-medium text-slate-600">
+                          {text('To', 'إلى')}
+                          <input
+                            ref={(element) => setServiceFieldRef(row.id, 'destination', element)}
+                            value={row.destination}
+                            onChange={(event) => updateRow(row.id, { destination: event.target.value })}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                focusNextServiceField(row, 'destination');
+                              }
+                            }}
+                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                            aria-label={text(`Destination for service ${displayIndex + 1}`, `وجهة الخدمة ${displayIndex + 1}`)}
+                          />
+                        </label>
+                        <label className="block text-xs font-medium text-slate-600">
+                          {text('Trip type', 'نوع الرحلة')}
+                          <select
+                            ref={(element) => setServiceFieldRef(row.id, 'tripType', element)}
+                            value={row.tripType}
+                            onChange={(event) => {
+                              const tripType = event.target.value as TravelSaleRow['tripType'];
+                              updateRow(row.id, {
+                                tripType,
+                                ...(tripType === 'one-way'
+                                  ? { returnFlightNumber: '', returnDate: '' }
+                                  : {}),
+                              });
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                focusNextServiceField(row, 'tripType');
+                              }
+                            }}
+                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                            aria-label={text(`Trip type for service ${displayIndex + 1}`, `نوع الرحلة للخدمة ${displayIndex + 1}`)}
+                          >
+                            <option value="one-way">{text('One way', 'اتجاه واحد')}</option>
+                            <option value="round-trip">{text('Round trip', 'ذهاب وعودة')}</option>
+                          </select>
+                        </label>
+                        <label className="block text-xs font-medium text-slate-600">
+                          {text('Departure date', 'تاريخ المغادرة')}
+                          <AppDateInput
+                            ref={(element) => setServiceFieldRef(row.id, 'departureDate', element)}
+                            value={row.departureDate}
+                          onChange={(departureDate) => updateRow(row.id, { departureDate })}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                focusNextServiceField(row, 'departureDate');
+                              }
+                            }}
+                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                            aria-label={text(`Departure date for service ${displayIndex + 1}`, `تاريخ المغادرة للخدمة ${displayIndex + 1}`)}
+                          />
+                        </label>
+                        {row.tripType === 'round-trip' && (
+                          <>
+                            <label className="block text-xs font-medium text-slate-600">
+                              {text('Return flight number', 'رقم رحلة العودة')}
+                              <input
+                                ref={(element) => setServiceFieldRef(row.id, 'returnFlightNumber', element)}
+                                value={row.returnFlightNumber}
+                                onChange={(event) => updateRow(row.id, { returnFlightNumber: event.target.value })}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault();
+                                    focusNextServiceField(row, 'returnFlightNumber');
+                                  }
+                                }}
+                                className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                                aria-label={text(`Return flight number for service ${displayIndex + 1}`, `رقم رحلة العودة للخدمة ${displayIndex + 1}`)}
+                              />
+                            </label>
+                            <label className="block text-xs font-medium text-slate-600">
+                              {text('Return date', 'تاريخ العودة')}
+                              <AppDateInput
+                                ref={(element) => setServiceFieldRef(row.id, 'returnDate', element)}
+                                value={row.returnDate}
+                                onChange={(returnDate) => updateRow(row.id, { returnDate })}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault();
+                                    focusNextServiceField(row, 'returnDate');
+                                  }
+                                }}
+                                className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                                aria-label={text(`Return date for service ${displayIndex + 1}`, `تاريخ العودة للخدمة ${displayIndex + 1}`)}
+                              />
+                            </label>
+                          </>
+                        )}
+                      </div>
+                    </fieldset>
+                  )}
+                  <label className="mt-3 block min-w-0 text-xs font-medium text-slate-600">
+                    {text('Rate', 'السعر')}
+                    <input
+                      ref={(element) => {
+                        setServiceFieldRef(row.id, 'rate', element);
+                      }}
+                      type="text"
+                      inputMode="decimal"
+                      value={row.unitPrice}
+                      onChange={(event) => updateRow(row.id, { unitPrice: event.target.value })}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          saveServiceModal();
+                        }
+                      }}
+                      className="mt-1 block w-full min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-right font-mono text-sm tabular-nums text-slate-900 focus:border-amber-600 focus:outline-none"
+                      aria-label={text(`Rate for service ${displayIndex + 1}`, `سعر الخدمة ${displayIndex + 1}`)}
+                    />
+                  </label>
+                  {serviceModalError && serviceModalRowId === row.id && (
+                    <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                      {serviceModalError}
+                    </p>
+                  )}
+                  <div className="mt-4 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={saveServiceModal}
+                      className="rounded-lg bg-amber-700 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-800"
+                    >
+                      {serviceModalIsNew
+                        ? text('Add service', 'إضافة الخدمة')
+                        : text('Save changes', 'حفظ التعديلات')}
+                    </button>
+                  </div>
+                    </>
+                  )}
+                </article>
+              ))}
+              </div>
+            </div>
+          )}
+          {serviceModalRow && createPortal(
+            <div
+              className="fixed inset-0 z-[70] bg-slate-950/50"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) closeServiceModal();
+              }}
+            />,
+            document.body
+          )}
+          {servicePickerRowId !== null &&
+            activeServiceRow &&
+            activeServiceRow.serviceSearch.trim() &&
+            serviceDropdownPosition &&
+            createPortal(
+              <div
+                id={`flyerp-service-options-${activeServiceRow.id}`}
+                role="listbox"
+                aria-label={text('Available services', 'الخدمات المتاحة')}
+                className="fixed z-[1000] overflow-y-auto rounded-lg border border-slate-200 bg-white p-1 shadow-xl"
+                style={{
+                  top: serviceDropdownPosition.top,
+                  left: serviceDropdownPosition.left,
+                  width: serviceDropdownPosition.width,
+                  maxHeight: serviceDropdownPosition.maxHeight,
+                }}
+              >
+                {activeServiceOptions.length === 0 ? (
+                  <p className="px-3 py-3 text-xs text-slate-500">
+                    {text('No matching services found.', 'لم يتم العثور على خدمات مطابقة.')}
+                  </p>
+                ) : activeServiceOptions.map((service, optionIndex) => (
+                  <button
+                    key={service.id}
+                    id={`flyerp-service-option-${activeServiceRow.id}-${optionIndex}`}
+                    type="button"
+                    role="option"
+                    aria-selected={optionIndex === activeServiceSuggestionIndex}
+                    onPointerDown={(event) => event.preventDefault()}
+                    onMouseEnter={() => setActiveServiceSuggestionIndex(optionIndex)}
+                    onClick={() => selectService(activeServiceRow, service)}
+                    className={`flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left ${
+                      optionIndex === activeServiceSuggestionIndex
+                        ? 'bg-amber-50'
+                        : 'hover:bg-slate-50'
+                    }`}
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-xs font-semibold text-slate-900">
+                        {isRtl ? service.nameAr || service.name : service.name}
+                      </span>
+                      {((isRtl && service.name) || (!isRtl && service.nameAr)) && (
+                        <span className={`block truncate text-[10px] text-slate-500 ${isRtl ? '' : 'text-right'}`} dir={isRtl ? 'ltr' : 'rtl'}>
+                          {isRtl ? service.name : service.nameAr}
+                        </span>
+                      )}
+                      <span className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-slate-500">
+                        <span>{service.category}</span>
+                        {service.unit && (
+                          <span>{text('Unit', 'الوحدة')}: {service.unit}</span>
+                        )}
+                        <span>{text('Tax', 'الضريبة')} {service.taxRate ?? settings.taxRate}%</span>
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-right">
+                      <span className="block font-mono text-xs font-semibold tabular-nums text-slate-900">
+                        {formatMoney(service.retailPrice)}
+                      </span>
+                      <span className="block text-[10px] text-slate-500">
+                        {text('per service', 'لكل خدمة')}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>,
+              document.body
+            )}
+        </section>
+        <div className="sticky bottom-2 z-20 mx-2 mt-auto grid min-w-0 grid-cols-1 gap-x-5 gap-y-3 rounded-xl border border-slate-200 bg-white/95 px-4 py-3 shadow-[0_-8px_16px_-12px_rgba(15,23,42,0.5)] backdrop-blur lg:grid-cols-[minmax(0,1fr)_minmax(300px,0.8fr)] sm:px-5 sm:py-4">
+            <div className="grid min-w-0 grid-cols-1 items-end gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <div className="min-w-0 text-xs font-medium leading-5 text-slate-700">
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor="flyerp-customer" className="truncate">
+                    {text('Customer / Buyer', 'العميل / المشتري')}
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setCustomerModalOpen(true)}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md px-1 text-[10px] font-semibold text-amber-800 hover:bg-amber-50"
+                    aria-label={text('Add new customer', 'إضافة عميل جديد')}
+                  >
+                    <Plus className="h-3 w-3" />
+                    {text('New', 'جديد')}
+                  </button>
+                </div>
+                <select
+                  id="flyerp-customer"
+                  value={customerId ?? ''}
+                  onChange={(event) => setCustomerId(event.target.value ? Number(event.target.value) : null)}
+                  className={paymentInputClass}
+                >
+                  <option value="">{settings.defaultCustomer || text('Walk-in customer', 'عميل نقدي')}</option>
+                  {customers.map((entry) => (
+                    <option key={entry.id} value={entry.id}>{entry.name}</option>
+                  ))}
+                </select>
+              </div>
+              <label htmlFor="flyerp-invoice-date" className="block min-w-0 text-xs font-medium leading-5 text-slate-700">
+                {text('Invoice Date', 'تاريخ الفاتورة')}
+                <AppDateInput
+                  id="flyerp-invoice-date"
+                  value={invoiceDate}
+                  disabled={!settings.allowInvoiceDateEdit}
+                  onChange={setInvoiceDate}
+                  className={`${paymentInputClass} disabled:bg-slate-100 disabled:text-slate-500`}
+                />
+              </label>
+              <label className="block min-w-0 text-xs font-medium leading-5 text-slate-700">
+                {text('Payment method', 'طريقة الدفع')}
+                <select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)} className={paymentInputClass}>
+                  {methods.map((method) => <option key={method} value={method}>{method}</option>)}
+                </select>
+              </label>
+              {paymentMethod === 'Cash' && (
+                <label className="block min-w-0 text-xs font-medium leading-5 text-slate-700">
+                  {text('Cash received', 'المبلغ المستلم')}
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={cashTendered ?? totals.total.toFixed(decimals)}
+                    onChange={(event) => setCashTendered(event.target.value)}
+                    className={paymentInputClass}
+                  />
+                </label>
+              )}
+              <label className="block min-w-0 text-xs font-medium leading-5 text-slate-700">
+                {text('Discount', 'الخصم')}
+                <span className="flex min-w-0 gap-1">
+                  <input type="number" min="0" step="0.01" value={discountValue} onChange={(event) => setDiscountValue(event.target.value)} className={paymentInputClass} />
+                  <select value={discountType} onChange={(event) => setDiscountType(event.target.value as 'fixed' | 'percent')} className={`${paymentInputClass} max-w-24`}>
+                    <option value="fixed">{currency}</option>
+                    <option value="percent">%</option>
+                  </select>
+                </span>
+              </label>
+            </div>
+            <div className="grid min-w-0 grid-cols-1 gap-3 lg:border-l lg:border-slate-200 lg:pl-4">
+              <dl className="grid grid-cols-2 gap-x-4 text-xs">
+                <div className="col-span-2 flex justify-between gap-2 py-1 text-slate-600">
+                  <dt>{text('Tax mode', 'طريقة الضريبة')}</dt>
+                  <dd className="font-medium text-slate-800">
+                    {settings.taxType === 'inclusive'
+                      ? text('VAT included in price', 'الضريبة مشمولة في السعر')
+                      : text('VAT added to price', 'تضاف الضريبة إلى السعر')}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2 py-1 text-slate-600">
+                  <dt>{text('Subtotal', 'الإجمالي الفرعي')}</dt><dd className="font-mono font-semibold tabular-nums text-slate-900">{formatMoney(totals.subtotal)}</dd>
+                </div>
+                <div className="flex justify-between gap-2 py-1 text-slate-600">
+                  <dt>{text('Discount', 'الخصم')}</dt><dd className="font-mono font-semibold tabular-nums text-slate-900">−{formatMoney(totals.discountAmount)}</dd>
+                </div>
+                <div className="flex justify-between gap-2 py-1 text-slate-600">
+                  <dt>{text('Tax', 'الضريبة')}</dt><dd className="font-mono font-semibold tabular-nums text-slate-900">{formatMoney(totals.taxAmount)}</dd>
+                </div>
+                <div className="flex justify-between gap-2 border-t border-slate-200 py-1.5 text-sm font-bold text-slate-900">
+                  <dt>{text('Invoice total', 'إجمالي الفاتورة')}</dt><dd className="font-sans text-lg font-bold text-red-700">{formatMoney(totals.total)}</dd>
+                </div>
+                <div className="col-span-2 flex justify-between gap-2 py-1 text-slate-600">
+                  <dt>{text('Payment status', 'حالة الدفع')}</dt>
+                  <dd className="font-semibold text-slate-900">
+                    {paymentStatus === 'Partially Paid'
+                      ? text('Partially Paid', 'مدفوع جزئياً')
+                      : paymentStatus === 'Unpaid'
+                        ? text('Unpaid', 'غير مدفوع')
+                        : text('Paid', 'مدفوع')}
+                  </dd>
+                </div>
+                {balanceDue > 0 && (
+                  <div className="col-span-2 flex justify-between gap-2 py-1 font-semibold text-amber-900">
+                    <dt>{text('Balance due', 'الرصيد المستحق')}</dt>
+                    <dd className="font-mono tabular-nums">{formatMoney(balanceDue)}</dd>
+                  </div>
+                )}
+              </dl>
+            </div>
+            {error && <p role="alert" className="rounded border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-700 lg:col-span-2">{error}</p>}
+        </div>
+
+      </form>
+      {customerModalOpen && (
+        <CustomerFormModal
+          customer={null}
+          onClose={closeCustomerModal}
+          onSaved={(createdCustomer) => {
+            onCustomerCreated(createdCustomer);
+            setCustomerId(createdCustomer.id);
+            setError(null);
+          }}
+        />
+      )}
+      {saveConfirmationOpen && createPortal(
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/60 p-3 sm:p-5"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="flyerp-save-confirm-title"
+          onClick={(event) => {
+            if (event.target === event.currentTarget && !saving) {
+              setSaveConfirmationOpen(false);
+            }
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape' && !saving) {
+              event.preventDefault();
+              setSaveConfirmationOpen(false);
+            }
+          }}
+        >
+          <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-2xl">
+            <h2 id="flyerp-save-confirm-title" className="text-lg font-bold text-slate-900">
+              {editingSale
+                ? text('Confirm invoice changes', 'تأكيد تغييرات الفاتورة')
+                : text('Confirm invoice', 'تأكيد الفاتورة')}
+            </h2>
+            <p className="mt-2 text-sm text-slate-600">
+              {editingSale
+                ? text('Save changes to this invoice?', 'هل تريد حفظ التغييرات على هذه الفاتورة؟')
+                : text('Save this completed invoice?', 'هل تريد حفظ هذه الفاتورة المكتملة؟')}
+            </p>
+            <dl className="mt-4 space-y-2 rounded-lg bg-slate-50 p-3 text-sm">
+              <div className="flex justify-between gap-3">
+                <dt className="text-slate-500">{text('Invoice date', 'تاريخ الفاتورة')}</dt>
+                <dd className="font-medium text-slate-800">{invoiceDate.split('-').reverse().join('/')}</dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-slate-500">{text('Customer', 'العميل')}</dt>
+                <dd className="text-right font-medium text-slate-800">
+                  {customer?.name || settings.defaultCustomer}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-slate-500">{text('Service lines', 'عدد الخدمات')}</dt>
+                <dd className="font-medium text-slate-800">
+                  {rows.filter((row) => row.productId !== null).length}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-slate-500">{text('Payment method', 'طريقة الدفع')}</dt>
+                <dd className="font-medium text-slate-800">{paymentMethod}</dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-slate-500">{text('Payment status', 'حالة الدفع')}</dt>
+                <dd className="font-medium text-slate-800">
+                  {paymentStatus === 'Partially Paid'
+                    ? text('Partially Paid', 'مدفوع جزئياً')
+                    : paymentStatus === 'Unpaid'
+                      ? text('Unpaid', 'غير مدفوع')
+                      : text('Paid', 'مدفوع')}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-slate-500">{text('Paid amount', 'المبلغ المدفوع')}</dt>
+                <dd className="font-mono tabular-nums text-slate-800">{formatMoney(amountPaid)}</dd>
+              </div>
+              {balanceDue > 0 && (
+                <div className="flex justify-between gap-3 font-semibold text-amber-900">
+                  <dt>{text('Balance due', 'الرصيد المستحق')}</dt>
+                  <dd className="font-mono tabular-nums">{formatMoney(balanceDue)}</dd>
+                </div>
+              )}
+              <div className="flex justify-between gap-3">
+                <dt className="text-slate-500">{text('Tax status', 'حالة الضريبة')}</dt>
+                <dd className="font-medium text-slate-800">
+                  {settings.taxType === 'inclusive'
+                    ? text('This invoice is tax included', 'الضريبة مشمولة في هذه الفاتورة')
+                    : text('This invoice is tax excluded', 'هذه الفاتورة غير شاملة للضريبة')}
+                </dd>
+              </div>
+              <div className="space-y-2 border-t border-slate-200 pt-2">
+                <h3 className="font-semibold text-slate-700">{text('Services', 'الخدمات')}</h3>
+                {rows.filter((row) => row.productId !== null).map((row) => {
+                  const product = products.find((entry) => entry.id === row.productId);
+                  return (
+                    <div key={row.id} className="flex justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-medium text-slate-800">
+                          {product ? serviceLabel(product) : row.serviceSearch}
+                        </p>
+                        {getRowDescription(row, ' · ') && (
+                          <p className="break-words text-xs font-normal text-slate-500">
+                            {getRowDescription(row, ' · ')}
+                          </p>
+                        )}
+                      </div>
+                      <span className="shrink-0 font-mono tabular-nums text-slate-700">
+                        {formatMoney(Number(row.unitPrice))}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex justify-between gap-3 border-t border-slate-200 pt-2 text-xs">
+                <dt className="text-slate-500">{text('Subtotal', 'الإجمالي الفرعي')}</dt>
+                <dd className="font-mono tabular-nums text-slate-700">{formatMoney(totals.subtotal)}</dd>
+              </div>
+              {totals.discountAmount > 0 && (
+                <div className="flex justify-between gap-3 text-xs">
+                  <dt className="text-slate-500">{text('Discount', 'الخصم')}</dt>
+                  <dd className="font-mono tabular-nums text-slate-700">−{formatMoney(totals.discountAmount)}</dd>
+                </div>
+              )}
+              <div className="flex justify-between gap-3 text-xs">
+                <dt className="text-slate-500">{text('Tax', 'الضريبة')}</dt>
+                <dd className="font-mono tabular-nums text-slate-700">{formatMoney(totals.taxAmount)}</dd>
+              </div>
+              <div className="flex justify-between gap-3 border-t border-slate-200 pt-2 font-bold">
+                <dt className="text-slate-700">{text('Settled amount', 'المبلغ المسدد')}</dt>
+                <dd className="font-mono tabular-nums text-slate-900">{formatMoney(totals.total)}</dd>
+              </div>
+            </dl>
+            {error && (
+              <p role="alert" className="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {error}
+              </p>
+            )}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => setSaveConfirmationOpen(false)}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                {text('Cancel', 'إلغاء')}
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void handleConfirmSave()}
+                className="rounded-lg bg-amber-700 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-60"
+              >
+                {saving
+                  ? text('Saving…', 'جارٍ الحفظ…')
+                  : editingSale
+                    ? text('Confirm and update', 'تأكيد وتحديث')
+                    : text('Confirm and save', 'تأكيد وحفظ')}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+    </div>
+  );
+};

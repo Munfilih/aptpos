@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useState } from 'react'
 import { TopBar, type NavTab } from './components/TopBar';
 import { RegisterView } from './components/RegisterView';
 import { ErpSalesView } from './components/ErpSalesView';
+import { FlyErpSalesView } from './components/FlyErpSalesView';
 import { InventoryView } from './components/InventoryView';
 import { PurchasesView } from './components/PurchasesView';
 import {
@@ -18,6 +19,7 @@ import { FilesView } from './components/FilesView';
 import { LedgerView } from './components/LedgerView';
 import { ShiftView } from './components/ShiftView';
 import { ThermalReceiptModal } from './components/ThermalReceiptModal';
+import { FlyErpSaleCompletionModal } from './components/FlyErpSaleCompletionModal';
 import { LoginForm } from './components/LoginForm';
 import { DemoRegistrationWindow } from './components/DemoRegistrationWindow';
 import { LanguageProvider, useLanguage } from './i18n/LanguageContext';
@@ -33,7 +35,6 @@ import type {
   CreateCashbookEntryInput,
   CreatePurchaseReturnInput,
   CreateSalesReturnVoucherInput,
-  PrintJob,
   Product,
   PurchaseEntry,
   PurchaseReturnVoucher,
@@ -49,10 +50,10 @@ import type {
 import { APP_COMPONENTS, APP_VERSIONS } from './types/pos';
 import { parseVersionComponentPolicies } from './utils/versionComponentPolicies';
 import {
+  getStoredAppScreenMode,
   getAppProductName,
   getAppScreenModeFromLocation,
 } from './utils/appScreenMode';
-import { createVoucherTemplateJob, printTemplateJob } from './printTemplates/render';
 
 const RPOS_TICKET_WIDTH_KEY = 'counterline_rpos_ticket_width';
 const DEFAULT_RPOS_TICKET_WIDTH = 320;
@@ -100,21 +101,8 @@ const DEFAULT_SETTINGS: StoreSettings = {
   defaultCustomer: 'Walk-in Customer / عميل نقدي',
   allowInvoiceDateEdit: false,
   paymentMethods: ['Cash', 'Card', 'Split'],
-  kotPrinter: '',
   enableKot: false,
   appLanguage: 'en',
-  multiLanguageInvoices: false,
-  defaultPrinter: 'System Default / افتراضي النظام',
-  invoiceShowProductName: true,
-  invoiceShowProductNameAr: true,
-  invoiceShowBarcode: false,
-  invoiceShowCustomerInfo: true,
-  invoiceShowCashierName: true,
-  invoiceShowTaxDetails: true,
-  invoiceShowStoreAddress: true,
-  invoiceShowReceiptBarcode: true,
-  invoiceShowFooter: true,
-  invoiceShowQrCode: true,
   appVersion: 'Standard',
   disabledAppComponents: [],
 };
@@ -268,7 +256,7 @@ function isNavigableComponent(
 }
 
 export function App() {
-  const launchScreenMode = getAppScreenModeFromLocation();
+  const launchScreenMode = getAppScreenModeFromLocation() || getStoredAppScreenMode();
   const [runtimeScreenMode, setRuntimeScreenMode] = useState<AppScreenMode | null>(null);
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => {
     try {
@@ -282,7 +270,7 @@ export function App() {
 
 
   const [activeTab, setActiveTab] = useState<NavTab>('register');
-  const [settingsSection, setSettingsSection] = useState<SettingsSectionId>('sales');
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionId>('general');
   const [showSettingsWorkspace, setShowSettingsWorkspace] = useState(false);
   const [showSettingsComponent, setShowSettingsComponent] = useState(false);
   const [accountsSubtab, setAccountsSubtab] = useState<'ledger' | 'customers' | 'vendors' | 'payments'>('ledger');
@@ -332,11 +320,12 @@ export function App() {
     currencySymbol: string;
     partialCount: number;
   } | null>(null);
-  const [printQueue, setPrintQueue] = useState<PrintJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [productCreateRequest, setProductCreateRequest] = useState(0);
   const [productCreateBarcode, setProductCreateBarcode] = useState('');
-  const [productCreateReturnTab, setProductCreateReturnTab] = useState<'register' | 'purchases' | null>(null);
+  const [productCreateReturnTab, setProductCreateReturnTab] = useState<
+    'register' | 'purchases' | 'sales-entry' | null
+  >(null);
   const [purchaseBarcodeFocusRequest, setPurchaseBarcodeFocusRequest] = useState(0);
   const handleProductCreateRequestHandled = useCallback(() => {
     setProductCreateRequest(0);
@@ -354,6 +343,7 @@ export function App() {
     if (productCreateReturnTab === 'purchases') {
       setPurchaseBarcodeFocusRequest((request) => request + 1);
     }
+    if (productCreateReturnTab) setActiveTab(productCreateReturnTab);
     setProductCreateReturnTab(null);
   }, [productCreateReturnTab]);
   const [productEditRequest, setProductEditRequest] = useState<{
@@ -364,13 +354,21 @@ export function App() {
     sale: Sale;
     queuedOffline?: boolean;
   } | null>(null);
+  const [flyErpCompletion, setFlyErpCompletion] = useState<{
+    sale: Sale;
+    queuedOffline?: boolean;
+    isReprint?: boolean;
+  } | null>(null);
   const [restoredSale, setRestoredSale] = useState<Sale | null>(null);
+  const [flyErpInvoiceToEdit, setFlyErpInvoiceToEdit] = useState<Sale | null>(null);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const [closeBackupBusy, setCloseBackupBusy] = useState(false);
   const [closeBackupError, setCloseBackupError] = useState<string | null>(null);
 
   useEffect(() => {
     localStorage.setItem('aptpos_theme', theme);
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme === 'dark' ? 'dark' : 'light';
   }, [theme]);
 
   useEffect(() => {
@@ -462,7 +460,6 @@ export function App() {
         prodRes,
         salesRes,
         setRes,
-        queueRes,
         custRes,
         vendRes,
         purchRes,
@@ -473,7 +470,6 @@ export function App() {
         fetch('/api/products'),
         fetch('/api/sales'),
         fetch('/api/settings'),
-        fetch('/api/print-queue'),
         fetch('/api/customers'),
         fetch('/api/vendors'),
         fetch('/api/purchases'),
@@ -485,7 +481,6 @@ export function App() {
       if (prodRes.ok) setProducts(await prodRes.json());
       if (salesRes.ok) setSales(await salesRes.json());
       if (setRes.ok) setSettings(await setRes.json());
-      if (queueRes.ok) setPrintQueue(await queueRes.json());
       if (custRes.ok) setCustomers(await custRes.json());
       if (vendRes.ok) setVendors(await vendRes.json());
       if (purchRes.ok) setPurchases(await purchRes.json());
@@ -539,7 +534,7 @@ export function App() {
     }
     setActiveTab('register');
     if (user.demoMode) {
-      setSettingsSection('screen');
+      setSettingsSection('general');
       setShowSettingsWorkspace(false);
       setShowSettingsComponent(false);
       setAccountsSubtab('ledger');
@@ -840,8 +835,25 @@ export function App() {
   };
 
   const handleSaleCompleted = async (sale: Sale, queuedOffline: boolean) => {
-    setActiveReceipt({ sale, queuedOffline });
+    if (flyErpInvoiceToEdit?.id === sale.id) {
+      setFlyErpInvoiceToEdit(null);
+    }
+    if (sale.appScreenMode === 'flyerp') {
+      setFlyErpCompletion({ sale, queuedOffline });
+    } else {
+      setActiveReceipt({ sale, queuedOffline });
+    }
     await fetchAll();
+  };
+
+  const handleReprintSale = (sale: Sale) => {
+    if (sale.appScreenMode === 'flyerp') {
+      setActiveReceipt(null);
+      setFlyErpCompletion({ sale, isReprint: true });
+    } else {
+      setFlyErpCompletion(null);
+      setActiveReceipt({ sale });
+    }
   };
 
   const handleDeleteSale = async (saleId: number) => {
@@ -936,6 +948,13 @@ export function App() {
     ) {
       return;
     }
+    if (sale.appScreenMode === 'flyerp') {
+      setFlyErpInvoiceToEdit(sale);
+      setRestoredSale(null);
+      setActiveTab('sales-entry');
+      return;
+    }
+    setFlyErpInvoiceToEdit(null);
     setRestoredSale(sale);
     setActiveTab('register');
   };
@@ -1065,6 +1084,42 @@ export function App() {
     setSettings(data as StoreSettings);
   };
 
+  const handleSaveLauncherBackground = async (dataUrl: string) => {
+    const response = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ launcherBackgroundDataUrl: dataUrl }),
+    });
+    const payload: unknown = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(
+        typeof payload === 'object' &&
+        payload !== null &&
+        'error' in payload &&
+        typeof payload.error === 'string'
+          ? payload.error
+          : 'Could not save the launcher background.'
+      );
+    }
+    if (typeof payload !== 'object' || payload === null) {
+      throw new Error('The settings service returned an invalid response.');
+    }
+    const savedValue =
+      'launcherBackgroundDataUrl' in payload
+        ? payload.launcherBackgroundDataUrl
+        : undefined;
+    if (savedValue !== undefined && typeof savedValue !== 'string') {
+      throw new Error('The settings service returned an invalid launcher background value.');
+    }
+    setSettings((current) => ({
+      ...current,
+      launcherBackgroundDataUrl:
+        typeof savedValue === 'string'
+          ? savedValue || undefined
+          : dataUrl || undefined,
+    }));
+  };
+
   const loadVersionComponentPolicies = useCallback(async () => {
     const response = await fetch('/api/version-control', { cache: 'no-store' });
     const payload: unknown = await response.json().catch(() => null);
@@ -1149,45 +1204,9 @@ export function App() {
     };
   };
 
-  const handleFlushPrintQueue = async () => {
-    for (const queuedJob of printQueue) {
-      const printJob = await createVoucherTemplateJob(
-        'sales-invoice',
-        queuedJob.saleId,
-        settings,
-        settings.paperWidth || '80mm',
-        document.documentElement.dir === 'rtl'
-      );
-      const printed = await printTemplateJob(printJob);
-      if (!printed) break;
-
-      const response = await fetch(`/api/print-queue/${queuedJob.id}/printed`, { method: 'POST' });
-      if (!response.ok) {
-        const payload: unknown = await response.json().catch(() => null);
-        const message =
-          typeof payload === 'object' &&
-          payload !== null &&
-          'error' in payload &&
-          typeof payload.error === 'string'
-            ? payload.error
-            : `Could not mark print job ${queuedJob.id} as printed (HTTP ${response.status}).`;
-        throw new Error(message);
-      }
-    }
-
-    const queueRes = await fetch('/api/print-queue');
-    if (!queueRes.ok) {
-      throw new Error(`Could not refresh the print queue (HTTP ${queueRes.status}).`);
-    }
-    setPrintQueue(await queueRes.json() as PrintJob[]);
-  };
-
   const isAdmin = currentUser?.role === 'admin';
-  const canEditSales = isAdmin || (
-    currentUser?.permissions?.includes('edit-sales') === true &&
-    currentUser?.permissions?.includes('register') === true &&
-    currentUser?.permissions?.includes('sales') === true
-  );
+  const canEditSales =
+    isAdmin || currentUser?.permissions?.includes('edit-sales') === true;
   const canManageSalesReturns =
     isAdmin || currentUser?.permissions?.includes('manage-sales-returns') === true;
   const canDeleteSales = isAdmin || currentUser?.permissions?.includes('delete-sales') === true;
@@ -1198,19 +1217,30 @@ export function App() {
     (settings.posScreenLayout === 'rpos' ? 'rpos' : 'pos');
   const isRposMode = effectiveScreenMode === 'rpos';
   const isErpMode = effectiveScreenMode === 'erp';
+  const isFlyErpMode = effectiveScreenMode === 'flyerp';
+  const isSalesEntryMode = isErpMode || isFlyErpMode;
   const appName = getAppProductName(effectiveScreenMode);
   const loginScreenMode =
-    launchScreenMode || (settings.posScreenLayout === 'rpos' ? 'rpos' : 'pos');
+    runtimeScreenMode || launchScreenMode || (settings.posScreenLayout === 'rpos' ? 'rpos' : 'pos');
 
   useEffect(() => {
     const titleAppName = currentUser ? appName : getAppProductName(loginScreenMode);
-    document.title = `${titleAppName} — Retail Billing & Inventory`;
-  }, [appName, currentUser, loginScreenMode]);
+    const titleMode = currentUser ? effectiveScreenMode : loginScreenMode;
+    const descriptor = titleMode === 'flyerp'
+      ? 'Flight & Travel Billing'
+      : 'Retail Billing & Inventory';
+    document.title = `${titleAppName} — ${descriptor}`;
+  }, [appName, currentUser, effectiveScreenMode, loginScreenMode]);
 
   const hasPermission = (tabId: NavTab) => {
     if (!currentUser) return false;
     if (tabId === 'sales-entry') {
-      return isAdmin || currentUser.permissions?.includes('register') === true;
+      return isAdmin ||
+        currentUser.permissions?.includes('register') === true ||
+        (
+          flyErpInvoiceToEdit?.appScreenMode === 'flyerp' &&
+          currentUser.permissions?.includes('edit-sales') === true
+        );
     }
     if (
       tabId !== 'unavailable' &&
@@ -1244,9 +1274,9 @@ export function App() {
     .filter(isNavigableComponent)
     .filter((tab) => hasPermission(tab));
   const modeAdjustedTab: NavTab =
-    isErpMode && activeTab === 'register'
+    isSalesEntryMode && activeTab === 'register'
       ? 'sales-entry'
-      : !isErpMode && activeTab === 'sales-entry'
+      : !isSalesEntryMode && activeTab === 'sales-entry' && !flyErpInvoiceToEdit
         ? 'register'
         : activeTab;
   const effectiveTab: NavTab = hasPermission(modeAdjustedTab)
@@ -1264,18 +1294,17 @@ export function App() {
       activeSection={settingsSection}
       onActiveSectionChange={setSettingsSection}
       showSectionNavigation={!showSettingsComponent}
-      printQueue={printQueue}
       isAppAdmin={isAppAdmin}
       canRegisterSystem={isAppAdmin || currentUser?.demoMode === true}
       theme={theme}
       onThemeChange={setTheme}
       iconOnlyLauncher={iconOnlyLauncher}
       onIconOnlyLauncherChange={setIconOnlyLauncher}
+      onSaveLauncherBackground={handleSaveLauncherBackground}
       onSaveSettings={handleSaveSettings}
       onActivateVersion={handleActivateVersion}
       onActivateRegistrationKey={handleActivateRegistrationKey}
       onLoadVersionComponentPolicies={loadVersionComponentPolicies}
-      onFlushPrintQueue={handleFlushPrintQueue}
       onResetDatabase={handleResetDatabase}
       onRestoreDatabase={handleRestoreDatabase}
     />
@@ -1304,7 +1333,7 @@ export function App() {
         ) : (
           <div
             data-theme={theme}
-            className={`pos-app-shell${activeReceipt ? ' invoice-print-open' : ''} h-[100dvh] max-h-[100dvh] w-screen flex flex-col bg-slate-50 text-slate-900 overflow-hidden`}
+            className={`pos-app-shell${activeReceipt || flyErpCompletion ? ' invoice-print-open' : ''} h-[100dvh] max-h-[100dvh] w-screen flex flex-col bg-slate-50 text-slate-900 overflow-hidden`}
           >
           {!loading && (
           <TopBar
@@ -1324,6 +1353,7 @@ export function App() {
             currentUser={currentUser}
             disabledAppComponents={settings.disabledAppComponents}
             iconOnlyLauncher={iconOnlyLauncher}
+            launcherBackgroundDataUrl={settings.launcherBackgroundDataUrl}
             openLauncherOnMount={openLauncherAfterLogin}
             onLauncherOpened={handleLauncherOpened}
             demoExpiresAt={currentUser.demoMode ? currentUser.demoExpiresAt : undefined}
@@ -1342,12 +1372,48 @@ export function App() {
           ) : (
             <main className="win11-app-content flex-1 flex min-h-0 overflow-hidden">
           {effectiveTab === 'sales-entry' && (
-            <ErpSalesView
-              products={products}
-              customers={customers}
-              settings={settings}
-              onSaleCompleted={handleSaleCompleted}
-            />
+            isFlyErpMode || flyErpInvoiceToEdit ? (
+              <FlyErpSalesView
+                products={products}
+                customers={customers}
+                sales={sales}
+                settings={settings}
+                editingSale={flyErpInvoiceToEdit}
+                onSaleCompleted={handleSaleCompleted}
+                onCancelEdit={() => {
+                  setFlyErpInvoiceToEdit(null);
+                  setActiveTab('sales');
+                }}
+                onCustomerCreated={(customer) => {
+                  setCustomers((current) => [
+                    customer,
+                    ...current.filter((entry) => entry.id !== customer.id),
+                  ]);
+                }}
+                onOpenSalesHistory={hasPermission('sales') ? () => {
+                  setFlyErpInvoiceToEdit(null);
+                  setActiveTab('sales');
+                } : undefined}
+                onOpenServiceMaster={hasPermission('inventory') ? () => {
+                  setProductCreateBarcode('');
+                  setProductCreateReturnTab('sales-entry');
+                  setProductCreateRequest((request) => request + 1);
+                } : undefined}
+                onEditService={hasPermission('inventory') ? (product) => {
+                  setProductEditRequest((request) => ({
+                    product,
+                    requestId: (request?.requestId || 0) + 1,
+                  }));
+                } : undefined}
+              />
+            ) : (
+              <ErpSalesView
+                products={products}
+                customers={customers}
+                settings={settings}
+                onSaleCompleted={handleSaleCompleted}
+              />
+            )
           )}
           {effectiveTab === 'register' && (
             <div
@@ -1402,7 +1468,8 @@ export function App() {
 
           {(effectiveTab === 'register' ||
             effectiveTab === 'purchases' ||
-            effectiveTab === 'purchase-history') &&
+            effectiveTab === 'purchase-history' ||
+            (effectiveTab === 'sales-entry' && isFlyErpMode)) &&
             hasPermission('inventory') &&
             productEditRequest && (
             <InventoryView
@@ -1416,6 +1483,7 @@ export function App() {
               onRefreshProducts={refreshProducts}
               editProductRequest={productEditRequest}
               editProductOnly
+              isFlyErpMode={isFlyErpMode}
               onProductEditorClosed={(requestId) => {
                 setProductEditRequest((request) =>
                   request?.requestId === requestId ? null : request
@@ -1428,11 +1496,13 @@ export function App() {
           )}
 
           {((effectiveTab === 'inventory' && hasPermission('inventory')) ||
-            ((productCreateReturnTab === 'purchases' ||
-              (effectiveTab === 'register' && productCreateReturnTab === 'register')) &&
-              hasPermission('inventory'))) && (
+            (((productCreateReturnTab === 'purchases' ||
+              (effectiveTab === 'register' && productCreateReturnTab === 'register') ||
+              (effectiveTab === 'sales-entry' && productCreateReturnTab === 'sales-entry')) &&
+              hasPermission('inventory')))) && (
             <div className={effectiveTab === 'inventory' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
               <InventoryView
+                isFlyErpMode={isFlyErpMode}
                 products={products}
                 purchases={purchases}
                 purchaseReturnVouchers={purchaseReturnVouchers}
@@ -1443,6 +1513,7 @@ export function App() {
                 onRefreshProducts={refreshProducts}
                 createProductRequest={productCreateRequest}
                 createProductBarcode={productCreateBarcode}
+                createServiceRequest={productCreateReturnTab === 'sales-entry'}
                 onCreateProductRequestHandled={handleProductCreateRequestHandled}
                 returnToSourceAfterCreate={Boolean(productCreateReturnTab)}
                 onProductCreated={handleProductCreatedFromRegister}
@@ -1644,7 +1715,7 @@ export function App() {
               sales={sales}
               returnVouchers={salesReturnVouchers}
               settings={settings}
-              onReprintSale={(sale) => setActiveReceipt({ sale })}
+              onReprintSale={handleReprintSale}
               onOpenReturnRegister={
                 canReturnSales && hasPermission('return-register')
                   ? (sale) => {
@@ -1758,6 +1829,20 @@ export function App() {
               settings={settings}
               queuedOffline={activeReceipt.queuedOffline}
               onClose={() => setActiveReceipt(null)}
+            />
+          )}
+          {flyErpCompletion && (
+            <FlyErpSaleCompletionModal
+              sale={flyErpCompletion.sale}
+              sales={sales}
+              settings={settings}
+              customer={
+                customers.find((customer) => customer.id === flyErpCompletion.sale.customerId) ||
+                customers.find((customer) => customer.name === flyErpCompletion.sale.customerName)
+              }
+              queuedOffline={flyErpCompletion.queuedOffline}
+              isReprint={flyErpCompletion.isReprint}
+              onClose={() => setFlyErpCompletion(null)}
             />
           )}
           {cashbookModalOpen && currentUser && (

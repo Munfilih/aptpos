@@ -30,7 +30,7 @@ export const LanguageProvider: React.FC<{
       localStorage.setItem('aptpos_lang', lang);
     } catch {}
     document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
-    document.documentElement.lang = lang;
+    document.documentElement.lang = lang === 'ar' ? 'ar' : 'en-GB';
     onLanguageChange?.(lang);
   };
 
@@ -40,7 +40,7 @@ export const LanguageProvider: React.FC<{
 
   useEffect(() => {
     document.documentElement.dir = language === 'ar' ? 'rtl' : 'ltr';
-    document.documentElement.lang = language;
+    document.documentElement.lang = language === 'ar' ? 'ar' : 'en-GB';
   }, [language]);
 
   const value: LanguageContextType = {

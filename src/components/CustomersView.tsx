@@ -8,51 +8,17 @@ import {
   Plus,
   Search,
   Trash2,
-  User,
-  X
+  User
 } from 'lucide-react';
 import type { Customer, StoreSettings } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
+import { CustomerFormModal } from './CustomerFormModal';
 
 interface CustomersViewProps {
   customers: Customer[];
   settings: StoreSettings;
   onRefresh: () => Promise<void>;
 }
-
-interface CustomerFormState {
-  name: string;
-  nameAr: string;
-  vatNumber: string;
-  crNumber: string;
-  phone: string;
-  email: string;
-  buildingNo: string;
-  streetName: string;
-  district: string;
-  city: string;
-  postalCode: string;
-  country: string;
-  address: string;
-  notes: string;
-}
-
-const EMPTY_FORM: CustomerFormState = {
-  name: '',
-  nameAr: '',
-  vatNumber: '',
-  crNumber: '',
-  phone: '',
-  email: '',
-  buildingNo: '',
-  streetName: '',
-  district: '',
-  city: '',
-  postalCode: '',
-  country: 'Saudi Arabia',
-  address: '',
-  notes: '',
-};
 
 export const CustomersView: React.FC<CustomersViewProps> = ({
   customers,
@@ -65,9 +31,6 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
   const [search, setSearch] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
-  const [form, setForm] = useState<CustomerFormState>(EMPTY_FORM);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
@@ -92,66 +55,12 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
 
   const openCreateModal = () => {
     setEditingCustomer(null);
-    setForm(EMPTY_FORM);
-    setFormError(null);
     setModalOpen(true);
   };
 
   const openEditModal = (cust: Customer) => {
     setEditingCustomer(cust);
-    setForm({
-      name: cust.name,
-      nameAr: cust.nameAr || '',
-      vatNumber: cust.vatNumber || '',
-      crNumber: cust.crNumber || '',
-      phone: cust.phone,
-      email: cust.email,
-      buildingNo: cust.buildingNo || '',
-      streetName: cust.streetName || '',
-      district: cust.district || '',
-      city: cust.city || '',
-      postalCode: cust.postalCode || '',
-      country: cust.country || 'Saudi Arabia',
-      address: cust.address,
-      notes: cust.notes,
-    });
-    setFormError(null);
     setModalOpen(true);
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setFormError(null);
-    if (!form.name.trim()) {
-      setFormError(isRtl ? 'اسم العميل مطلوب.' : 'Customer name is required.');
-      return;
-    }
-
-    setSaving(true);
-    try {
-      const url = editingCustomer
-        ? `/api/customers/${editingCustomer.id}`
-        : '/api/customers';
-      const method = editingCustomer ? 'PUT' : 'POST';
-
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || (isRtl ? 'فشل حفظ بيانات العميل.' : 'Failed to save customer.'));
-      }
-
-      await onRefresh();
-      setModalOpen(false);
-    } catch (err) {
-      setFormError((err as Error).message);
-    } finally {
-      setSaving(false);
-    }
   };
 
   const handleDelete = async (cust: Customer) => {
@@ -423,227 +332,15 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
         </div>
       </div>
 
-      {/* Customer Modal */}
       {modalOpen && (
-        <div
-          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="customer-modal-title"
-        >
-          <div className="bg-white border border-slate-200 rounded-xl max-w-lg w-full overflow-hidden shadow-xl max-h-[90vh] flex flex-col">
-            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
-              <h2 id="customer-modal-title" className="text-base font-semibold text-slate-900">
-                {editingCustomer
-                  ? (isRtl ? 'تعديل بيانات العميل' : 'Edit Customer')
-                  : (isRtl ? 'إضافة عميل جديد' : 'Add New Customer')}
-              </h2>
-              <button
-                type="button"
-                onClick={() => setModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-700"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleSubmit} className="p-5 space-y-3.5 text-xs overflow-y-auto flex-1">
-              {formError && (
-                <div className="p-2.5 bg-red-50 border border-red-200 rounded-lg text-red-800">
-                  {formError}
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">{isRtl ? 'اسم العميل (إنجليزي) *' : 'Customer Name (English) *'}</label>
-                  <input
-                    type="text"
-                    required
-                    value={form.name}
-                    onChange={(e) => setForm({ ...form, name: e.target.value })}
-                    placeholder="e.g., Al Rajhi Trading Co."
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
-                  />
-                </div>
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">{isRtl ? 'اسم العميل (عربي)' : 'Customer Name (Arabic)'}</label>
-                  <input
-                    type="text"
-                    dir="rtl"
-                    value={form.nameAr}
-                    onChange={(e) => setForm({ ...form, nameAr: e.target.value })}
-                    placeholder="شركة الراجحي للتجارة"
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
-                  />
-                </div>
-              </div>
-
-              {/* Saudi Tax & CR Details */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-slate-100">
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">
-                    {isRtl ? 'الرقم الضريبي (15 رقم، هيئة الزكاة)' : 'VAT / Tax Number (15 digits, ZATCA)'}
-                  </label>
-                  <input
-                    type="text"
-                    maxLength={15}
-                    value={form.vatNumber}
-                    onChange={(e) => setForm({ ...form, vatNumber: e.target.value })}
-                    placeholder="300000000000003"
-                    className="w-full px-3 py-2 font-mono border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
-                  />
-                </div>
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">
-                    {isRtl ? 'السجل التجاري (10 أرقام)' : 'CR Number (10 digits)'}
-                  </label>
-                  <input
-                    type="text"
-                    maxLength={10}
-                    value={form.crNumber}
-                    onChange={(e) => setForm({ ...form, crNumber: e.target.value })}
-                    placeholder="1010000000"
-                    className="w-full px-3 py-2 font-mono border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">{isRtl ? 'الهاتف' : 'Phone'}</label>
-                  <input
-                    type="tel"
-                    value={form.phone}
-                    onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                    placeholder="+966 50 123 4567"
-                    className="w-full px-3 py-2 font-mono border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
-                  />
-                </div>
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">{isRtl ? 'البريد الإلكتروني' : 'Email'}</label>
-                  <input
-                    type="email"
-                    value={form.email}
-                    onChange={(e) => setForm({ ...form, email: e.target.value })}
-                    placeholder="customer@domain.sa"
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
-                  />
-                </div>
-              </div>
-
-              {/* Saudi National Address */}
-              <div className="grid grid-cols-3 gap-2 pt-1 border-t border-slate-100">
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">{isRtl ? 'رقم المبنى' : 'Building No'}</label>
-                  <input
-                    type="text"
-                    value={form.buildingNo}
-                    onChange={(e) => setForm({ ...form, buildingNo: e.target.value })}
-                    placeholder="2345"
-                    className="w-full px-2.5 py-1.5 font-mono border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
-                  />
-                </div>
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">{isRtl ? 'الشارع' : 'Street'}</label>
-                  <input
-                    type="text"
-                    value={form.streetName}
-                    onChange={(e) => setForm({ ...form, streetName: e.target.value })}
-                    placeholder="King Abdulaziz Rd"
-                    className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
-                  />
-                </div>
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">{isRtl ? 'الحي' : 'District'}</label>
-                  <input
-                    type="text"
-                    value={form.district}
-                    onChange={(e) => setForm({ ...form, district: e.target.value })}
-                    placeholder="Al Malaz"
-                    className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">{isRtl ? 'المدينة' : 'City'}</label>
-                  <input
-                    type="text"
-                    value={form.city}
-                    onChange={(e) => setForm({ ...form, city: e.target.value })}
-                    placeholder="Riyadh"
-                    className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
-                  />
-                </div>
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">{isRtl ? 'الرمز البريدي' : 'Postal Code'}</label>
-                  <input
-                    type="text"
-                    value={form.postalCode}
-                    onChange={(e) => setForm({ ...form, postalCode: e.target.value })}
-                    placeholder="12643"
-                    className="w-full px-2.5 py-1.5 font-mono border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
-                  />
-                </div>
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">{isRtl ? 'الدولة' : 'Country'}</label>
-                  <input
-                    type="text"
-                    value={form.country}
-                    onChange={(e) => setForm({ ...form, country: e.target.value })}
-                    placeholder="Saudi Arabia"
-                    className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">{isRtl ? 'العنوان الكامل' : 'Billing / Full Address'}</label>
-                <input
-                  type="text"
-                  value={form.address}
-                  onChange={(e) => setForm({ ...form, address: e.target.value })}
-                  placeholder="Street, District, City, KSA"
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
-                />
-              </div>
-
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">{isRtl ? 'ملاحظات' : 'Preferences & Notes'}</label>
-                <textarea
-                  rows={2}
-                  value={form.notes}
-                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
-                  placeholder={isRtl ? 'تعليمات خاصة أو شروط ائتمانية' : 'Special instructions or credit terms'}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-blue-700"
-                />
-              </div>
-
-              <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setModalOpen(false)}
-                  className="px-4 py-2 font-medium text-slate-600 hover:text-slate-900 rounded-lg"
-                >
-                  {isRtl ? 'إلغاء' : 'Cancel'}
-                </button>
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="px-4 py-2 font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg disabled:opacity-50"
-                >
-                  {saving
-                    ? (isRtl ? 'جاري الحفظ...' : 'Saving...')
-                    : editingCustomer
-                    ? (isRtl ? 'حفظ التغييرات' : 'Save Changes')
-                    : (isRtl ? 'إضافة العميل' : 'Create Customer')}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <CustomerFormModal
+          customer={editingCustomer}
+          onClose={() => {
+            setModalOpen(false);
+            setEditingCustomer(null);
+          }}
+          onSaved={onRefresh}
+        />
       )}
     </div>
   );
