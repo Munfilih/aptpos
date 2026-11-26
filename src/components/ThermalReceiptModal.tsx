@@ -80,7 +80,6 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const [printError, setPrintError] = useState<string | null>(null);
   const [previewBeforePrint, setPreviewBeforePrint] = useState(false);
   const [showPrintPreview, setShowPrintPreview] = useState(false);
-  const [previewDesignMode, setPreviewDesignMode] = useState(false);
   const [isPrintingReceipt, setIsPrintingReceipt] = useState(false);
   const [previewHtml, setPreviewHtml] = useState('');
   const [previewPageSize, setPreviewPageSize] = useState<ThermalPageSize | null>(null);
@@ -272,7 +271,6 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
       );
       setPreviewHtml(job.html);
       setPreviewPageSize(job.pageSize);
-      setPreviewDesignMode(true);
       setShowPrintPreview(true);
     } catch (error) {
       console.error('Failed to prepare receipt preview:', error);
@@ -289,7 +287,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
       aria-modal="true"
       aria-labelledby="tender-modal-title"
     >
-      <div className={`invoice-print-dialog bg-white border border-slate-200 rounded-2xl w-full max-w-lg max-h-[92vh] overflow-hidden shadow-2xl flex flex-col${showPrintPreview && activeFormat === 'A4' ? ' receipt-preview-open' : ''}`}>
+      <div className="invoice-print-dialog bg-white border border-slate-200 rounded-2xl w-full max-w-lg max-h-[92vh] overflow-hidden shadow-2xl flex flex-col">
         <div className="no-print px-5 py-4 border-b border-slate-200 flex items-start justify-between gap-3 shrink-0 bg-white">
           <div className="flex items-center gap-2 min-w-0">
             <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
@@ -426,7 +424,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
 
         </div>
 
-        <div className={`receipt-print-source${showPrintPreview && activeFormat === 'A4' ? ' receipt-print-preview-active' : ''}`}>
+        <div className="receipt-print-source">
           {activeFormat === 'A4' ? (
             /* ======================================================== */
             /* A4 FORMAT TAX INVOICE                                    */
@@ -1101,7 +1099,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
           </div>
         </div>
       </div>
-      {showPrintPreview && (previewDesignMode || activeFormat !== 'A4') && previewHtml && previewPageSize && (
+      {showPrintPreview && previewHtml && previewPageSize && (
       <div className="receipt-standalone-preview no-print fixed inset-0 z-[60] flex items-start justify-center overflow-auto bg-slate-950/80 px-3 pt-5 pb-24">
         <iframe
           title={language === 'ar' ? 'معاينة نسخة الطباعة' : 'Exact receipt print preview'}
@@ -1109,7 +1107,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
           sandbox=""
           className="max-w-full shrink-0 bg-white shadow-2xl"
           style={{
-            width: `${previewDesignMode ? previewPageSize.width / 1000 : activeFormat === '58mm' ? 58 : 80}mm`,
+            width: `${previewPageSize.width / 1000}mm`,
             height: `${previewPageSize.height / 1000}mm`,
             maxHeight: 'calc(100vh - 120px)',
             border: 0,

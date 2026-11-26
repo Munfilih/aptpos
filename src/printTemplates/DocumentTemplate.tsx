@@ -29,18 +29,23 @@ const colors: Record<PrintTemplateVariant, { accent: string; muted: string; bord
 
 const thermalFontSize: Record<PaperWidth, string> = {
   '80mm': '10px',
-  '58mm': '8px',
+  '58mm': '9px',
   A4: '11px',
 };
+
+const monochromePalette = { accent: '#000000', muted: '#000000', border: '#000000' };
+const screenTextFont = '"Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+const screenDigitFont = '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace';
 
 export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
   data,
   format,
   variant,
 }) => {
-  const palette = colors[variant];
+  const palette = format === 'A4' ? colors[variant] : monochromePalette;
   const compact = format !== 'A4' || variant === 'minimal' || variant === 'kitchen-compact' || variant === 'tax-compact';
-  const tableFontSize = format === '58mm' ? '7px' : format === '80mm' ? '8px' : '9px';
+  const tableFontSize = format === '58mm' ? '8px' : format === '80mm' ? '9px' : '9px';
+  const foreground = format === 'A4' ? '#111827' : '#000000';
 
   return (
     <article
@@ -54,8 +59,8 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
         margin: '0 auto',
         padding: format === 'A4' ? '0' : '2mm',
         background: '#fff',
-        color: '#111827',
-        fontFamily: 'Arial, "Segoe UI", sans-serif',
+        color: foreground,
+        fontFamily: screenTextFont,
         fontSize: thermalFontSize[format],
         lineHeight: 1.35,
         overflowWrap: 'anywhere',
@@ -73,7 +78,14 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
           <img
             src={data.companyLogo}
             alt=""
-            style={{ display: 'block', maxWidth: '34mm', maxHeight: '18mm', objectFit: 'contain', margin: '0 auto 5px' }}
+            style={{
+              display: 'block',
+              maxWidth: '34mm',
+              maxHeight: '18mm',
+              objectFit: 'contain',
+              margin: '0 auto 5px',
+              ...(format === 'A4' ? {} : { filter: 'grayscale(1) contrast(1.2)' }),
+            }}
           />
         )}
         <div style={{ color: palette.accent, fontSize: compact ? '1.2em' : '1.5em', fontWeight: 800 }}>
@@ -88,13 +100,24 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
           </div>
         )}
         {data.companyTaxId && (
-          <div style={{ color: palette.muted, marginTop: '2px' }}>VAT: {data.companyTaxId}</div>
+          <div style={{ color: palette.muted, marginTop: '2px' }}>
+            {data.multiLanguage ? 'VAT / الرقم الضريبي' : data.direction === 'rtl' ? 'الرقم الضريبي' : 'VAT'}:{' '}
+            <span style={{ fontFamily: screenDigitFont, fontVariantNumeric: 'tabular-nums' }}>{data.companyTaxId}</span>
+          </div>
         )}
         <h1 style={{ color: palette.accent, fontSize: compact ? '1.25em' : '1.55em', margin: '7px 0 2px', fontWeight: 800 }}>
           {data.title}
         </h1>
-        {data.number && <div style={{ color: palette.muted, fontWeight: 700 }}>{data.number}</div>}
-        {data.date && <div style={{ color: palette.muted }}>{data.date}</div>}
+        {data.number && (
+          <div style={{ color: palette.muted, fontWeight: 700, fontFamily: screenDigitFont, fontVariantNumeric: 'tabular-nums' }}>
+            {data.number}
+          </div>
+        )}
+        {data.date && (
+          <div style={{ color: palette.muted, fontFamily: screenDigitFont, fontVariantNumeric: 'tabular-nums' }}>
+            {data.date}
+          </div>
+        )}
       </header>
 
       {data.fields.length > 0 && (
@@ -110,8 +133,8 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
         >
           {data.fields.map((field, index) => (
             <div key={`${field.label}-${index}`} style={{ display: 'flex', justifyContent: 'space-between', gap: '6px' }}>
-              <span style={{ color: palette.muted }}>{field.label}</span>
-              <strong style={{ textAlign: 'right', fontWeight: 700 }}>{field.value || '—'}</strong>
+              <span style={{ color: palette.muted }}><bdi dir="auto">{field.label}</bdi></span>
+              <strong style={{ textAlign: 'right', fontWeight: 700 }}><bdi dir="auto">{field.value || '—'}</bdi></strong>
             </div>
           ))}
         </section>
@@ -131,7 +154,7 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
                     fontWeight: 700,
                   }}
                 >
-                  {column}
+                  <bdi dir="auto">{column}</bdi>
                 </th>
               ))}
             </tr>
@@ -145,11 +168,18 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
                     style={{
                       padding: compact ? '3px 2px' : '5px 4px',
                       verticalAlign: 'top',
-                      textAlign: columnIndex === 0 ? 'center' : 'start',
+                      textAlign: data.numericColumns?.includes(columnIndex)
+                        ? 'end'
+                        : columnIndex === 0
+                          ? 'center'
+                          : 'start',
+                      ...(data.numericColumns?.includes(columnIndex)
+                        ? { fontFamily: screenDigitFont, fontVariantNumeric: 'tabular-nums' }
+                        : {}),
                       overflowWrap: 'anywhere',
                     }}
                   >
-                    {row.values[columnIndex] ?? ''}
+                    <bdi dir="auto">{row.values[columnIndex] ?? ''}</bdi>
                   </td>
                 ))}
               </tr>
@@ -176,12 +206,14 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
                 gap: '8px',
                 padding: compact ? '2px 0' : '4px 0',
                 fontWeight: index === data.totals.length - 1 ? 800 : 600,
-                color: index === data.totals.length - 1 ? palette.accent : '#111827',
+                color: index === data.totals.length - 1 ? palette.accent : foreground,
                 borderTop: index === data.totals.length - 1 ? `1px solid ${palette.border}` : undefined,
               }}
             >
-              <span>{total.label}</span>
-              <span style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{total.value}</span>
+              <span><bdi dir="auto">{total.label}</bdi></span>
+              <span style={{ textAlign: 'right', fontFamily: screenDigitFont, fontVariantNumeric: 'tabular-nums' }}>
+                <bdi dir="auto">{total.value}</bdi>
+              </span>
             </div>
           ))}
         </section>

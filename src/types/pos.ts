@@ -552,6 +552,7 @@ export interface StoreSettings {
 
   // Multi-Language & Invoice Printing Template Customization
   appLanguage?: 'en' | 'ar';
+  multiLanguageInvoices?: boolean;
   defaultPrinter?: string;
   invoiceShowProductName?: boolean;
   invoiceShowProductNameAr?: boolean;

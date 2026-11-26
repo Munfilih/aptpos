@@ -39,8 +39,10 @@ export interface PrintDocumentData {
   companyLogo?: string;
   fields: PrintDocumentField[];
   columns: string[];
+  numericColumns?: number[];
   rows: PrintDocumentRow[];
   totals: PrintDocumentField[];
+  multiLanguage?: boolean;
   footer?: string;
   qrDataUrl?: string;
   direction?: 'ltr' | 'rtl';

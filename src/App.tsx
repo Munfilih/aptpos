@@ -103,6 +103,7 @@ const DEFAULT_SETTINGS: StoreSettings = {
   kotPrinter: '',
   enableKot: false,
   appLanguage: 'en',
+  multiLanguageInvoices: false,
   defaultPrinter: 'System Default / افتراضي النظام',
   invoiceShowProductName: true,
   invoiceShowProductNameAr: true,

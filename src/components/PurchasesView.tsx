@@ -233,6 +233,7 @@ interface PurchasePrintEntry {
   notes: string;
   items: Array<{
     name: string;
+    nameAr?: string;
     sku: string;
     quantity: number;
     unit: string;
@@ -1541,42 +1542,69 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
             'purchase-invoice',
             settings.paperWidth || '80mm'
           );
+          const bilingual = settings.multiLanguageInvoices === true;
+          const localize = (english: string, arabic: string) =>
+            bilingual ? `${english} / ${arabic}` : isRtl ? arabic : english;
           const data: PrintDocumentData = {
             documentType: 'purchase-invoice',
-            title: isRtl ? 'فاتورة مشتريات' : 'Purchase Invoice',
+            title: localize('Purchase Invoice', 'فاتورة مشتريات'),
             number: printEntry.invoiceNumber,
             date: printEntry.receivedDate,
             companyName: settings.storeName,
-            companyNameAr: settings.storeNameAr,
+            companyNameAr: bilingual || isRtl ? settings.storeNameAr : undefined,
             companyAddress: settings.address,
             companyPhone: settings.phone,
             companyTaxId: settings.taxId,
             companyLogo: settings.storeLogoDataUrl,
             fields: [
-              { label: isRtl ? 'المورد' : 'Supplier', value: printEntry.vendorName },
-              { label: isRtl ? 'حالة الدفع' : 'Payment status', value: printEntry.paymentStatus },
-              ...(printEntry.notes ? [{ label: isRtl ? 'ملاحظات' : 'Notes', value: printEntry.notes }] : []),
+              { label: localize('Supplier', 'المورد'), value: printEntry.vendorName },
+              {
+                label: localize('Payment status', 'حالة الدفع'),
+                value: localize(
+                  printEntry.paymentStatus === 'PAID'
+                    ? 'Paid'
+                    : printEntry.paymentStatus === 'PARTIAL'
+                      ? 'Partial'
+                      : 'Pending',
+                  printEntry.paymentStatus === 'PAID'
+                    ? 'مدفوع'
+                    : printEntry.paymentStatus === 'PARTIAL'
+                      ? 'مدفوع جزئياً'
+                      : 'معلق'
+                ),
+              },
+              ...(printEntry.notes ? [{ label: localize('Notes', 'ملاحظات'), value: printEntry.notes }] : []),
             ],
-            columns: isRtl
-              ? ['#', 'الصنف', 'الكمية', 'التكلفة', 'الإجمالي']
-              : ['#', 'Item', 'Qty', 'Cost', 'Total'],
+            columns: [
+              '#',
+              localize('Item', 'الصنف'),
+              localize('Qty', 'الكمية'),
+              localize('Cost', 'التكلفة'),
+              localize('Total', 'الإجمالي'),
+            ],
+            numericColumns: [0, 2, 3, 4],
             rows: printEntry.items.map((item, index) => ({
               values: [
                 String(index + 1),
-                item.name,
+                bilingual && item.nameAr
+                  ? `${item.name} / ${item.nameAr}`
+                  : isRtl
+                    ? item.nameAr || item.name
+                    : item.name,
                 `${item.quantity} ${item.unit}`.trim(),
                 `${settings.currencySymbol || 'SAR'} ${item.unitCost.toFixed(settings.decimalPoints ?? 2)}`,
                 `${settings.currencySymbol || 'SAR'} ${item.total.toFixed(settings.decimalPoints ?? 2)}`,
               ],
             })),
             totals: [
-              { label: isRtl ? 'المجموع الفرعي' : 'Subtotal', value: printEntry.subtotal.toFixed(settings.decimalPoints ?? 2) },
-              { label: isRtl ? 'الضريبة' : 'VAT', value: printEntry.taxAmount.toFixed(settings.decimalPoints ?? 2) },
-              { label: isRtl ? 'الشحن' : 'Shipping', value: printEntry.shippingCost.toFixed(settings.decimalPoints ?? 2) },
-              { label: isRtl ? 'الإجمالي' : 'Total', value: printEntry.total.toFixed(settings.decimalPoints ?? 2) },
-              { label: isRtl ? 'المدفوع' : 'Paid', value: printEntry.paidAmount.toFixed(settings.decimalPoints ?? 2) },
+              { label: localize('Subtotal', 'المجموع الفرعي'), value: printEntry.subtotal.toFixed(settings.decimalPoints ?? 2) },
+              { label: localize('VAT', 'ضريبة القيمة المضافة'), value: printEntry.taxAmount.toFixed(settings.decimalPoints ?? 2) },
+              { label: localize('Shipping', 'الشحن'), value: printEntry.shippingCost.toFixed(settings.decimalPoints ?? 2) },
+              { label: localize('Total', 'الإجمالي'), value: printEntry.total.toFixed(settings.decimalPoints ?? 2) },
+              { label: localize('Paid', 'المدفوع'), value: printEntry.paidAmount.toFixed(settings.decimalPoints ?? 2) },
             ],
-            direction: isRtl ? 'rtl' : 'ltr',
+            multiLanguage: bilingual,
+            direction: isRtl && !bilingual ? 'rtl' : 'ltr',
           };
           printJob = await createPrintTemplateJob(data, settings, format);
         }
@@ -1780,7 +1808,8 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
             const product = products.find((candidate) => candidate.id === item.productId);
             const unit = getPurchaseUnit(product, item.unitId);
             return {
-              name: (isRtl && product?.nameAr) || product?.name || '',
+              name: product?.name || '',
+              nameAr: product?.nameAr || '',
               sku: product?.sku || '',
               quantity: Number(item.quantity) || 0,
               unit: unit.name,

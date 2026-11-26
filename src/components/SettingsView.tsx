@@ -148,35 +148,50 @@ function getCardDimensionInputs(settings: StoreSettings): Record<CardDimensionFi
 
 function getPrintTemplatePreviewData(
   documentType: PrintDocumentType,
-  isRtl: boolean
+  isRtl: boolean,
+  multiLanguage: boolean
 ): PrintDocumentData {
   const documentLabel = PRINT_DOCUMENT_OPTIONS.find((option) => option.id === documentType)?.label || 'Document';
+  const arabicTitle: Partial<Record<PrintDocumentType, string>> = {
+    'sales-invoice': 'فاتورة مبيعات',
+    'sales-return': 'مرتجع مبيعات',
+    'purchase-invoice': 'فاتورة مشتريات',
+    'purchase-return': 'مرتجع مشتريات',
+    kot: 'طلب المطبخ',
+    'ledger-statement': 'كشف دفتر الأستاذ',
+    'shift-report': 'تقرير الوردية',
+    'saudi-vat-report': 'ملخص ضريبة القيمة المضافة',
+  };
+  const localize = (english: string, arabic: string) =>
+    multiLanguage ? `${english} / ${arabic}` : isRtl ? arabic : english;
   return {
     documentType,
-    title: documentLabel,
+    title: localize(documentLabel, arabicTitle[documentType] || 'مستند'),
     number: 'APT-2026-00125',
     date: new Date().toLocaleDateString(isRtl ? 'ar-SA' : 'en-GB'),
     companyName: 'aptPOS Retail',
-    companyNameAr: 'متجر aptPOS',
+    companyNameAr: multiLanguage || isRtl ? 'متجر aptPOS' : undefined,
     companyAddress: 'King Fahd Road, Riyadh',
     companyPhone: '+966 11 234 5678',
     companyTaxId: '300000000000003',
     fields: [
-      { label: 'Customer / Supplier', value: 'Sample customer' },
-      { label: 'Cashier', value: 'Demo cashier' },
+      { label: localize('Customer / Supplier', 'العميل / المورد'), value: localize('Sample customer', 'عميل تجريبي') },
+      { label: localize('Cashier', 'الكاشير'), value: localize('Demo cashier', 'كاشير تجريبي') },
     ],
-    columns: ['#', 'Description', 'Qty', 'Total'],
+    columns: ['#', localize('Description', 'الوصف'), localize('Qty', 'الكمية'), localize('Total', 'الإجمالي')],
+    numericColumns: [0, 2, 3],
     rows: [
       { values: ['1', 'Sample product', '2', 'SAR 30.00'] },
       { values: ['2', 'Another item', '1', 'SAR 15.00'] },
     ],
     totals: [
-      { label: 'Subtotal', value: 'SAR 39.13' },
-      { label: 'VAT', value: 'SAR 5.87' },
-      { label: 'Total', value: 'SAR 45.00' },
+      { label: localize('Subtotal', 'المجموع الفرعي'), value: 'SAR 39.13' },
+      { label: localize('VAT', 'ضريبة القيمة المضافة'), value: 'SAR 5.87' },
+      { label: localize('Total', 'الإجمالي'), value: 'SAR 45.00' },
     ],
-    footer: isRtl ? 'شكراً لتعاملكم معنا' : 'Thank you for your business',
-    direction: isRtl ? 'rtl' : 'ltr',
+    multiLanguage,
+    footer: localize('Thank you for your business', 'شكراً لتعاملكم معنا'),
+    direction: isRtl && !multiLanguage ? 'rtl' : 'ltr',
   };
 }
 
@@ -973,7 +988,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       const templateId = profile?.templateId || templates[0]?.id;
       if (!templateId) throw new Error('No template is available for this document and paper size.');
       const job = await createPrintTemplateJob(
-        getPrintTemplatePreviewData(selectedPrintDocument, isRtl),
+        getPrintTemplatePreviewData(
+          selectedPrintDocument,
+          isRtl,
+          form.multiLanguageInvoices === true
+        ),
         form,
         selectedTemplate,
         templateId
@@ -2389,6 +2408,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       </div>
                     </div>
                   </div>
+                  <label className="flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <input
+                      type="checkbox"
+                      checked={form.multiLanguageInvoices === true}
+                      onChange={(event) => setForm((current) => ({
+                        ...current,
+                        multiLanguageInvoices: event.target.checked,
+                      }))}
+                      className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-600"
+                    />
+                    <span>
+                      <span className="block text-xs font-semibold text-slate-800">
+                        {isRtl ? 'طباعة الفواتير باللغتين' : 'Enable bilingual invoices'}
+                      </span>
+                      <span className="mt-1 block text-xs font-normal text-slate-600">
+                        {isRtl
+                          ? 'يعرض العناوين والحقول والإجماليات بالإنجليزية والعربية في جميع قوالب الفواتير.'
+                          : 'Show headings, fields, and totals in English and Arabic on all sales and purchase invoices and returns.'}
+                      </span>
+                    </span>
+                  </label>
                   {printPreviewError && <p role="alert" className="text-xs text-rose-700">{printPreviewError}</p>}
                   {settingsSaveError && <p role="alert" className="text-xs text-rose-700">{settingsSaveError}</p>}
                   <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">
