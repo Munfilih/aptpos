@@ -40,7 +40,7 @@ Runs in sequence:
 
 Output: `release\aptPOS-Setup-<version>.exe` (version is read from `package.json`; current: `1.0.36`)
 
-The installer creates aptPOS, aptRPOS, and aptERP shortcuts in the installation folder. aptPOS is the default desktop shortcut; the other shortcuts launch the same app in their respective modes and can be copied to the desktop.
+The installer creates one aptPOS shortcut. Choose aptERP, aptPOS, or aptRPOS in Settings → Theme → Default Screen Mode, then confirm the backup and restart. The app remembers the selected mode and updates the window title, icon, and login branding on launch. Previous mode-specific install-folder shortcuts are removed during installation.
 
 ## Thermal receipt sizing
 

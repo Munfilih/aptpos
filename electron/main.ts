@@ -41,6 +41,10 @@ function parseAppScreenMode(value: string | undefined): AppScreenMode | null {
   }
 }
 
+function isAppScreenMode(value: unknown): value is AppScreenMode {
+  return value === 'pos' || value === 'rpos' || value === 'erp';
+}
+
 function getAppScreenMode(args: readonly string[]): AppScreenMode {
   const screenArgument = args.find((argument) => argument.startsWith('--screen='));
   return parseAppScreenMode(screenArgument?.slice('--screen='.length)) || 'pos';
@@ -48,6 +52,34 @@ function getAppScreenMode(args: readonly string[]): AppScreenMode {
 
 function getAppProductName(mode: AppScreenMode): string {
   return mode === 'rpos' ? 'aptRPOS' : mode === 'erp' ? 'aptERP' : 'aptPOS';
+}
+
+function getScreenModePreferencesPath(): string {
+  return path.join(app.getPath('userData'), 'screen-mode.json');
+}
+
+async function readDefaultScreenMode(): Promise<AppScreenMode | null> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(getScreenModePreferencesPath(), 'utf8'));
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      !('defaultScreenMode' in parsed) ||
+      !isAppScreenMode(parsed.defaultScreenMode)
+    ) {
+      throw new Error('Saved default screen mode is invalid.');
+    }
+    return parsed.defaultScreenMode;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function writeDefaultScreenMode(mode: AppScreenMode): Promise<void> {
+  const preferencesPath = getScreenModePreferencesPath();
+  await mkdir(path.dirname(preferencesPath), { recursive: true });
+  await writeFile(preferencesPath, JSON.stringify({ defaultScreenMode: mode }, null, 2), 'utf8');
 }
 
 function getAppIconPath(mode: AppScreenMode): string {
@@ -222,7 +254,8 @@ async function checkForUpdates(): Promise<UpdateStatus> {
   }
 
   if (updateStatus.state === 'checking' || updateStatus.state === 'available' ||
-      updateStatus.state === 'downloading' || updateStatus.state === 'installing') {
+      updateStatus.state === 'downloading' || updateStatus.state === 'backing-up' ||
+      updateStatus.state === 'installing') {
     return updateStatus;
   }
 
@@ -1225,14 +1258,74 @@ ipcMain.handle('pos:updates:download', async (event) => {
   return downloadAvailableUpdate();
 });
 
-ipcMain.handle('pos:updates:install', (event) => {
+ipcMain.handle('pos:updates:install', async (event) => {
   assertTrustedSender(event);
   if (updateStatus.state !== 'downloaded') {
     throw new Error('No downloaded update is ready to install.');
   }
+  const { version, releaseNotes } = updateStatus;
+  const { response } = await dialog.showMessageBox(mainWindow!, {
+    type: 'question',
+    title: 'Install aptPOS update',
+    message: `aptPOS ${version} is ready to install.`,
+    detail: 'Create a database backup before installing and restarting?',
+    buttons: ['Back Up & Install', 'Install Without Backup', 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
+    noLink: true,
+  });
+  if (response === 2) return { cancelled: true };
+  if (updateStatus.state !== 'downloaded' || updateStatus.version !== version) {
+    throw new Error('The downloaded update is no longer ready to install.');
+  }
+  if (response === 0) {
+    publishUpdateStatus({
+      state: 'backing-up',
+      version,
+      ...(releaseNotes ? { releaseNotes } : {}),
+    });
+    try {
+      await createLocalDatabaseBackup();
+    } catch (error) {
+      publishUpdateStatus({
+        state: 'downloaded',
+        version,
+        ...(releaseNotes ? { releaseNotes } : {}),
+      });
+      throw error;
+    }
+  }
   closeApproved = true;
   publishUpdateStatus({ state: 'installing' });
   autoUpdater.quitAndInstall(false, true);
+  return { cancelled: false };
+});
+
+ipcMain.handle('pos:app:restart-with-screen-mode', async (event, rawMode: unknown) => {
+  assertTrustedSender(event);
+  if (!isAppScreenMode(rawMode)) {
+    throw new Error('Choose a valid screen mode.');
+  }
+
+  const { response } = await dialog.showMessageBox(mainWindow!, {
+    type: 'question',
+    title: 'Change default screen mode',
+    message: `Set ${getAppProductName(rawMode)} as the default screen mode?`,
+    detail: 'A database backup will be created before the app restarts.',
+    buttons: ['Back Up & Restart', 'Cancel'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  });
+  if (response !== 0) return { cancelled: true };
+
+  await createLocalDatabaseBackup();
+  await writeDefaultScreenMode(rawMode);
+  closeApproved = true;
+  const args = process.argv.slice(1).filter((argument) => !argument.startsWith('--screen='));
+  app.relaunch({ args: [...args, `--screen=${rawMode}`] });
+  app.exit(0);
+  return { cancelled: false };
 });
 
 ipcMain.handle('pos:backup:get-directory', (event) => {
@@ -1359,18 +1452,20 @@ app.on('window-all-closed', () => {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', (_event, commandLine) => {
+  app.on('second-instance', () => {
     if (!mainWindow) return;
-    const requestedScreenMode = getAppScreenMode(commandLine);
-    if (requestedScreenMode !== currentScreenMode) {
-      mainWindow.webContents.send('pos:app:launch-mode-requested', requestedScreenMode);
-    }
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
   });
 
   app.whenReady().then(async () => {
     try {
+      try {
+        const preferredScreenMode = await readDefaultScreenMode();
+        currentScreenMode = preferredScreenMode || (app.isPackaged ? 'pos' : currentScreenMode);
+      } catch (error) {
+        console.error('Could not load the saved screen mode; using the launch mode.', error);
+      }
       initializeAutoUpdater();
       const port = isDev ? 3000 : await startBackendServer();
       const targetUrl = isDev

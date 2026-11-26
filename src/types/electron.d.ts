@@ -20,7 +20,8 @@ declare global {
       getUpdateStatus: () => Promise<UpdateStatus>;
       checkForUpdates: () => Promise<UpdateStatus>;
       downloadUpdate: () => Promise<UpdateStatus>;
-      installUpdate: () => Promise<void>;
+      installUpdate: () => Promise<{ cancelled: boolean }>;
+      restartWithScreenMode: (mode: AppScreenMode) => Promise<{ cancelled: boolean }>;
       getBackupDirectory: () => Promise<string>;
       getBackupConfiguration: () => Promise<{
         directory: string;
@@ -42,7 +43,6 @@ declare global {
       disconnectGoogleDrive: () => Promise<{ clientId: string; connected: boolean }>;
       resolveCloseRequest: (shouldClose: boolean) => Promise<boolean>;
       onCloseRequested: (listener: () => void) => () => void;
-      onLaunchModeRequested: (listener: (mode: AppScreenMode) => void) => () => void;
       onUpdateStatus: (listener: (status: UpdateStatus) => void) => () => void;
     };
   }

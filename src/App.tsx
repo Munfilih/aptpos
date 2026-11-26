@@ -49,7 +49,6 @@ import type {
 import { APP_COMPONENTS, APP_VERSIONS } from './types/pos';
 import { parseVersionComponentPolicies } from './utils/versionComponentPolicies';
 import {
-  APP_SCREEN_MODE_QUERY_PARAM,
   getAppProductName,
   getAppScreenModeFromLocation,
 } from './utils/appScreenMode';
@@ -1181,17 +1180,6 @@ export function App() {
     document.title = `${appName} — Retail Billing & Inventory`;
   }, [appName]);
 
-  useEffect(() => {
-    const unsubscribe = window.electronAPI?.onLaunchModeRequested((mode) => {
-      if (mode === effectiveScreenMode) return;
-      if (!window.confirm(`Switch to ${getAppProductName(mode)}? The app will reload.`)) return;
-      const nextUrl = new URL(window.location.href);
-      nextUrl.searchParams.set(APP_SCREEN_MODE_QUERY_PARAM, mode);
-      window.location.assign(nextUrl.toString());
-    });
-    return unsubscribe;
-  }, [effectiveScreenMode]);
-
   const hasPermission = (tabId: NavTab) => {
     if (!currentUser) return false;
     if (tabId === 'sales-entry') {
@@ -1240,6 +1228,7 @@ export function App() {
   const settingsWorkspace = (
     <SettingsView
       settings={settings}
+      appScreenMode={effectiveScreenMode}
       activeSection={settingsSection}
       onActiveSectionChange={setSettingsSection}
       showSectionNavigation={!showSettingsComponent}

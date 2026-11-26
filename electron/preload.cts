@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkForUpdates: () => ipcRenderer.invoke('pos:updates:check'),
   downloadUpdate: () => ipcRenderer.invoke('pos:updates:download'),
   installUpdate: () => ipcRenderer.invoke('pos:updates:install'),
+  restartWithScreenMode: (mode: 'pos' | 'rpos' | 'erp') =>
+    ipcRenderer.invoke('pos:app:restart-with-screen-mode', mode),
   getBackupDirectory: () => ipcRenderer.invoke('pos:backup:get-directory'),
   getBackupConfiguration: () => ipcRenderer.invoke('pos:backup:get-configuration'),
   setBackupConfiguration: (configuration: { mode: 'on-close' | 'manual' | 'scheduled'; scheduledTime: string }) =>
@@ -50,12 +52,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
       listener();
     }
     return () => closeRequestListeners.delete(listener);
-  },
-  onLaunchModeRequested: (listener: (mode: 'pos' | 'rpos' | 'erp') => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, mode: 'pos' | 'rpos' | 'erp') =>
-      listener(mode);
-    ipcRenderer.on('pos:app:launch-mode-requested', handler);
-    return () => ipcRenderer.removeListener('pos:app:launch-mode-requested', handler);
   },
   openExternal: (url: string) => ipcRenderer.invoke('pos:open-external', url),
   onUpdateStatus: (listener: (status: UpdateStatus) => void) => {

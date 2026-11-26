@@ -5,7 +5,7 @@
 !macroend
 
 !macro customInstall
-  CreateShortCut "$INSTDIR\aptPOS.lnk" "$INSTDIR\aptPOS.exe" "--screen=pos" "$INSTDIR\resources\aptpos.ico" 0 SW_SHOWNORMAL "" "aptPOS" "$INSTDIR"
-  CreateShortCut "$INSTDIR\aptRPOS.lnk" "$INSTDIR\aptPOS.exe" "--screen=rpos" "$INSTDIR\resources\aptrpos.ico" 0 SW_SHOWNORMAL "" "aptRPOS" "$INSTDIR"
-  CreateShortCut "$INSTDIR\aptERP.lnk" "$INSTDIR\aptPOS.exe" "--screen=erp" "$INSTDIR\resources\apterp.ico" 0 SW_SHOWNORMAL "" "aptERP" "$INSTDIR"
+  Delete "$INSTDIR\aptPOS.lnk"
+  Delete "$INSTDIR\aptRPOS.lnk"
+  Delete "$INSTDIR\aptERP.lnk"
 !macroend

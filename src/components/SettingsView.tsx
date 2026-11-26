@@ -28,6 +28,7 @@ import {
   Sun,
 } from 'lucide-react';
 import type {
+  AppScreenMode,
   AppVersion,
   InvoiceTemplateSettings,
   PaperWidth,
@@ -47,6 +48,7 @@ import type { UpdateStatus } from '../../electron/updateStatus';
 
 interface SettingsViewProps {
   settings: StoreSettings;
+  appScreenMode: AppScreenMode;
   activeSection: SettingsSectionId;
   onActiveSectionChange: (section: SettingsSectionId) => void;
   showSectionNavigation?: boolean;
@@ -193,6 +195,7 @@ export const SettingsSectionTabs: React.FC<SettingsSectionTabsProps> = ({
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   settings,
+  appScreenMode,
   activeSection,
   onActiveSectionChange,
   showSectionNavigation = true,
@@ -256,6 +259,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [resetError, setResetError] = useState<string | null>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: 'idle' });
   const [updateActionError, setUpdateActionError] = useState<string | null>(null);
+  const [selectedScreenMode, setSelectedScreenMode] = useState<AppScreenMode>(appScreenMode);
+  const [screenModeActionBusy, setScreenModeActionBusy] = useState(false);
+  const [screenModeActionError, setScreenModeActionError] = useState<string | null>(null);
   const [isRestoring, setIsRestoring] = useState(false);
   const [restoreNotice, setRestoreNotice] = useState<string | null>(null);
   const [backupDirectory, setBackupDirectory] = useState<string | null>(null);
@@ -276,6 +282,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const storeLogoInputRef = useRef<HTMLInputElement>(null);
   const [storeLogoError, setStoreLogoError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelectedScreenMode(appScreenMode);
+  }, [appScreenMode]);
 
   const handleStoreLogoChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const input = event.currentTarget;
@@ -527,6 +537,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       await api.installUpdate();
     } catch (error) {
       setUpdateActionError((error as Error).message || 'Could not install the update.');
+    }
+  };
+
+  const handleSetDefaultScreenMode = async () => {
+    const api = window.electronAPI;
+    if (!api?.restartWithScreenMode) return;
+    setScreenModeActionBusy(true);
+    setScreenModeActionError(null);
+    try {
+      await api.restartWithScreenMode(selectedScreenMode);
+    } catch (error) {
+      setScreenModeActionError(
+        error instanceof Error ? error.message : 'Could not change the default screen mode.'
+      );
+    } finally {
+      setScreenModeActionBusy(false);
     }
   };
 
@@ -1136,6 +1162,61 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <option value="dark">{isRtl ? 'داكن' : 'Dark'}</option>
               </select>
             </section>
+          )}
+
+          {activeSettingsSection === 'screen' && (
+            window.electronAPI?.restartWithScreenMode && (
+              <section className="settings-item-list settings-item-row settings-input-row">
+                <div className="settings-item-copy">
+                  <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                    <Monitor className="h-4 w-4" />
+                    {isRtl ? 'وضع الشاشة الافتراضي' : 'Default Screen Mode'}
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {isRtl
+                      ? 'اختر aptERP أو aptPOS أو aptRPOS. سيتم إنشاء نسخة احتياطية قبل إعادة تشغيل التطبيق.'
+                      : 'Choose aptERP, aptPOS, or aptRPOS. The app creates a database backup before restarting.'}
+                  </p>
+                </div>
+                <div className="settings-item-control flex flex-col gap-2">
+                  <select
+                    value={selectedScreenMode}
+                    aria-label={isRtl ? 'وضع الشاشة الافتراضي' : 'Default Screen Mode'}
+                    disabled={screenModeActionBusy}
+                    onChange={(event) => {
+                      if (
+                        event.target.value === 'pos' ||
+                        event.target.value === 'rpos' ||
+                        event.target.value === 'erp'
+                      ) {
+                        setSelectedScreenMode(event.target.value);
+                        setScreenModeActionError(null);
+                      }
+                    }}
+                    className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:opacity-60"
+                  >
+                    <option value="erp">aptERP</option>
+                    <option value="pos">aptPOS</option>
+                    <option value="rpos">aptRPOS</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => void handleSetDefaultScreenMode()}
+                    disabled={screenModeActionBusy}
+                    className="rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {screenModeActionBusy
+                      ? (isRtl ? 'جارٍ إنشاء النسخة وإعادة التشغيل...' : 'Backing up and restarting...')
+                      : (isRtl ? 'تعيين كافتراضي' : 'Set as Default')}
+                  </button>
+                </div>
+                {screenModeActionError && (
+                  <p className="settings-item-copy text-xs text-red-700" role="alert">
+                    {screenModeActionError}
+                  </p>
+                )}
+              </section>
+            )
           )}
 
           {activeSettingsSection === 'screen' && (
@@ -3091,7 +3172,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       ? <AlertTriangle className="h-5 w-5" />
                       : updateStatus.state === 'up-to-date' || updateStatus.state === 'downloaded'
                         ? <Check className="h-5 w-5" />
-                        : <RefreshCw className={`h-5 w-5 ${updateStatus.state === 'checking' ? 'animate-spin' : ''}`} />}
+                        : <RefreshCw className={`h-5 w-5 ${updateStatus.state === 'checking' || updateStatus.state === 'backing-up' ? 'animate-spin' : ''}`} />}
                   </span>
                   <div className="min-w-0">
                     <p className={`text-sm font-semibold ${
@@ -3119,6 +3200,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                             return isRtl
                               ? `الإصدار ${updateStatus.version} جاهز للتثبيت.`
                               : `Version ${updateStatus.version} is ready to install.`;
+                          case 'backing-up':
+                            return isRtl
+                              ? `جارٍ إنشاء نسخة احتياطية قبل تثبيت الإصدار ${updateStatus.version}...`
+                              : `Creating a backup before installing version ${updateStatus.version}...`;
                           case 'up-to-date':
                             return isRtl
                               ? `التطبيق محدّث بالفعل (${updateStatus.version}).`
@@ -3136,6 +3221,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     </p>
                     {updateStatus.state === 'available' ||
                     updateStatus.state === 'downloading' ||
+                    updateStatus.state === 'backing-up' ||
                     updateStatus.state === 'downloaded' ? (
                       <p className="mt-1 text-xs text-slate-500">
                         {isRtl ? `الإصدار ${updateStatus.version}` : `Version ${updateStatus.version}`}
@@ -3152,6 +3238,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       updateStatus.state === 'checking' ||
                       updateStatus.state === 'available' ||
                       updateStatus.state === 'downloading' ||
+                      updateStatus.state === 'backing-up' ||
                       updateStatus.state === 'installing' ||
                       updateStatus.state === 'downloaded'
                     }
@@ -3207,6 +3294,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
               {(updateStatus.state === 'available' ||
                 updateStatus.state === 'downloading' ||
+                updateStatus.state === 'backing-up' ||
                 updateStatus.state === 'downloaded') && (
                 <div className="border-t border-slate-100 px-5 py-4">
                   {updateStatus.releaseNotes && (
