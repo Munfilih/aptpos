@@ -12,6 +12,7 @@ import {
   resolveInvoiceMarginsMm,
   waitPrintSettlingDelay,
 } from '../utils/thermalPrinting';
+import { createVoucherTemplateJob, printTemplateJob } from '../printTemplates/render';
 
 interface SalesReturnHistoryViewProps {
   vouchers: SalesReturnVoucher[];
@@ -67,52 +68,20 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
     setPrintError(null);
     setPrintingVoucher(voucher);
     setIsPrinting(true);
-    document.body.classList.add('receipt-printing');
 
     try {
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      const thermalWidthMm = activeFormat === '58mm' ? 58 : 80;
-      const paddingCss = `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`;
-      const pageSize = activeFormat === 'A4'
-        ? { width: 210_000, height: 297_000 }
-        : measureThermalPageSize(printAreaRef.current, {
-            elementWidthMm: thermalWidthMm,
-            pageWidthMm: thermalWidthMm,
-            padding: paddingCss,
-            container: document.querySelector('.receipt-print-source'),
-          });
-
-      if (window.electronAPI?.isElectron) {
-        const printerMode = templateSettings?.printerMode
-          || (templateSettings?.defaultPrinter ? 'saved-printer' : 'system-default');
-        const html = buildStandaloneThermalPrintHtml(printAreaRef.current, {
-          widthMm: activeFormat === 'A4' ? 210 : thermalWidthMm,
-          pageSize,
-          padding: activeFormat === 'A4' ? undefined : paddingCss,
-        });
-        const result = await window.electronAPI.printReceipt({
-          silent: printerMode !== 'choose-at-print-time',
-          printerName: printerMode === 'saved-printer'
-            ? templateSettings?.defaultPrinter || undefined
-            : undefined,
-          pageSize,
-          html,
-        });
-        if (!result.ok) {
-          throw new Error(result.error || 'Return voucher could not be printed.');
-        }
-      } else {
-        if (activeFormat !== 'A4') {
-          printWithThermalPageSize(pageSize);
-        } else {
-          window.print();
-        }
-      }
+      const job = await createVoucherTemplateJob(
+        'sales-return',
+        voucher.id,
+        settings,
+        activeFormat,
+        isRtl
+      );
+      await printTemplateJob(job);
     } catch (error) {
       console.error('Failed to print sales return voucher:', error);
       setPrintError(error instanceof Error ? error.message : 'Return voucher could not be printed.');
     } finally {
-      document.body.classList.remove('receipt-printing');
       setIsPrinting(false);
       setPrintingVoucher(null);
     }

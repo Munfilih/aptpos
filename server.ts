@@ -32,7 +32,6 @@ import {
   deleteSale,
   deleteUser,
   deleteVendor,
-  flushPrintQueue,
   getDb,
   hasDefaultAdminCredentials,
   getDemoAccess,
@@ -45,6 +44,7 @@ import {
   importProducts,
   listCustomers,
   listPrintQueue,
+  markPrintQueueJobPrinted,
   listProducts,
   listInventoryOptions,
   listPurchases,
@@ -77,6 +77,12 @@ import {
   setCashbookOpeningBalance,
   openCashierShift,
 } from './server/db';
+import {
+  buildPurchaseInvoicePrintData,
+  buildPurchaseReturnPrintData,
+  buildSalesInvoicePrintData,
+  buildSalesReturnPrintData,
+} from './src/utils/voucherPrintData';
 import { APP_COMPONENTS, APP_VERSIONS } from './src/types/pos';
 import { parseVersionComponentPolicies } from './src/utils/versionComponentPolicies';
 import type {
@@ -1683,6 +1689,79 @@ async function startServer(): Promise<Server> {
     }
   });
 
+  app.get('/api/print-data/:voucherType/:id', async (req, res) => {
+    try {
+      const voucherId = Number(req.params.id);
+      if (!Number.isInteger(voucherId) || voucherId <= 0) {
+        res.status(400).json({ error: 'A valid voucher ID is required.' });
+        return;
+      }
+
+      const settings = await getSettings();
+      const voucherType = req.params.voucherType;
+      if (voucherType === 'sales-invoice') {
+        const sale = (await listSales()).find((entry) => entry.id === voucherId);
+        if (!sale) {
+          res.status(404).json({ error: 'Sales invoice was not found.' });
+          return;
+        }
+        const customer = sale.customerId
+          ? (await listCustomers()).find((entry) => entry.id === sale.customerId)
+          : undefined;
+        res.json({
+          voucherType,
+          context: buildSalesInvoicePrintData(sale, settings, customer),
+        });
+        return;
+      }
+      if (voucherType === 'sales-return') {
+        const voucher = (await listSalesReturnVouchers()).find((entry) => entry.id === voucherId);
+        if (!voucher) {
+          res.status(404).json({ error: 'Sales return voucher was not found.' });
+          return;
+        }
+        const sourceSale = (await listSales()).find((sale) =>
+          voucher.sourceInvoices.includes(sale.receiptNumber)
+        );
+        res.json({
+          voucherType,
+          context: buildSalesReturnPrintData(voucher, settings, sourceSale?.customerName),
+        });
+        return;
+      }
+      if (voucherType === 'purchase-invoice') {
+        const purchase = (await listPurchases()).find((entry) => entry.id === voucherId);
+        if (!purchase) {
+          res.status(404).json({ error: 'Purchase invoice was not found.' });
+          return;
+        }
+        const vendor = (await listVendors()).find((entry) => entry.id === purchase.vendorId);
+        res.json({
+          voucherType,
+          context: buildPurchaseInvoicePrintData(purchase, settings, vendor),
+        });
+        return;
+      }
+      if (voucherType === 'purchase-return') {
+        const voucher = (await listPurchaseReturnVouchers()).find((entry) => entry.id === voucherId);
+        if (!voucher) {
+          res.status(404).json({ error: 'Purchase return voucher was not found.' });
+          return;
+        }
+        const vendor = (await listVendors()).find((entry) => entry.id === voucher.vendorId);
+        res.json({
+          voucherType,
+          context: buildPurchaseReturnPrintData(voucher, settings, vendor),
+        });
+        return;
+      }
+
+      res.status(404).json({ error: 'Unsupported voucher type.' });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   app.get('/api/version-control', async (_req, res) => {
     try {
       const versionControl = await requestVersionControlPortal();
@@ -1768,10 +1847,19 @@ async function startServer(): Promise<Server> {
     }
   });
 
-  app.post('/api/print-queue/flush', async (_req, res) => {
+  app.post('/api/print-queue/:id/printed', async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      res.status(400).json({ error: 'Print queue job ID is invalid.' });
+      return;
+    }
     try {
-      await flushPrintQueue();
-      res.json({ flushed: true });
+      const updated = await markPrintQueueJobPrinted(id);
+      if (!updated) {
+        res.status(404).json({ error: 'Queued print job was not found.' });
+        return;
+      }
+      res.json({ printed: true });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

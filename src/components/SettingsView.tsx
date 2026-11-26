@@ -30,9 +30,9 @@ import {
 import type {
   AppScreenMode,
   AppVersion,
-  InvoiceTemplateSettings,
   PaperWidth,
   PrintJob,
+  PrintDocumentType,
   StoreSettings,
   SettingsSectionId,
   TaxType,
@@ -43,12 +43,15 @@ import type {
 import { APP_COMPONENTS, APP_VERSIONS } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
 import { BUILT_IN_PAYMENT_METHODS, getPaymentMethods } from '../utils/paymentMethods';
-import { MINIMUM_INVOICE_MARGIN_MM, resolveInvoiceMarginsMm } from '../utils/thermalPrinting';
+import { getPrintFormats, getPrintTemplates, PRINT_DOCUMENT_OPTIONS } from '../printTemplates/catalog';
+import { createPrintTemplateJob } from '../printTemplates/render';
+import type { PrintDocumentData } from '../printTemplates/types';
 import type { UpdateStatus } from '../../electron/updateStatus';
 
 interface SettingsViewProps {
   settings: StoreSettings;
   appScreenMode: AppScreenMode;
+  onAppScreenModeChange: (mode: AppScreenMode) => void;
   activeSection: SettingsSectionId;
   onActiveSectionChange: (section: SettingsSectionId) => void;
   showSectionNavigation?: boolean;
@@ -143,6 +146,40 @@ function getCardDimensionInputs(settings: StoreSettings): Record<CardDimensionFi
   };
 }
 
+function getPrintTemplatePreviewData(
+  documentType: PrintDocumentType,
+  isRtl: boolean
+): PrintDocumentData {
+  const documentLabel = PRINT_DOCUMENT_OPTIONS.find((option) => option.id === documentType)?.label || 'Document';
+  return {
+    documentType,
+    title: documentLabel,
+    number: 'APT-2026-00125',
+    date: new Date().toLocaleDateString(isRtl ? 'ar-SA' : 'en-GB'),
+    companyName: 'aptPOS Retail',
+    companyNameAr: 'متجر aptPOS',
+    companyAddress: 'King Fahd Road, Riyadh',
+    companyPhone: '+966 11 234 5678',
+    companyTaxId: '300000000000003',
+    fields: [
+      { label: 'Customer / Supplier', value: 'Sample customer' },
+      { label: 'Cashier', value: 'Demo cashier' },
+    ],
+    columns: ['#', 'Description', 'Qty', 'Total'],
+    rows: [
+      { values: ['1', 'Sample product', '2', 'SAR 30.00'] },
+      { values: ['2', 'Another item', '1', 'SAR 15.00'] },
+    ],
+    totals: [
+      { label: 'Subtotal', value: 'SAR 39.13' },
+      { label: 'VAT', value: 'SAR 5.87' },
+      { label: 'Total', value: 'SAR 45.00' },
+    ],
+    footer: isRtl ? 'شكراً لتعاملكم معنا' : 'Thank you for your business',
+    direction: isRtl ? 'rtl' : 'ltr',
+  };
+}
+
 interface SettingsSectionTabsProps {
   activeSection: SettingsSectionId | null;
   isAppAdmin: boolean;
@@ -196,6 +233,7 @@ export const SettingsSectionTabs: React.FC<SettingsSectionTabsProps> = ({
 export const SettingsView: React.FC<SettingsViewProps> = ({
   settings,
   appScreenMode,
+  onAppScreenModeChange,
   activeSection,
   onActiveSectionChange,
   showSectionNavigation = true,
@@ -220,6 +258,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     () => getCardDimensionInputs(settings)
   );
   const [selectedTemplate, setSelectedTemplate] = useState<PaperWidth>(settings.paperWidth || '80mm');
+  const [selectedPrintDocument, setSelectedPrintDocument] = useState<PrintDocumentType>('sales-invoice');
+  const [printPreviewHtml, setPrintPreviewHtml] = useState<string | null>(null);
+  const [printPreviewError, setPrintPreviewError] = useState<string | null>(null);
+  const [isPreparingPrintPreview, setIsPreparingPrintPreview] = useState(false);
+  const [isFlushingPrintQueue, setIsFlushingPrintQueue] = useState(false);
+  const [printQueueError, setPrintQueueError] = useState<string | null>(null);
   const [availablePrinters, setAvailablePrinters] = useState<Array<{ name: string; displayName: string }>>([]);
   const [printerListError, setPrinterListError] = useState<string | null>(null);
   const [printerDialogOpen, setPrinterDialogOpen] = useState(false);
@@ -262,6 +306,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [selectedScreenMode, setSelectedScreenMode] = useState<AppScreenMode>(appScreenMode);
   const [screenModeActionBusy, setScreenModeActionBusy] = useState(false);
   const [screenModeActionError, setScreenModeActionError] = useState<string | null>(null);
+  const [screenModeApplied, setScreenModeApplied] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
   const [restoreNotice, setRestoreNotice] = useState<string | null>(null);
   const [backupDirectory, setBackupDirectory] = useState<string | null>(null);
@@ -462,45 +507,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
-  const templateSettings = (
-    current: StoreSettings,
-    format: PaperWidth
-  ): InvoiceTemplateSettings => ({
-    defaultPrinter: current.defaultPrinter?.toLowerCase().startsWith('system default')
-      ? ''
-      : current.defaultPrinter,
-    printerMode: current.defaultPrinter && !current.defaultPrinter.toLowerCase().startsWith('system default')
-      ? 'saved-printer'
-      : 'system-default',
-    invoiceShowProductName: current.invoiceShowProductName,
-    invoiceShowProductNameAr: current.invoiceShowProductNameAr,
-    invoiceShowBarcode: current.invoiceShowBarcode,
-    invoiceShowCustomerInfo: current.invoiceShowCustomerInfo,
-    invoiceShowCashierName: current.invoiceShowCashierName,
-    invoiceShowTaxDetails: current.invoiceShowTaxDetails,
-    invoiceShowStoreAddress: current.invoiceShowStoreAddress,
-    invoiceShowStoreLogo: current.invoiceShowStoreLogo,
-    invoiceShowReceiptBarcode: current.invoiceShowReceiptBarcode,
-    invoiceShowFooter: current.invoiceShowFooter,
-    invoiceShowQrCode: current.invoiceShowQrCode,
-    ...current.invoiceTemplates?.[format],
-    invoiceMarginsMm: resolveInvoiceMarginsMm(
-      format,
-      current.invoiceTemplates?.[format]?.invoiceMarginsMm
-    ),
-  });
-
-  const updateTemplateSettings = <K extends keyof InvoiceTemplateSettings>(
-    key: K,
-    value: InvoiceTemplateSettings[K]
+  const updatePrintDocumentProfile = (
+    update: Partial<NonNullable<NonNullable<StoreSettings['printDocumentProfiles']>[PrintDocumentType]>[PaperWidth]>
   ) => {
     setForm((current) => ({
       ...current,
-      invoiceTemplates: {
-        ...current.invoiceTemplates,
-        [selectedTemplate]: {
-          ...templateSettings(current, selectedTemplate),
-          [key]: value,
+      printDocumentProfiles: {
+        ...current.printDocumentProfiles,
+        [selectedPrintDocument]: {
+          ...current.printDocumentProfiles?.[selectedPrintDocument],
+          [selectedTemplate]: {
+            ...current.printDocumentProfiles?.[selectedPrintDocument]?.[selectedTemplate],
+            ...update,
+          },
         },
       },
     }));
@@ -542,14 +561,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleSetDefaultScreenMode = async () => {
     const api = window.electronAPI;
-    if (!api?.restartWithScreenMode) return;
+    if (!api?.setDefaultScreenMode) return;
     setScreenModeActionBusy(true);
     setScreenModeActionError(null);
+    setScreenModeApplied(false);
     try {
-      await api.restartWithScreenMode(selectedScreenMode);
+      await api.setDefaultScreenMode(selectedScreenMode);
+      onAppScreenModeChange(selectedScreenMode);
+      setScreenModeApplied(true);
     } catch (error) {
+      setScreenModeApplied(false);
       setScreenModeActionError(
-        error instanceof Error ? error.message : 'Could not change the default screen mode.'
+        error instanceof Error ? error.message : 'Could not save the default screen mode.'
       );
     } finally {
       setScreenModeActionBusy(false);
@@ -788,7 +811,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     const updatedSettings = normalizeCardDimensionSettings(settings);
     setForm(updatedSettings);
     setCardDimensionInputs(getCardDimensionInputs(updatedSettings));
-    setSelectedTemplate(settings.paperWidth || '80mm');
+    const formats = getPrintFormats(selectedPrintDocument);
+    const savedFormat = updatedSettings.printDocumentFormats?.[selectedPrintDocument];
+    setSelectedTemplate(
+      savedFormat && formats.includes(savedFormat)
+        ? savedFormat
+        : formats.includes(settings.paperWidth || '80mm')
+          ? settings.paperWidth || '80mm'
+          : formats[0]
+    );
   }, [settings]);
 
   const updateCardDimensionInput = (field: CardDimensionField, value: string) => {
@@ -880,12 +911,79 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const selectPrinter = (printerName: string) => {
     if (printerDialogTarget === 'kot') {
-      setForm((current) => ({ ...current, kotPrinter: printerName }));
+      setForm((current) => ({
+        ...current,
+        kotPrinter: printerName,
+        printDocumentProfiles: {
+          ...current.printDocumentProfiles,
+          kot: {
+            ...current.printDocumentProfiles?.kot,
+            [selectedTemplate]: {
+              ...current.printDocumentProfiles?.kot?.[selectedTemplate],
+              printerName,
+              printerMode: printerName ? 'saved-printer' : 'system-default',
+            },
+          },
+        },
+      }));
     } else {
-      updateTemplateSettings('defaultPrinter', printerName);
-      updateTemplateSettings('printerMode', printerName ? 'saved-printer' : 'system-default');
+      updatePrintDocumentProfile({
+        printerName,
+        printerMode: printerName ? 'saved-printer' : 'system-default',
+      });
     }
     setPrinterDialogOpen(false);
+  };
+
+  const handleSavePrintSelection = async () => {
+    setSaving(true);
+    setSavedNotice(false);
+    setSettingsSaveError(null);
+    try {
+      const settingsToSave = { ...form };
+      delete settingsToSave.versionComponentPolicies;
+      await onSaveSettings(settingsToSave);
+      setSavedNotice(true);
+      setTimeout(() => setSavedNotice(false), 3000);
+    } catch (error) {
+      setSettingsSaveError(error instanceof Error ? error.message : 'Could not save print settings.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleFlushPrintQueue = async () => {
+    setIsFlushingPrintQueue(true);
+    setPrintQueueError(null);
+    try {
+      await onFlushPrintQueue();
+    } catch (error) {
+      setPrintQueueError(error instanceof Error ? error.message : 'Could not print queued receipts.');
+    } finally {
+      setIsFlushingPrintQueue(false);
+    }
+  };
+
+  const handlePreviewPrintTemplate = async () => {
+    setIsPreparingPrintPreview(true);
+    setPrintPreviewError(null);
+    try {
+      const profile = form.printDocumentProfiles?.[selectedPrintDocument]?.[selectedTemplate];
+      const templates = getPrintTemplates(selectedPrintDocument, selectedTemplate);
+      const templateId = profile?.templateId || templates[0]?.id;
+      if (!templateId) throw new Error('No template is available for this document and paper size.');
+      const job = await createPrintTemplateJob(
+        getPrintTemplatePreviewData(selectedPrintDocument, isRtl),
+        form,
+        selectedTemplate,
+        templateId
+      );
+      setPrintPreviewHtml(job.html);
+    } catch (error) {
+      setPrintPreviewError(error instanceof Error ? error.message : 'Could not prepare the template preview.');
+    } finally {
+      setIsPreparingPrintPreview(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -1091,29 +1189,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
-  const activeTemplateSettings = templateSettings(form, selectedTemplate);
-  const activeInvoiceMarginsMm = resolveInvoiceMarginsMm(
-    selectedTemplate,
-    activeTemplateSettings.invoiceMarginsMm
-  );
-  const invoiceOptions: Array<{
-    key: keyof Omit<InvoiceTemplateSettings, 'defaultPrinter' | 'invoiceShowReceiptBarcode'>;
-    label: string;
-    desc: string;
-    val: boolean;
-  }> = [
-    { key: 'invoiceShowProductName', label: t.showProductName, desc: 'Display English / primary item title', val: activeTemplateSettings.invoiceShowProductName !== false },
-    { key: 'invoiceShowProductNameAr', label: t.showProductNameAr, desc: 'Display Arabic item title below name', val: activeTemplateSettings.invoiceShowProductNameAr !== false },
-    { key: 'invoiceShowBarcode', label: t.showBarcode, desc: 'Include item SKU/barcode in row', val: activeTemplateSettings.invoiceShowBarcode === true },
-    { key: 'invoiceShowCustomerInfo', label: t.showCustomerInfo, desc: 'Customer name and ledger info', val: activeTemplateSettings.invoiceShowCustomerInfo !== false },
-    { key: 'invoiceShowCashierName', label: t.showCashierName, desc: 'Cashier operator name on invoice', val: activeTemplateSettings.invoiceShowCashierName !== false },
-    { key: 'invoiceShowTaxDetails', label: t.showTaxDetails, desc: 'Subtotal excl. tax & VAT breakdown', val: activeTemplateSettings.invoiceShowTaxDetails !== false },
-    { key: 'invoiceShowStoreAddress', label: t.showStoreAddress, desc: 'Store street address & phone number', val: activeTemplateSettings.invoiceShowStoreAddress !== false },
-    { key: 'invoiceShowStoreLogo', label: isRtl ? 'إظهار شعار المتجر' : 'Show store logo', desc: isRtl ? 'إظهار شعار المتجر في معاينة وطباعة الفاتورة' : 'Show the configured store logo on invoice previews and prints', val: activeTemplateSettings.invoiceShowStoreLogo !== false },
-    { key: 'invoiceShowFooter', label: t.showFooter, desc: 'Bilingual thank you footer notice', val: activeTemplateSettings.invoiceShowFooter !== false },
-    { key: 'invoiceShowQrCode', label: t.showQrCode, desc: 'Include the electronic invoice QR code', val: activeTemplateSettings.invoiceShowQrCode !== false },
-  ];
-
+  const selectedPrintFormats = getPrintFormats(selectedPrintDocument);
+  const selectedPrintTemplates = getPrintTemplates(selectedPrintDocument, selectedTemplate);
+  const selectedPrintProfile = form.printDocumentProfiles?.[selectedPrintDocument]?.[selectedTemplate];
+  const selectedPrintTemplateId = selectedPrintProfile?.templateId || selectedPrintTemplates[0]?.id || '';
+  const selectedPrintTemplateLabel =
+    selectedPrintTemplates.find((template) => template.id === selectedPrintTemplateId)?.label
+    || selectedPrintTemplates[0]?.label
+    || 'No template available';
+  const selectedPrinterName = selectedPrintProfile?.printerName
+    || (selectedPrintDocument === 'kot' ? form.kotPrinter : '')
+    || '';
   return (
     <div ref={settingsViewRef} className="settings-view flex min-h-0 flex-1 flex-col overflow-hidden">
       {showSectionNavigation && (
@@ -1165,23 +1251,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           )}
 
           {activeSettingsSection === 'screen' && (
-            window.electronAPI?.restartWithScreenMode && (
+            window.electronAPI?.setDefaultScreenMode && (
               <section className="settings-item-list settings-item-row settings-input-row">
                 <div className="settings-item-copy">
                   <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                     <Monitor className="h-4 w-4" />
-                    {isRtl ? 'وضع الشاشة الافتراضي' : 'Default Screen Mode'}
+                    {isRtl ? 'وضع شاشة المبيعات' : 'Sales Screen Mode'}
                   </h2>
                   <p className="mt-1 text-xs text-slate-500">
                     {isRtl
-                      ? 'اختر aptERP أو aptPOS أو aptRPOS. سيتم إنشاء نسخة احتياطية قبل إعادة تشغيل التطبيق.'
-                      : 'Choose aptERP, aptPOS, or aptRPOS. The app creates a database backup before restarting.'}
+                      ? 'اختر aptERP أو aptPOS أو aptRPOS. يتغير إطار المبيعات الآن، ويظهر تصميم تسجيل الدخول عند تشغيل التطبيق مرة أخرى.'
+                      : 'Choose aptERP, aptPOS, or aptRPOS. The sales window changes now; login branding updates the next time the app starts.'}
                   </p>
                 </div>
                 <div className="settings-item-control flex flex-col gap-2">
                   <select
                     value={selectedScreenMode}
-                    aria-label={isRtl ? 'وضع الشاشة الافتراضي' : 'Default Screen Mode'}
+                    aria-label={isRtl ? 'وضع شاشة المبيعات' : 'Sales Screen Mode'}
                     disabled={screenModeActionBusy}
                     onChange={(event) => {
                       if (
@@ -1191,6 +1277,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       ) {
                         setSelectedScreenMode(event.target.value);
                         setScreenModeActionError(null);
+                        setScreenModeApplied(false);
                       }
                     }}
                     className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:opacity-60"
@@ -1203,11 +1290,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     type="button"
                     onClick={() => void handleSetDefaultScreenMode()}
                     disabled={screenModeActionBusy}
-                    className="rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-60"
+                    className={`inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold text-white transition-colors duration-200 ${
+                      screenModeApplied ? 'bg-green-700 hover:bg-green-800' : 'bg-blue-700 hover:bg-blue-800'
+                    } disabled:cursor-not-allowed disabled:opacity-60`}
+                    aria-live="polite"
                   >
-                    {screenModeActionBusy
-                      ? (isRtl ? 'جارٍ إنشاء النسخة وإعادة التشغيل...' : 'Backing up and restarting...')
-                      : (isRtl ? 'تعيين كافتراضي' : 'Set as Default')}
+                    {screenModeActionBusy ? (
+                      <>
+                        <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
+                        {isRtl ? 'جارٍ تطبيق الوضع وحفظه...' : 'Applying mode and saving...'}
+                      </>
+                    ) : screenModeApplied ? (
+                      <>
+                        <Check className="h-4 w-4" aria-hidden="true" />
+                        {isRtl ? 'تم التطبيق' : 'Applied'}
+                      </>
+                    ) : (
+                      isRtl ? 'تطبيق وتعيين كافتراضي' : 'Apply & Set as Default'
+                    )}
                   </button>
                 </div>
                 {screenModeActionError && (
@@ -2198,15 +2298,132 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </p>
                 </div>
 
+                <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm space-y-4">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">
+                      {isRtl ? 'اختيار قالب الطباعة' : 'Built-in TSX Print Templates'}
+                    </h3>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {isRtl
+                        ? 'اختر نوع المستند والقالب والطابعة. تتم إضافة القوالب الجديدة عند تحديث التطبيق.'
+                        : 'Choose a document, paper size, bundled template, and printer. New templates arrive with app updates.'}
+                    </p>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="space-y-1 text-xs font-semibold text-slate-700">
+                      {isRtl ? 'نوع المستند' : 'Document type'}
+                      <select
+                        aria-label="Print document type"
+                        value={selectedPrintDocument}
+                        onChange={(event) => {
+                          const documentType = event.target.value as PrintDocumentType;
+                          const formats = getPrintFormats(documentType);
+                          setSelectedPrintDocument(documentType);
+                          const savedFormat = form.printDocumentFormats?.[documentType];
+                          setSelectedTemplate(
+                            savedFormat && formats.includes(savedFormat)
+                              ? savedFormat
+                              : formats.includes(settings.paperWidth || '80mm')
+                                ? settings.paperWidth || '80mm'
+                                : formats[0]
+                          );
+                        }}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal"
+                      >
+                        {PRINT_DOCUMENT_OPTIONS.map((option) => (
+                          <option key={option.id} value={option.id}>{option.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="space-y-1 text-xs font-semibold text-slate-700">
+                      {isRtl ? 'حجم الورق' : 'Paper size'}
+                      <select
+                        aria-label="Print paper size"
+                        value={selectedTemplate}
+                        onChange={(event) => {
+                          const format = event.target.value as PaperWidth;
+                          setSelectedTemplate(format);
+                          setForm((current) => ({
+                            ...current,
+                            ...(selectedPrintDocument === 'sales-invoice' ? { paperWidth: format } : {}),
+                            printDocumentFormats: {
+                              ...current.printDocumentFormats,
+                              [selectedPrintDocument]: format,
+                            },
+                          }));
+                        }}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal"
+                      >
+                        {selectedPrintFormats.map((format) => (
+                          <option key={format} value={format}>{format}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="space-y-1 text-xs font-semibold text-slate-700">
+                      {isRtl ? 'القالب' : 'Template'}
+                      <select
+                        aria-label="Print template"
+                        value={selectedPrintTemplateId}
+                        onChange={(event) => updatePrintDocumentProfile({ templateId: event.target.value })}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal"
+                      >
+                        {selectedPrintTemplates.map((template) => (
+                          <option key={template.id} value={template.id}>{template.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="space-y-1 text-xs font-semibold text-slate-700">
+                      <span>{isRtl ? 'الطابعة' : 'Printer'}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 font-normal">
+                          {selectedPrinterName || (isRtl ? 'افتراضية النظام' : 'System default')}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => openPrinterDialog(selectedPrintDocument === 'kot' ? 'kot' : 'template')}
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+                        >
+                          <Printer className="h-3.5 w-3.5" />
+                          {isRtl ? 'اختيار' : 'Choose'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  {printPreviewError && <p role="alert" className="text-xs text-rose-700">{printPreviewError}</p>}
+                  {settingsSaveError && <p role="alert" className="text-xs text-rose-700">{settingsSaveError}</p>}
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">
+                    <span className="text-xs text-slate-500">{selectedPrintTemplateLabel}</span>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={isPreparingPrintPreview}
+                        onClick={() => void handlePreviewPrintTemplate()}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                      >
+                        <FileText className="h-3.5 w-3.5" />
+                        {isPreparingPrintPreview
+                          ? (isRtl ? 'جارٍ التحضير...' : 'Preparing...')
+                          : (isRtl ? 'معاينة' : 'Preview')}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={() => void handleSavePrintSelection()}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-60"
+                      >
+                        <Check className="h-3.5 w-3.5" />
+                        {saving ? (isRtl ? 'جارٍ الحفظ...' : 'Saving...') : (isRtl ? 'حفظ' : 'Save')}
+                      </button>
+                    </div>
+                  </div>
+                </section>
+
                 <div className="settings-item-list">
                 <div className="settings-item-row">
                   <div className="settings-item-copy">
-                    <h3 className="text-sm font-semibold text-slate-900">KOT Printer</h3>
+                    <h3 className="text-sm font-semibold text-slate-900">Kitchen Order Ticket</h3>
                     <p className="mt-1 text-xs text-slate-600">
-                      KOT uses the selected invoice paper width and margins. Choose a dedicated printer or leave this blank to follow invoice printer settings.
-                    </p>
-                    <p className="mt-2 text-xs font-medium text-slate-700">
-                      Selected: {form.kotPrinter || 'Invoice printer settings'}
+                      Enable KOT printing. The template and printer are selected in the template controls above.
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-4">
@@ -2219,203 +2436,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         className="h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-600"
                       />
                     </label>
-                    <button
-                      type="button"
-                      onClick={() => openPrinterDialog('kot')}
-                      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-slate-50"
-                    >
-                      <Printer className="h-3.5 w-3.5" />
-                      Choose Printer
-                    </button>
                   </div>
                 </div>
                 </div>
 
-                {/* 1. Paper Format Selection (80mm / 58mm / A4) */}
-                <section className="space-y-2">
-                  <div className="px-1">
-                    <label className="block font-semibold text-slate-900">
-                      {t.paperFormat}
-                    </label>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
-                      Choose between standard thermal receipt roll printers or full-page A4 commercial tax invoices.
-                    </p>
-                  </div>
-
-                  <div className="settings-item-list">
-                    {[
-                      { id: '80mm', title: '80mm Roll', desc: 'Standard POS thermal receipt roll', badge: 'Standard POS' },
-                      { id: '58mm', title: '58mm Roll', desc: 'Compact portable receipt printer', badge: 'Compact' },
-                      { id: 'A4', title: 'A4 Invoice Sheet', desc: 'Full page official tax invoice with table', badge: 'Commercial A4' },
-                    ].map((fmt) => (
-                      <button
-                        key={fmt.id}
-                        type="button"
-                        onClick={() => {
-                          const format = fmt.id as PaperWidth;
-                          setSelectedTemplate(format);
-                          setForm((current) => ({ ...current, paperWidth: format }));
-                        }}
-                        className={`settings-item-row w-full text-left transition-colors ${
-                          selectedTemplate === fmt.id
-                            ? 'bg-blue-50'
-                            : 'hover:bg-slate-50'
-                        }`}
-                      >
-                        <div className="settings-item-copy">
-                          <span className="block font-semibold text-slate-900">{fmt.title}</span>
-                          <span className="mt-1 block text-[11px] text-slate-500">{fmt.desc}</span>
-                        </div>
-                        <span className="shrink-0 text-right">
-                          <span className="block text-xs font-semibold text-slate-700">{fmt.badge}</span>
-                          <span className={`mt-1 block text-[11px] font-semibold ${selectedTemplate === fmt.id ? 'text-blue-700' : 'text-slate-400'}`}>
-                            {selectedTemplate === fmt.id ? 'Selected' : 'Select'}
-                          </span>
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </section>
-
-                {/* 2. Selected template printer */}
-                <div className="p-4 bg-white border border-slate-200 rounded-xl space-y-4 shadow-2xs">
-                  <p className="text-xs font-semibold text-slate-700">
-                    Editing {selectedTemplate} template printer and invoice elements
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block font-semibold text-slate-800 mb-1">
-                        {t.defaultPrinter}
-                      </label>
-                      <div className="mb-3 space-y-2">
-                        {([
-                          { value: 'system-default', label: 'Use system default printer' },
-                          { value: 'saved-printer', label: 'Use selected template printer' },
-                          { value: 'choose-at-print-time', label: 'Choose printer at print time' },
-                        ] satisfies Array<{ value: NonNullable<InvoiceTemplateSettings['printerMode']>; label: string }>).map((option) => (
-                          <label key={option.value} className="flex items-center gap-2 text-xs text-slate-700">
-                            <input
-                              type="radio"
-                              name={`printer-mode-${selectedTemplate}`}
-                              checked={(activeTemplateSettings.printerMode || 'system-default') === option.value}
-                              onChange={() => updateTemplateSettings(
-                                'printerMode',
-                                option.value
-                              )}
-                              className="accent-blue-700"
-                            />
-                            {option.label}
-                          </label>
-                        ))}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="min-w-0 flex-1 truncate rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-700">
-                          {activeTemplateSettings.defaultPrinter || 'System Default'}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => openPrinterDialog()}
-                          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50"
-                        >
-                          <Printer className="h-3.5 w-3.5" />
-                          Choose Printer
-                        </button>
-                      </div>
-                      <p className="text-[10px] text-slate-400 mt-1">
-                        Select an installed printer for “Use selected template printer”.
-                      </p>
-                    </div>
-                  </div>
-
-                </div>
-
-                <div className="p-4 bg-white border border-slate-200 rounded-xl space-y-2 shadow-2xs">
-                  <label htmlFor="invoice-margin-mm" className="block font-semibold text-slate-800">
-                    Invoice Margins (mm)
-                  </label>
-                  <p className="text-[11px] text-slate-500">
-                    {isRtl
-                      ? 'الحد الأدنى للهوامش الجانبية والسفلية: ١-٢ مم للرول الحراري و٥ مم لورق A4. يمكن جعل الهامش العلوي لرول ٨٠ مم و٥٨ مم صفراً.'
-                      : `Minimum safe margins are ${MINIMUM_INVOICE_MARGIN_MM[selectedTemplate]} mm for this format. The top margin for 80mm and 58mm thermal rolls can be 0 mm.`}
-                  </p>
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                    {([
-                      { key: 'top', label: 'Top' },
-                      { key: 'right', label: 'Right' },
-                      { key: 'bottom', label: 'Bottom' },
-                      { key: 'left', label: 'Left' },
-                    ] as const).map(({ key, label }) => {
-                      const minimumMargin =
-                        key === 'top' && selectedTemplate !== 'A4'
-                          ? 0
-                          : MINIMUM_INVOICE_MARGIN_MM[selectedTemplate];
-                      return (
-                        <div key={key}>
-                          <label htmlFor={`invoice-margin-${key}`} className="mb-1 block text-xs font-medium text-slate-700">
-                            {label}
-                          </label>
-                          <div className="flex items-center gap-1.5">
-                            <input
-                              id={`invoice-margin-${key}`}
-                              type="number"
-                              min={minimumMargin}
-                              max="20"
-                              step="0.5"
-                              value={activeInvoiceMarginsMm[key]}
-                              onChange={(event) => {
-                                const margin = Number(event.target.value);
-                                if (Number.isFinite(margin)) {
-                                  updateTemplateSettings('invoiceMarginsMm', {
-                                    ...activeInvoiceMarginsMm,
-                                    [key]: Math.min(20, Math.max(minimumMargin, margin)),
-                                  });
-                                }
-                              }}
-                              className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-700 focus:outline-none"
-                            />
-                            <span className="text-xs text-slate-500">mm</span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* 3. Invoice Item Elements Display Options */}
-                <section className="space-y-2">
-                  <div className="px-1">
-                    <h3 className="text-xs font-bold text-slate-900 flex items-center gap-2">
-                      <FileText className="w-4 h-4 text-blue-700" />
-                      <span>{t.invoiceDisplayOptions}</span>
-                    </h3>
-                    <p className="text-[11px] text-slate-500">
-                      {t.invoiceDisplayOptionsDesc}
-                    </p>
-                  </div>
-
-                  <div className="settings-item-list">
-                    {invoiceOptions.map((opt) => (
-                      <label
-                        key={opt.key}
-                        className="settings-item-row relative cursor-pointer transition-colors hover:bg-slate-50"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={opt.val}
-                          onChange={(e) => updateTemplateSettings(opt.key, e.target.checked)}
-                          className="peer absolute end-4 top-1/2 z-10 h-5 w-9 -translate-y-1/2 cursor-pointer opacity-0"
-                        />
-                        <div className="settings-item-copy">
-                          <div className="font-semibold text-slate-800">{opt.label}</div>
-                          <div className="mt-0.5 text-[10px] text-slate-500">{opt.desc}</div>
-                        </div>
-                        <span className="relative h-5 w-9 shrink-0 rounded-full bg-slate-300 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-blue-600 peer-checked:after:translate-x-4 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-blue-600 rtl:peer-checked:after:-translate-x-4" />
-                      </label>
-                    ))}
-                  </div>
-                </section>
-
-                {/* 4. Decimal Places (Price & Quantity) */}
+                {/* Decimal formatting remains a business display setting. */}
                 <div className="p-4 bg-white border border-slate-200 rounded-xl space-y-2 shadow-2xs">
                   <label className="block font-semibold text-slate-800">
                     Decimal Places (Price &amp; Quantity)
@@ -3007,13 +3032,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   <span className="text-slate-500 font-mono tabular-nums">{printQueue.length} job{printQueue.length !== 1 ? 's' : ''} queued</span>
                   <button
                     type="button"
-                    onClick={onFlushPrintQueue}
+                    disabled={isFlushingPrintQueue}
+                    onClick={() => void handleFlushPrintQueue()}
                     className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg shadow-sm"
                   >
                     <Printer className="w-3 h-3" />
-                    Print All
+                    {isFlushingPrintQueue ? 'Printing...' : 'Print All'}
                   </button>
                 </div>
+              )}
+              {printQueueError && (
+                <p role="alert" className="mt-2 text-xs text-rose-700">{printQueueError}</p>
               )}
             </div>
           )}
@@ -3537,6 +3566,32 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
       )}
+      {printPreviewHtml && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/70 p-3 sm:p-6" role="dialog" aria-modal="true" aria-label="Print template preview">
+          <section className="flex max-h-[94vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+            <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">{selectedPrintTemplateLabel}</h2>
+                <p className="text-xs text-slate-500">{selectedPrintDocument} · {selectedTemplate}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPrintPreviewHtml(null)}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                {isRtl ? 'إغلاق' : 'Close'}
+              </button>
+            </header>
+            <iframe
+              title="Print template preview"
+              srcDoc={printPreviewHtml}
+              className="min-h-0 flex-1 bg-slate-100"
+              style={{ height: '78vh', border: 0 }}
+            />
+          </section>
+        </div>
+      )}
+
       {printerDialogOpen && (
         <div
           className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4"
@@ -3575,13 +3630,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 type="button"
                 onClick={() => selectPrinter('')}
                 className={`flex w-full items-center justify-between rounded-lg border px-3 py-2.5 text-left text-xs ${
-                  !(printerDialogTarget === 'kot' ? form.kotPrinter : activeTemplateSettings.defaultPrinter)
+                  !(printerDialogTarget === 'kot' ? form.kotPrinter : selectedPrinterName)
                     ? 'border-blue-300 bg-blue-50 text-blue-900'
                     : 'border-slate-200 text-slate-700 hover:bg-slate-50'
                 }`}
               >
                 <span>System Default</span>
-                {!(printerDialogTarget === 'kot' ? form.kotPrinter : activeTemplateSettings.defaultPrinter) && (
+                {!(printerDialogTarget === 'kot' ? form.kotPrinter : selectedPrinterName) && (
                   <Check className="h-4 w-4" />
                 )}
               </button>
@@ -3608,7 +3663,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   key={printer.name}
                   onClick={() => selectPrinter(printer.name)}
                   className={`flex w-full items-center justify-between rounded-lg border px-3 py-2.5 text-left text-xs ${
-                    (printerDialogTarget === 'kot' ? form.kotPrinter : activeTemplateSettings.defaultPrinter) === printer.name
+                    (printerDialogTarget === 'kot' ? form.kotPrinter : selectedPrinterName) === printer.name
                       ? 'border-blue-300 bg-blue-50 text-blue-900'
                       : 'border-slate-200 text-slate-700 hover:bg-slate-50'
                   }`}
@@ -3619,7 +3674,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       <span className="mt-0.5 block truncate text-[10px] text-slate-500">{printer.name}</span>
                     )}
                   </span>
-                  {(printerDialogTarget === 'kot' ? form.kotPrinter : activeTemplateSettings.defaultPrinter) === printer.name && (
+                  {(printerDialogTarget === 'kot' ? form.kotPrinter : selectedPrinterName) === printer.name && (
                     <Check className="ml-3 h-4 w-4 shrink-0" />
                   )}
                 </button>

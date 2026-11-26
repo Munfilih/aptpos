@@ -14,6 +14,7 @@ import type {
   CashbookEntry,
   CashbookOpeningBalance,
   CreateCashbookEntryInput,
+  PaperWidth,
   PurchaseEntry,
   Sale,
   SalesReturnVoucher,
@@ -28,6 +29,9 @@ import {
   type DateFilter,
 } from '../utils/dateFilters';
 import { getPaymentMethods } from '../utils/paymentMethods';
+import { createPrintTemplateJob, printTemplateJob } from '../printTemplates/render';
+import { resolvePrintTemplate } from '../printTemplates/catalog';
+import type { PrintDocumentData } from '../printTemplates/types';
 
 type ReportTab = 'DAILY_SUMMARY' | 'DETAILED_SALES' | 'DATEWISE_SUMMARY' | 'TAX' | 'SALES_TAX' | 'CASHBOOK';
 
@@ -868,6 +872,60 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
 
   const handleExportPdf = async () => {
     setExportError(null);
+    if (activeReport === 'TAX') {
+      setExportingPdf(true);
+      try {
+        const format: PaperWidth = 'A4';
+        const profile = settings.printDocumentProfiles?.['saudi-vat-report']?.[format];
+        const template = resolvePrintTemplate('saudi-vat-report', format, profile?.templateId);
+        const data: PrintDocumentData = {
+          documentType: 'saudi-vat-report',
+          title: isRtl ? 'ملخص ضريبة القيمة المضافة' : 'Saudi VAT Summary',
+          date: reportPeriodLabel,
+          companyName: settings.storeName,
+          companyNameAr: settings.storeNameAr,
+          companyAddress: settings.address,
+          companyPhone: settings.phone,
+          companyTaxId: settings.taxId,
+          companyLogo: settings.storeLogoDataUrl,
+          fields: [
+            { label: isRtl ? 'الفترة' : 'Reporting period', value: reportPeriodLabel },
+            { label: isRtl ? 'العملة' : 'Currency', value: settings.currencySymbol },
+          ],
+          columns: [
+            isRtl ? 'التاريخ' : 'Date',
+            isRtl ? 'ضريبة محصلة' : 'Tax collected',
+            isRtl ? 'ضريبة مستردة' : 'Tax refunded',
+            isRtl ? 'صافي الضريبة' : 'Net tax',
+          ],
+          rows: visibleTaxRows.map((row) => ({
+            values: [
+              row.date,
+              `${currency}${row.collected.toFixed(2)}`,
+              `${currency}${row.refunded.toFixed(2)}`,
+              `${currency}${row.net.toFixed(2)}`,
+            ],
+          })),
+          totals: [
+            { label: isRtl ? 'ضريبة المبيعات المحصلة' : 'Tax collected', value: `${currency}${salesTaxTotal.toFixed(2)}` },
+            { label: isRtl ? 'ضريبة المرتجعات' : 'Tax refunded', value: `${currency}${returnedTaxTotal.toFixed(2)}` },
+            { label: isRtl ? 'صافي الضريبة' : 'Net tax', value: `${currency}${(salesTaxTotal - returnedTaxTotal).toFixed(2)}` },
+          ],
+          footer: isRtl
+            ? 'تقرير إداري من بيانات النظام، وليس نموذج إقرار ضريبي رسمي.'
+            : 'Management report from recorded POS data; not an official VAT return filing.',
+          direction: isRtl ? 'rtl' : 'ltr',
+        };
+        const job = await createPrintTemplateJob(data, settings, format, template.id);
+        await printTemplateJob(job);
+      } catch (error) {
+        setExportError(error instanceof Error ? error.message : 'Failed to print the Saudi VAT report.');
+      } finally {
+        setExportingPdf(false);
+      }
+      return;
+    }
+
     const reportFilePeriod = dateBounds.start && dateBounds.end
       ? dateBounds.start === dateBounds.end
         ? dateBounds.start

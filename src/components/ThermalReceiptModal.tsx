@@ -10,13 +10,12 @@ import {
   getSalesTaxCategorySummaries,
 } from '../utils/salesTax';
 import {
-  buildStandaloneThermalPrintHtml,
-  measureThermalPageSize,
-  printWithThermalPageSize,
   resolveInvoiceMarginsMm,
 } from '../utils/thermalPrinting';
 import { getInvoiceDateTime } from '../utils/dateFilters';
 import type { ThermalPageSize } from '../utils/thermalPrinting';
+import { createVoucherTemplateJob, printTemplateJob } from '../printTemplates/render';
+import { getPrintDocumentFormat } from '../printTemplates/catalog';
 
 const A4_ITEMS_PER_PAGE = 13;
 
@@ -36,7 +35,11 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   onClose,
 }) => {
   const { language } = useLanguage();
-  const activeFormat: PaperWidth = settings.paperWidth || '80mm';
+  const activeFormat: PaperWidth = getPrintDocumentFormat(
+    settings,
+    'sales-invoice',
+    settings.paperWidth || '80mm'
+  );
   const templateSettings = settings.invoiceTemplates?.[activeFormat];
   const saleTaxType = sale.taxType || settings.taxType;
   const printedTaxBreakdown = useMemo(
@@ -77,6 +80,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const [printError, setPrintError] = useState<string | null>(null);
   const [previewBeforePrint, setPreviewBeforePrint] = useState(false);
   const [showPrintPreview, setShowPrintPreview] = useState(false);
+  const [previewDesignMode, setPreviewDesignMode] = useState(false);
   const [isPrintingReceipt, setIsPrintingReceipt] = useState(false);
   const [previewHtml, setPreviewHtml] = useState('');
   const [previewPageSize, setPreviewPageSize] = useState<ThermalPageSize | null>(null);
@@ -136,40 +140,24 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const handlePrint = async () => {
     setPrintError(null);
     setIsPrintingReceipt(true);
-    document.body.classList.add('receipt-printing');
     try {
-      const { pageSize, html } = showPrintPreview
-        && activeFormat !== 'A4'
-        && previewHtml
-        && previewPageSize
-        ? { pageSize: previewPageSize, html: previewHtml }
-        : await createReceiptPrintJob();
-      if (window.electronAPI?.isElectron) {
-        const printerMode = templateSettings?.printerMode
-          || (templateSettings?.defaultPrinter ? 'saved-printer' : 'system-default');
-        const result = await window.electronAPI.printReceipt({
-          silent: printerMode !== 'choose-at-print-time',
-          printerName: printerMode === 'saved-printer' ? templateSettings?.defaultPrinter || undefined : undefined,
-          pageSize,
-          html,
-        });
-        if (!result.ok) {
-          if (result.error?.toLowerCase() === 'cancelled' || result.error?.toLowerCase() === 'canceled') {
-            return false;
-          }
-          throw new Error(result.error || 'Receipt could not be printed.');
-        }
-      } else {
-        if (activeFormat !== 'A4' && pageSize) printWithThermalPageSize(pageSize);
-        else window.print();
-      }
-      return true;
+      const job = await createVoucherTemplateJob(
+        'sales-invoice',
+        sale.id,
+        settings,
+        activeFormat,
+        language === 'ar',
+        zatcaQrDataUrl
+      );
+      const printJob = showPrintPreview && previewHtml && previewPageSize
+        ? { ...job, html: previewHtml, pageSize: previewPageSize }
+        : job;
+      return await printTemplateJob(printJob);
     } catch (error) {
       console.error('Failed to print receipt:', error);
       setPrintError((error as Error).message || 'Receipt could not be printed.');
       return false;
     } finally {
-      document.body.classList.remove('receipt-printing');
       setIsPrintingReceipt(false);
     }
   };
@@ -270,41 +258,21 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
       minute: '2-digit',
     });
 
-  const createReceiptPrintJob = async () => {
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    const isA4 = activeFormat === 'A4';
-    const thermalWidthMm = activeFormat === '58mm' ? 58 : 80;
-    const printElement = isA4
-      ? document.querySelector<HTMLElement>('.thermal-receipt-print-area.paper-a4')
-      : thermalPrintAreaRef.current
-        || document.querySelector<HTMLElement>('.thermal-receipt-print-area:not(.paper-a4)');
-    const paddingCss = `${invoiceMarginsMm.top}mm ${invoiceMarginsMm.right}mm ${invoiceMarginsMm.bottom}mm ${invoiceMarginsMm.left}mm`;
-    const pageSize = isA4
-      ? { width: 210_000, height: 297_000 }
-      : measureThermalPageSize(printElement, {
-          elementWidthMm: thermalWidthMm,
-          pageWidthMm: thermalWidthMm,
-          padding: paddingCss,
-          container: document.querySelector('.receipt-print-source'),
-        });
-
-    return {
-      pageSize,
-      html: buildStandaloneThermalPrintHtml(printElement, {
-        widthMm: isA4 ? 210 : thermalWidthMm,
-        pageSize,
-        padding: isA4 ? undefined : paddingCss,
-      }),
-    };
-  };
-
   const openPrintPreview = async () => {
     setPrintError(null);
     setIsPrintingReceipt(true);
     try {
-      const { html, pageSize } = await createReceiptPrintJob();
-      setPreviewHtml(html);
-      setPreviewPageSize(pageSize);
+      const job = await createVoucherTemplateJob(
+        'sales-invoice',
+        sale.id,
+        settings,
+        activeFormat,
+        language === 'ar',
+        zatcaQrDataUrl
+      );
+      setPreviewHtml(job.html);
+      setPreviewPageSize(job.pageSize);
+      setPreviewDesignMode(true);
       setShowPrintPreview(true);
     } catch (error) {
       console.error('Failed to prepare receipt preview:', error);
@@ -1133,7 +1101,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
           </div>
         </div>
       </div>
-      {showPrintPreview && activeFormat !== 'A4' && previewHtml && previewPageSize && (
+      {showPrintPreview && (previewDesignMode || activeFormat !== 'A4') && previewHtml && previewPageSize && (
       <div className="receipt-standalone-preview no-print fixed inset-0 z-[60] flex items-start justify-center overflow-auto bg-slate-950/80 px-3 pt-5 pb-24">
         <iframe
           title={language === 'ar' ? 'معاينة نسخة الطباعة' : 'Exact receipt print preview'}
@@ -1141,7 +1109,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
           sandbox=""
           className="max-w-full shrink-0 bg-white shadow-2xl"
           style={{
-            width: `${activeFormat === '58mm' ? 58 : 80}mm`,
+            width: `${previewDesignMode ? previewPageSize.width / 1000 : activeFormat === '58mm' ? 58 : 80}mm`,
             height: `${previewPageSize.height / 1000}mm`,
             maxHeight: 'calc(100vh - 120px)',
             border: 0,

@@ -39,14 +39,10 @@ import { ProductImage } from './ProductImage';
 import { getPaymentMethods } from '../utils/paymentMethods';
 import { getKotNumberFromInvoice } from '../utils/documentNumbers';
 import { calculateSalesTax } from '../utils/salesTax';
-import {
-  applyThermalPageSize,
-  buildStandaloneThermalPrintHtml,
-  measureThermalPageSize,
-  printWithThermalPageSize,
-  resolveInvoiceMarginsMm,
-  waitPrintSettlingDelay,
-} from '../utils/thermalPrinting';
+import { createPrintTemplateJob, printTemplateJob } from '../printTemplates/render';
+import { getPrintDocumentFormat, resolvePrintTemplate } from '../printTemplates/catalog';
+import { DocumentTemplate } from '../printTemplates/DocumentTemplate';
+import type { PrintDocumentData } from '../printTemplates/types';
 
 export interface InvoiceTab {
   id: string;
@@ -671,12 +667,33 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     return invoiceNumber;
   };
 
-  const kotFormat: PaperWidth = settings.paperWidth || '80mm';
-  const kotPageWidthMm = kotFormat === 'A4' ? 210 : kotFormat === '58mm' ? 58 : 80;
-  const kotMarginsMm = resolveInvoiceMarginsMm(
-    kotFormat,
-    settings.invoiceTemplates?.[kotFormat]?.invoiceMarginsMm
-  );
+  const kotFormat: PaperWidth = getPrintDocumentFormat(settings, 'kot', settings.paperWidth || '80mm');
+  const kotProfile = settings.printDocumentProfiles?.kot?.[kotFormat];
+  const kotTemplate = resolvePrintTemplate('kot', kotFormat, kotProfile?.templateId);
+  const getKotPrintData = (kotNumber: string): PrintDocumentData => ({
+    documentType: 'kot',
+    title: isRtl ? 'طلب المطبخ' : 'Kitchen Order',
+    number: kotNumber,
+    date: new Date().toLocaleString(isRtl ? 'ar-SA' : 'en-GB'),
+    companyName: settings.storeName,
+    companyNameAr: settings.storeNameAr,
+    companyAddress: settings.address,
+    companyPhone: settings.phone,
+    companyLogo: settings.storeLogoDataUrl,
+    fields: [{
+      label: isRtl ? 'العميل' : 'Customer',
+      value: customerName || defaultCustomerName,
+    }],
+    columns: [isRtl ? 'الكمية' : 'Qty', isRtl ? 'الصنف' : 'Item'],
+    rows: cart.map((item) => {
+      const itemName = isRtl && item.product.nameAr ? item.product.nameAr : item.product.name;
+      const unit = item.unitId && item.unitName ? ` (${item.unitName})` : '';
+      const description = item.description?.trim() ? `\n${item.description.trim()}` : '';
+      return { values: [String(item.quantity), `${itemName}${unit}${description}`] };
+    }),
+    totals: [],
+    direction: isRtl ? 'rtl' : 'ltr',
+  });
 
   const handlePreviewKot = async () => {
     if (
@@ -715,47 +732,14 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       const invoiceNumber = await ensureActiveInvoiceNumber();
       const kotNumber = getKotNumberFromInvoice(invoiceNumber);
       setIsPrintingKot(true);
-      document.body.classList.add('kot-printing');
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-
-      const kotElement = document.getElementById('kot-print-area');
-      const paddingCss = `${kotMarginsMm.top}mm ${kotMarginsMm.right}mm ${kotMarginsMm.bottom}mm ${kotMarginsMm.left}mm`;
-      const pageSize = kotFormat === 'A4'
-        ? { width: 210_000, height: 297_000 }
-        : measureThermalPageSize(kotElement, {
-            elementWidthMm: kotPageWidthMm,
-            pageWidthMm: kotPageWidthMm,
-            padding: paddingCss,
-            container: document.querySelector('.kot-print-source'),
-          });
-      const template = settings.invoiceTemplates?.[kotFormat];
-      const printerMode =
-        template?.printerMode || (template?.defaultPrinter ? 'saved-printer' : 'system-default');
-      const printerName =
-        settings.kotPrinter ||
-        (printerMode === 'saved-printer' ? template?.defaultPrinter || undefined : undefined);
-      const silent = Boolean(settings.kotPrinter) || printerMode !== 'choose-at-print-time';
-
-      if (window.electronAPI?.isElectron) {
-        const html = buildStandaloneThermalPrintHtml(kotElement, {
-          widthMm: kotFormat === 'A4' ? 210 : kotPageWidthMm,
-          pageSize,
-          padding: kotFormat === 'A4' ? undefined : paddingCss,
-        });
-        const result = await window.electronAPI.printReceipt({
-          silent,
-          printerName,
-          pageSize,
-          html,
-        });
-        if (!result.ok) {
-          throw new Error(result.error || 'Kitchen order ticket could not be printed.');
-        }
-        setFeedback({ type: 'info', text: `KOT ${kotNumber} sent.` });
-      } else {
-        printWithThermalPageSize(pageSize);
-        setFeedback({ type: 'info', text: `KOT ${kotNumber} print dialog opened.` });
-      }
+      const job = await createPrintTemplateJob(
+        getKotPrintData(kotNumber),
+        settings,
+        kotFormat,
+        kotTemplate.id
+      );
+      await printTemplateJob(job);
+      setFeedback({ type: 'info', text: `KOT ${kotNumber} sent.` });
     } catch (error) {
       console.error('Failed to print KOT:', error);
       setFeedback({
@@ -763,7 +747,6 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         text: error instanceof Error ? error.message : 'Kitchen order ticket could not be printed.',
       });
     } finally {
-      document.body.classList.remove('kot-printing');
       setIsPrintingKot(false);
     }
   };
@@ -2054,93 +2037,13 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       : undefined
   );
 
+  const kotPrintData = getKotPrintData(
+    activeTab.invoiceNumber ? getKotNumberFromInvoice(activeTab.invoiceNumber) : ''
+  );
   const kotPrintArea = (
-    <section
-      id="kot-print-area"
-      className={`thermal-receipt-print-area kot-print-area bg-white text-slate-950 font-sans text-xs leading-relaxed ${
-        kotFormat === 'A4' ? 'paper-a4' : kotFormat === '58mm' ? 'paper-58mm' : ''
-      }`}
-      aria-label="Kitchen order ticket"
-      dir={isRtl ? 'rtl' : 'ltr'}
-      style={{
-        '--kot-paper-width': `${kotPageWidthMm}mm`,
-        '--kot-margin-top': `${kotMarginsMm.top}mm`,
-        '--kot-margin-right': `${kotMarginsMm.right}mm`,
-        '--kot-margin-bottom': `${kotMarginsMm.bottom}mm`,
-        '--kot-margin-left': `${kotMarginsMm.left}mm`,
-        '--invoice-margin-top': `${kotMarginsMm.top}mm`,
-        '--invoice-margin-right': `${kotMarginsMm.right}mm`,
-        '--invoice-margin-bottom': `${kotMarginsMm.bottom}mm`,
-        '--invoice-margin-left': `${kotMarginsMm.left}mm`,
-        width: `${kotPageWidthMm}mm`,
-        maxWidth: `${kotPageWidthMm}mm`,
-        minHeight: kotFormat === 'A4' ? '297mm' : undefined,
-        boxSizing: 'border-box',
-        padding: `${kotMarginsMm.top}mm ${kotMarginsMm.right}mm ${kotMarginsMm.bottom}mm ${kotMarginsMm.left}mm`,
-        margin: '0 auto',
-      } as React.CSSProperties}
-    >
-      <header className="mb-3 border-b-2 border-slate-900 pb-3 text-center">
-        <div className="mb-1 text-[8px] font-bold uppercase tracking-wider text-slate-500">
-          {isRtl ? 'بيانات المتجر' : 'Store Details'}
-        </div>
-        {settings.storeLogoDataUrl && (
-          <img
-            src={settings.storeLogoDataUrl}
-            alt="Store logo"
-            className="mx-auto mb-1 h-10 w-10 object-contain"
-          />
-        )}
-        <h1 className="text-sm font-black uppercase tracking-wide text-slate-950">{settings.storeName}</h1>
-        {settings.storeNameAr && (
-          <p className="mt-0.5 text-xs font-bold text-slate-900" dir="rtl">{settings.storeNameAr}</p>
-        )}
-        {(settings.address || settings.phone) && (
-          <p className="mt-1 break-words text-[9px] leading-snug text-slate-600">
-            {[settings.address, settings.phone].filter(Boolean).join(' · ')}
-          </p>
-        )}
-        <p className="mt-2 text-sm font-extrabold uppercase tracking-wide text-slate-900">
-          {isRtl ? 'طلب المطبخ' : 'Kitchen Order'}
-        </p>
-        <p className="mt-0.5 text-[10px] font-semibold text-slate-700">
-          {activeTab.invoiceNumber ? getKotNumberFromInvoice(activeTab.invoiceNumber) : ''}
-        </p>
-      </header>
-      <div className="mb-2.5 space-y-1 border-b border-dashed border-slate-300 pb-2.5 text-[10px]">
-        <div className="mb-1 border-b border-dashed border-slate-300 pb-1 text-[8px] font-bold uppercase tracking-wider text-slate-500">
-          {isRtl ? 'تفاصيل الطلب' : 'Order Details'}
-        </div>
-        {[
-          [isRtl ? 'رقم الطلب:' : 'KOT No:', activeTab.invoiceNumber ? getKotNumberFromInvoice(activeTab.invoiceNumber) : ''],
-          [isRtl ? 'التاريخ:' : 'Date:', new Date().toLocaleString()],
-          [isRtl ? 'العميل:' : 'Customer:', customerName || defaultCustomerName],
-        ].map(([label, value]) => (
-          <div key={label} className="flex justify-between gap-2 border-b border-dashed border-slate-200 pb-1 last:border-0 last:pb-0">
-            <span className="shrink-0 text-slate-600">{label}</span>
-            <span className="min-w-0 break-words text-right font-semibold">{value}</span>
-          </div>
-        ))}
-      </div>
-      <div className="divide-y divide-dashed divide-slate-300">
-        {cart.map((item) => (
-          <div key={getCartItemLineId(item)} className="flex items-start gap-2 py-2">
-            <strong className="min-w-8 text-center text-sm text-slate-950">×{item.quantity}</strong>
-            <div className="min-w-0 flex-1">
-              <div className="break-words font-semibold text-slate-950">
-                {isRtl && item.product.nameAr ? item.product.nameAr : item.product.name}
-                {item.unitId && item.unitName ? ` (${item.unitName})` : ''}
-              </div>
-              {item.description?.trim() && (
-                <div className="mt-0.5 whitespace-pre-wrap break-words text-[10px] leading-tight text-slate-600">
-                  {item.description}
-                </div>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
+    <div id="kot-print-area" className="kot-print-area">
+      <DocumentTemplate data={kotPrintData} format={kotFormat} variant={kotTemplate.variant} />
+    </div>
   );
 
   return (

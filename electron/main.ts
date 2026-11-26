@@ -14,7 +14,7 @@ const _require = createRequire(import.meta.url);
 const { print: pdfPrint } = _require('pdf-to-printer') as {
   print: (
     pdf: string,
-    options?: { printer?: string; scale?: string; silent?: boolean; sumatraPdfPath?: string }
+    options?: { printer?: string; scale?: string; silent?: boolean; copies?: number; sumatraPdfPath?: string }
   ) => Promise<void>;
 };
 
@@ -979,12 +979,21 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
     printerName?: unknown;
     pageSize?: unknown;
     html?: unknown;
+    copies?: unknown;
+    scaling?: unknown;
   };
+  const copies = options.copies === undefined ? 1 : options.copies;
+  const scaling = options.scaling === undefined ? 'actual-size' : options.scaling;
   let pageSize: { width: number; height: number } | undefined;
   if (
     (options.silent !== undefined && typeof options.silent !== 'boolean') ||
     (options.printerName !== undefined && typeof options.printerName !== 'string') ||
-    (options.html !== undefined && typeof options.html !== 'string')
+    (options.html !== undefined && typeof options.html !== 'string') ||
+    typeof copies !== 'number' ||
+    !Number.isInteger(copies) ||
+    copies < 1 ||
+    copies > 99 ||
+    (scaling !== 'fit-to-page' && scaling !== 'actual-size')
   ) {
     throw new Error('Printer options are invalid.');
   }
@@ -996,12 +1005,13 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
     const width = candidate.width;
     const height = candidate.height;
     const isA4PageSize = width === 210000 && height === 297000;
-    const isThermalPageSize =
+    const isSupportedCustomSize =
       typeof width === 'number' &&
       typeof height === 'number' &&
       width >= 30000 &&
-      width <= 100000 &&
-      height >= 10000;
+      width <= 5000000 &&
+      height >= 10000 &&
+      height <= 5000000;
     if (
       typeof width !== 'number' ||
       typeof height !== 'number' ||
@@ -1009,7 +1019,7 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
       !Number.isFinite(height) ||
       !Number.isSafeInteger(width) ||
       !Number.isSafeInteger(height) ||
-      (!isA4PageSize && !isThermalPageSize)
+      (!isA4PageSize && !isSupportedCustomSize)
     ) {
       throw new Error('Printer page size is invalid.');
     }
@@ -1020,9 +1030,6 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
     ? options.html
     : undefined;
   const isSilent = options.silent === true;
-
-  // Determine if this is a thermal job (non-A4 pageSize supplied)
-  const isThermal = !!pageSize && !(pageSize.width === 210000 && pageSize.height === 297000);
 
   // --- SumatraPDF path (unpacked from asar in production) ---
   const sumatraPdfPath = app.isPackaged
@@ -1073,11 +1080,10 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
   };
 
   // ============================================================
-  // THERMAL PRINTING — printToPDF + pdf-to-printer (SumatraPDF)
-  // Bypasses Chromium GDI path that causes Epson/thermal drivers
-  // to fall back to A4 and shrink content to ~34%.
+  // Render the exact page to PDF first, then hand that fixed-size PDF to the
+  // printer subsystem so A4 and thermal documents share the same layout path.
   // ============================================================
-  if (isThermal && html && pageSize) {
+  if (html && pageSize) {
     let printWindow: BrowserWindow | null = null;
     let tempPdfPath: string | null = null;
     try {
@@ -1108,7 +1114,8 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
         // Send silently via SumatraPDF
         await pdfPrint(tempPdfPath, {
           ...(printerName ? { printer: printerName } : {}),
-          scale: 'noscale',
+          scale: scaling === 'fit-to-page' ? 'shrink' : 'noscale',
+          copies,
           silent: true,
           sumatraPdfPath,
         });
@@ -1117,7 +1124,8 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
         // Non-silent: open SumatraPDF print dialog
         await pdfPrint(tempPdfPath, {
           ...(printerName ? { printer: printerName } : {}),
-          scale: 'noscale',
+          scale: scaling === 'fit-to-page' ? 'shrink' : 'noscale',
+          copies,
           silent: false,
           sumatraPdfPath,
         });
@@ -1143,6 +1151,7 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
             silent: isSilent,
             ...(printerName ? { deviceName: printerName } : {}),
             ...(!useDefaultSize && pageSize ? { pageSize } : { usePrinterDefaultPageSize: true }),
+            copies,
             scaleFactor: 100,
             printBackground: true,
             margins: { top: 0, bottom: 0, left: 0, right: 0 },
@@ -1204,6 +1213,88 @@ ipcMain.handle('pos:export-report-pdf', async (event, rawOptions: unknown) => {
   });
   await writeFile(filePath, pdf);
   return { canceled: false, filePath };
+});
+
+ipcMain.handle('pos:export-design-pdf', async (event, rawOptions: unknown) => {
+  assertTrustedSender(event);
+  if (!rawOptions || typeof rawOptions !== 'object') {
+    throw new Error('Design PDF options are invalid.');
+  }
+  const options = rawOptions as {
+    fileName?: unknown;
+    html?: unknown;
+    pageSize?: unknown;
+  };
+  if (
+    typeof options.fileName !== 'string' ||
+    typeof options.html !== 'string' ||
+    options.html.length === 0 ||
+    options.html.length > 5_000_000 ||
+    !options.pageSize ||
+    typeof options.pageSize !== 'object'
+  ) {
+    throw new Error('Design PDF options are invalid.');
+  }
+  const candidate = options.pageSize as { width?: unknown; height?: unknown };
+  const width = candidate.width;
+  const height = candidate.height;
+  if (
+    typeof width !== 'number' ||
+    typeof height !== 'number' ||
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(height) ||
+    width < 30000 ||
+    width > 5000000 ||
+    height < 10000 ||
+    height > 5000000
+  ) {
+    throw new Error('Design PDF page size is invalid.');
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    throw new Error('Main window is not available.');
+  }
+
+  const safeFileName = options.fileName.replace(/[<>:"/\\|?*\x00-\x1F]/g, '-');
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    title: 'Export voucher as PDF',
+    defaultPath: safeFileName.toLowerCase().endsWith('.pdf')
+      ? safeFileName
+      : `${safeFileName}.pdf`,
+    filters: [{ name: 'PDF', extensions: ['pdf'] }],
+  });
+  if (canceled || !filePath) return { canceled: true };
+
+  const tempHtmlPath = path.join(
+    app.getPath('temp'),
+    `aptpos-design-${randomBytes(8).toString('hex')}.html`
+  );
+  const printWindow = new BrowserWindow({
+    show: false,
+    width: 820,
+    height: 1200,
+    backgroundColor: '#ffffff',
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      javascript: false,
+    },
+  });
+  try {
+    await writeFile(tempHtmlPath, options.html, 'utf8');
+    await printWindow.loadFile(tempHtmlPath);
+    const pdf = await printWindow.webContents.printToPDF({
+      printBackground: true,
+      pageSize: { width: width / 25400, height: height / 25400 },
+      margins: { top: 0, bottom: 0, left: 0, right: 0 },
+      preferCSSPageSize: true,
+    });
+    await writeFile(filePath, pdf);
+    return { canceled: false, filePath };
+  } finally {
+    if (!printWindow.isDestroyed()) printWindow.close();
+    await unlink(tempHtmlPath).catch(() => {});
+  }
 });
 
 ipcMain.handle('pos:share-receipt-whatsapp', async (event, rawOptions: unknown) => {
@@ -1301,31 +1392,13 @@ ipcMain.handle('pos:updates:install', async (event) => {
   return { cancelled: false };
 });
 
-ipcMain.handle('pos:app:restart-with-screen-mode', async (event, rawMode: unknown) => {
+ipcMain.handle('pos:app:set-default-screen-mode', async (event, rawMode: unknown) => {
   assertTrustedSender(event);
   if (!isAppScreenMode(rawMode)) {
     throw new Error('Choose a valid screen mode.');
   }
 
-  const { response } = await dialog.showMessageBox(mainWindow!, {
-    type: 'question',
-    title: 'Change default screen mode',
-    message: `Set ${getAppProductName(rawMode)} as the default screen mode?`,
-    detail: 'A database backup will be created before the app restarts.',
-    buttons: ['Back Up & Restart', 'Cancel'],
-    defaultId: 0,
-    cancelId: 1,
-    noLink: true,
-  });
-  if (response !== 0) return { cancelled: true };
-
-  await createLocalDatabaseBackup();
   await writeDefaultScreenMode(rawMode);
-  closeApproved = true;
-  const args = process.argv.slice(1).filter((argument) => !argument.startsWith('--screen='));
-  app.relaunch({ args: [...args, `--screen=${rawMode}`] });
-  app.exit(0);
-  return { cancelled: false };
 });
 
 ipcMain.handle('pos:backup:get-directory', (event) => {

@@ -3270,10 +3270,15 @@ export async function listPrintQueue(): Promise<PrintJob[]> {
   }));
 }
 
-export async function flushPrintQueue(): Promise<void> {
+export async function markPrintQueueJobPrinted(id: number): Promise<boolean> {
   const database = await getDb();
-  database.run("UPDATE print_queue SET status = 'PRINTED' WHERE status = 'QUEUED'");
-  saveDatabase();
+  database.run(
+    "UPDATE print_queue SET status = 'PRINTED' WHERE id = ? AND status = 'QUEUED'",
+    [id]
+  );
+  const updated = Number(database.exec('SELECT changes()')[0]?.values[0]?.[0] || 0) > 0;
+  if (updated) saveDatabase();
+  return updated;
 }
 
 function getSystemCode(database: Database): string {

@@ -52,6 +52,7 @@ import {
   getAppProductName,
   getAppScreenModeFromLocation,
 } from './utils/appScreenMode';
+import { createVoucherTemplateJob, printTemplateJob } from './printTemplates/render';
 
 const RPOS_TICKET_WIDTH_KEY = 'counterline_rpos_ticket_width';
 const DEFAULT_RPOS_TICKET_WIDTH = 320;
@@ -267,6 +268,7 @@ function isNavigableComponent(
 
 export function App() {
   const launchScreenMode = getAppScreenModeFromLocation();
+  const [runtimeScreenMode, setRuntimeScreenMode] = useState<AppScreenMode | null>(null);
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => {
     try {
       const stored = sessionStorage.getItem('counterline_user');
@@ -1147,17 +1149,36 @@ export function App() {
   };
 
   const handleFlushPrintQueue = async () => {
-    if (window.electronAPI?.isElectron) {
-      await window.electronAPI.printReceipt({
-        silent: true,
-        printerName: settings.invoiceTemplates?.[settings.paperWidth || '80mm']?.defaultPrinter || undefined,
-      });
-    } else {
-      window.print();
+    for (const queuedJob of printQueue) {
+      const printJob = await createVoucherTemplateJob(
+        'sales-invoice',
+        queuedJob.saleId,
+        settings,
+        settings.paperWidth || '80mm',
+        document.documentElement.dir === 'rtl'
+      );
+      const printed = await printTemplateJob(printJob);
+      if (!printed) break;
+
+      const response = await fetch(`/api/print-queue/${queuedJob.id}/printed`, { method: 'POST' });
+      if (!response.ok) {
+        const payload: unknown = await response.json().catch(() => null);
+        const message =
+          typeof payload === 'object' &&
+          payload !== null &&
+          'error' in payload &&
+          typeof payload.error === 'string'
+            ? payload.error
+            : `Could not mark print job ${queuedJob.id} as printed (HTTP ${response.status}).`;
+        throw new Error(message);
+      }
     }
-    await fetch('/api/print-queue/flush', { method: 'POST' });
+
     const queueRes = await fetch('/api/print-queue');
-    if (queueRes.ok) setPrintQueue(await queueRes.json());
+    if (!queueRes.ok) {
+      throw new Error(`Could not refresh the print queue (HTTP ${queueRes.status}).`);
+    }
+    setPrintQueue(await queueRes.json() as PrintJob[]);
   };
 
   const isAdmin = currentUser?.role === 'admin';
@@ -1171,14 +1192,19 @@ export function App() {
   const canDeleteSales = isAdmin || currentUser?.permissions?.includes('delete-sales') === true;
   const isAppAdmin = currentUser?.username.toLowerCase() === 'aptadmin';
   const effectiveScreenMode: AppScreenMode =
-    launchScreenMode || (settings.posScreenLayout === 'rpos' ? 'rpos' : 'pos');
+    runtimeScreenMode ||
+    launchScreenMode ||
+    (settings.posScreenLayout === 'rpos' ? 'rpos' : 'pos');
   const isRposMode = effectiveScreenMode === 'rpos';
   const isErpMode = effectiveScreenMode === 'erp';
   const appName = getAppProductName(effectiveScreenMode);
+  const loginScreenMode =
+    launchScreenMode || (settings.posScreenLayout === 'rpos' ? 'rpos' : 'pos');
 
   useEffect(() => {
-    document.title = `${appName} — Retail Billing & Inventory`;
-  }, [appName]);
+    const titleAppName = currentUser ? appName : getAppProductName(loginScreenMode);
+    document.title = `${titleAppName} — Retail Billing & Inventory`;
+  }, [appName, currentUser, loginScreenMode]);
 
   const hasPermission = (tabId: NavTab) => {
     if (!currentUser) return false;
@@ -1216,11 +1242,15 @@ export function App() {
     .map((component) => component.id)
     .filter(isNavigableComponent)
     .filter((tab) => hasPermission(tab));
-  const effectiveTab: NavTab = isErpMode
-    ? (hasPermission('sales-entry') ? 'sales-entry' : 'unavailable')
-    : hasPermission(activeTab)
-      ? activeTab
-      : fallbackTabs[0] || (hasPermission('settings') ? 'settings' : 'unavailable');
+  const modeAdjustedTab: NavTab =
+    isErpMode && activeTab === 'register'
+      ? 'sales-entry'
+      : !isErpMode && activeTab === 'sales-entry'
+        ? 'register'
+        : activeTab;
+  const effectiveTab: NavTab = hasPermission(modeAdjustedTab)
+    ? modeAdjustedTab
+    : fallbackTabs[0] || (hasPermission('settings') ? 'settings' : 'unavailable');
   const nextPurchaseVoucherId = purchases.length
     ? purchases.reduce((latest, purchase) => purchase.id > latest.id ? purchase : latest).id + 1
     : 1;
@@ -1229,6 +1259,7 @@ export function App() {
     <SettingsView
       settings={settings}
       appScreenMode={effectiveScreenMode}
+      onAppScreenModeChange={setRuntimeScreenMode}
       activeSection={settingsSection}
       onActiveSectionChange={setSettingsSection}
       showSectionNavigation={!showSettingsComponent}
@@ -1255,7 +1286,7 @@ export function App() {
         {!currentUser ? (
           <>
             <LoginForm
-              appScreenMode={effectiveScreenMode}
+              appScreenMode={loginScreenMode}
               onLoginSuccess={handleLoginSuccess}
               onDemoRegistrationRequested={handleDemoRegistrationRequested}
               initialError={loginError}

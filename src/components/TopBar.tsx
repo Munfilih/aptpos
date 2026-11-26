@@ -253,9 +253,10 @@ export const TopBar: React.FC<TopBarProps> = ({
     onLauncherOpened?.();
   }, [openLauncherOnMount, onLauncherOpened]);
 
-  const navItems: TopNavItem[] = appScreenMode === 'erp' ? [
-    { id: 'sales-entry', label: language === 'ar' ? 'إدخال المبيعات' : 'Sales Entry', icon: FileText },
-  ] : [
+  const navItems: TopNavItem[] = [
+    ...(appScreenMode === 'erp'
+      ? [{ id: 'sales-entry' as const, label: language === 'ar' ? 'إدخال المبيعات' : 'Sales Entry', icon: FileText }]
+      : []),
     { id: 'register', label: t.navRegister, icon: ShoppingBag },
     {
       id: 'return-register',
@@ -303,10 +304,9 @@ export const TopBar: React.FC<TopBarProps> = ({
       .filter((navItem): navItem is TopNavGroup => 'children' in navItem)
       .flatMap((group) => group.children)
       .find((child) => child.id === tabId);
-    const requiredPermission =
-      tabId === 'sales-entry'
-        ? 'register'
-        : item?.permission || groupChild?.permission;
+    const requiredPermission = tabId === 'sales-entry'
+      ? 'register'
+      : item?.permission || groupChild?.permission;
     if (currentUser.role === 'admin') return true;
     if (requiredPermission === 'sales-return' && currentUser.permissions?.includes('manage-sales-returns')) {
       return true;
@@ -394,7 +394,6 @@ export const TopBar: React.FC<TopBarProps> = ({
   ];
 
   const visibleHubModules = hubModules
-    .filter((module) => appScreenMode !== 'erp' || module.id === 'sales')
     .map((module) => ({
       ...module,
       tab: appScreenMode === 'erp' && module.id === 'sales' ? 'sales-entry' : module.tab,
@@ -429,7 +428,7 @@ export const TopBar: React.FC<TopBarProps> = ({
     { id: 'organization-shift', label: 'Shift', labelAr: 'الورديات', icon: Wallet, tab: 'shift' },
     { id: 'cashbook', label: 'Cash Book', labelAr: 'دفتر النقدية', icon: Wallet, tab: 'accounts', action: 'open-cashbook' },
   ];
-  const visibleMenuShortcuts = (appScreenMode === 'erp' ? [] : menuShortcuts).filter(
+  const visibleMenuShortcuts = menuShortcuts.filter(
     (item) =>
       (!item.componentId || !disabledAppComponents.includes(item.componentId)) &&
       (item.comingSoon || !item.tab || hasTabPermission(item.tab))

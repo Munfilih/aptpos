@@ -13,6 +13,7 @@ import {
   Save
 } from 'lucide-react';
 import type {
+  PaperWidth,
   Product,
   PurchaseEntry,
   PurchaseReturnVoucher,
@@ -21,6 +22,9 @@ import type {
   StoreSettings,
   Vendor
 } from '../types/pos';
+import { createPrintTemplateJob, createVoucherTemplateJob, printTemplateJob } from '../printTemplates/render';
+import { getPrintDocumentFormat } from '../printTemplates/catalog';
+import type { PrintDocumentData, PrintTemplateJob } from '../printTemplates/types';
 import { useLanguage } from '../i18n/LanguageContext';
 import { resolveDateBounds, toLocalDateKey, type DateFilter } from '../utils/dateFilters';
 import { VendorsView } from './VendorsView';
@@ -220,6 +224,7 @@ const createPurchaseRows = (): NewPurchaseItemRow[] =>
   }));
 
 interface PurchasePrintEntry {
+  voucherId?: number;
   invoiceNumber: string;
   vendorName: string;
   receivedDate: string;
@@ -1518,8 +1523,78 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
     if (!printEntry) return;
     const handleAfterPrint = () => setPrintEntry(null);
     window.addEventListener('afterprint', handleAfterPrint, { once: true });
-    window.print();
-    return () => window.removeEventListener('afterprint', handleAfterPrint);
+    let active = true;
+    const printPurchase = async () => {
+      try {
+        let printJob: PrintTemplateJob;
+        if (printEntry.voucherId) {
+          printJob = await createVoucherTemplateJob(
+            'purchase-invoice',
+            printEntry.voucherId,
+            settings,
+            settings.paperWidth || '80mm',
+            isRtl
+          );
+        } else {
+          const format: PaperWidth = getPrintDocumentFormat(
+            settings,
+            'purchase-invoice',
+            settings.paperWidth || '80mm'
+          );
+          const data: PrintDocumentData = {
+            documentType: 'purchase-invoice',
+            title: isRtl ? 'فاتورة مشتريات' : 'Purchase Invoice',
+            number: printEntry.invoiceNumber,
+            date: printEntry.receivedDate,
+            companyName: settings.storeName,
+            companyNameAr: settings.storeNameAr,
+            companyAddress: settings.address,
+            companyPhone: settings.phone,
+            companyTaxId: settings.taxId,
+            companyLogo: settings.storeLogoDataUrl,
+            fields: [
+              { label: isRtl ? 'المورد' : 'Supplier', value: printEntry.vendorName },
+              { label: isRtl ? 'حالة الدفع' : 'Payment status', value: printEntry.paymentStatus },
+              ...(printEntry.notes ? [{ label: isRtl ? 'ملاحظات' : 'Notes', value: printEntry.notes }] : []),
+            ],
+            columns: isRtl
+              ? ['#', 'الصنف', 'الكمية', 'التكلفة', 'الإجمالي']
+              : ['#', 'Item', 'Qty', 'Cost', 'Total'],
+            rows: printEntry.items.map((item, index) => ({
+              values: [
+                String(index + 1),
+                item.name,
+                `${item.quantity} ${item.unit}`.trim(),
+                `${settings.currencySymbol || 'SAR'} ${item.unitCost.toFixed(settings.decimalPoints ?? 2)}`,
+                `${settings.currencySymbol || 'SAR'} ${item.total.toFixed(settings.decimalPoints ?? 2)}`,
+              ],
+            })),
+            totals: [
+              { label: isRtl ? 'المجموع الفرعي' : 'Subtotal', value: printEntry.subtotal.toFixed(settings.decimalPoints ?? 2) },
+              { label: isRtl ? 'الضريبة' : 'VAT', value: printEntry.taxAmount.toFixed(settings.decimalPoints ?? 2) },
+              { label: isRtl ? 'الشحن' : 'Shipping', value: printEntry.shippingCost.toFixed(settings.decimalPoints ?? 2) },
+              { label: isRtl ? 'الإجمالي' : 'Total', value: printEntry.total.toFixed(settings.decimalPoints ?? 2) },
+              { label: isRtl ? 'المدفوع' : 'Paid', value: printEntry.paidAmount.toFixed(settings.decimalPoints ?? 2) },
+            ],
+            direction: isRtl ? 'rtl' : 'ltr',
+          };
+          printJob = await createPrintTemplateJob(data, settings, format);
+        }
+        if (!active) return;
+        await printTemplateJob(printJob);
+        if (active) setPrintEntry(null);
+      } catch (error) {
+        if (active) {
+          setFormError(error instanceof Error ? error.message : 'Purchase invoice could not be printed.');
+          setPrintEntry(null);
+        }
+      }
+    };
+    void printPurchase();
+    return () => {
+      active = false;
+      window.removeEventListener('afterprint', handleAfterPrint);
+    };
   }, [printEntry]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -1618,6 +1693,7 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
     };
 
     setSaving(true);
+    let savedPurchaseId = editingPurchaseId;
     try {
       if (isPurchaseReturnMode) {
         if (!onCreatePurchaseReturn) {
@@ -1686,10 +1762,14 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
         if (!res.ok) {
           throw new Error(data.error || (isRtl ? 'فشل تسجيل الشراء.' : 'Failed to record purchase entry.'));
         }
+        if (Number.isInteger(Number(data.id)) && Number(data.id) > 0) {
+          savedPurchaseId = Number(data.id);
+        }
       }
 
       if (shouldPrint) {
         setPrintEntry({
+          ...(savedPurchaseId ? { voucherId: savedPurchaseId } : {}),
           invoiceNumber: invoiceNumber.trim(),
           vendorName: vendors.find((vendor) => vendor.id === vendorId)?.name || '',
           receivedDate,

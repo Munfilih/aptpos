@@ -1,8 +1,11 @@
 import React, { useMemo, useState } from 'react';
 import { Download, FileText, Search } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import type { CashbookEntry, Customer, PurchaseEntry, Sale, SalesReturnVoucher, StoreSettings, Vendor } from '../types/pos';
+import type { CashbookEntry, Customer, PaperWidth, PurchaseEntry, Sale, SalesReturnVoucher, StoreSettings, Vendor } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
+import { createPrintTemplateJob, printTemplateJob } from '../printTemplates/render';
+import { getPrintDocumentFormat, resolvePrintTemplate } from '../printTemplates/catalog';
+import type { PrintDocumentData } from '../printTemplates/types';
 
 interface LedgerViewProps {
   customers: Customer[];
@@ -302,7 +305,89 @@ export const LedgerView: React.FC<LedgerViewProps> = ({
     XLSX.writeFile(workbook, `ledger-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
-  const exportPdf = () => window.print();
+  const exportPdf = async () => {
+    try {
+      const format: PaperWidth = getPrintDocumentFormat(
+        settings,
+        'ledger-statement',
+        settings.paperWidth === 'A4' ? 'A4' : '80mm'
+      );
+      const profile = settings.printDocumentProfiles?.['ledger-statement']?.[format];
+      const template = resolvePrintTemplate('ledger-statement', format, profile?.templateId);
+      let data: PrintDocumentData;
+
+      if (selectedAccount) {
+        let runningBalance = 0;
+        const rows = selectedTransactions.map((transaction) => {
+          runningBalance += transaction.debit - transaction.credit;
+          return {
+            values: [
+              transaction.date,
+              transaction.reference,
+              transaction.particulars,
+              `${currency}${transaction.debit.toFixed(2)}`,
+              `${currency}${transaction.credit.toFixed(2)}`,
+              `${currency}${runningBalance.toFixed(2)}`,
+            ],
+          };
+        });
+        data = {
+          documentType: 'ledger-statement',
+          title: `${selectedAccount.party} Ledger`,
+          companyName: settings.storeName,
+          companyNameAr: settings.storeNameAr,
+          companyAddress: settings.address,
+          companyPhone: settings.phone,
+          companyTaxId: settings.taxId,
+          companyLogo: settings.storeLogoDataUrl,
+          fields: [{ label: 'Account type', value: selectedAccount.accountType }],
+          columns: ['Date', 'Reference', 'Particulars', 'Debit', 'Credit', 'Balance'],
+          rows,
+          totals: [
+            { label: 'Debit', value: `${currency}${selectedTransactions.reduce((sum, row) => sum + row.debit, 0).toFixed(2)}` },
+            { label: 'Credit', value: `${currency}${selectedTransactions.reduce((sum, row) => sum + row.credit, 0).toFixed(2)}` },
+            { label: 'Balance', value: `${currency}${selectedAccount.balance.toFixed(2)}` },
+          ],
+          direction: isRtl ? 'rtl' : 'ltr',
+        };
+      } else {
+        data = {
+          documentType: 'ledger-statement',
+          title: isRtl ? 'كشف دفتر الأستاذ' : 'Ledger Statement',
+          companyName: settings.storeName,
+          companyNameAr: settings.storeNameAr,
+          companyAddress: settings.address,
+          companyPhone: settings.phone,
+          companyTaxId: settings.taxId,
+          companyLogo: settings.storeLogoDataUrl,
+          fields: [{ label: 'Accounts', value: String(filteredRows.length) }],
+          columns: ['Account', 'Type', 'Transactions', 'Debit', 'Credit', 'Balance'],
+          rows: filteredRows.map((row) => ({
+            values: [
+              row.party,
+              row.accountType,
+              String(row.transactions),
+              `${currency}${row.debit.toFixed(2)}`,
+              `${currency}${row.credit.toFixed(2)}`,
+              `${currency}${row.balance.toFixed(2)}`,
+            ],
+          })),
+          totals: [
+            { label: 'Debit', value: `${currency}${totals.debit.toFixed(2)}` },
+            { label: 'Credit', value: `${currency}${totals.credit.toFixed(2)}` },
+            { label: 'Balance', value: `${currency}${totals.balance.toFixed(2)}` },
+          ],
+          direction: isRtl ? 'rtl' : 'ltr',
+        };
+      }
+
+      const job = await createPrintTemplateJob(data, settings, format, template.id);
+      await printTemplateJob(job);
+    } catch (error) {
+      console.error('Failed to print ledger statement:', error);
+      window.alert(error instanceof Error ? error.message : 'Ledger statement could not be printed.');
+    }
+  };
 
   return (
     <div className="flex-1 overflow-y-auto bg-slate-50 p-3 sm:p-6">

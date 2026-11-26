@@ -22,18 +22,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
     printerName?: string;
     pageSize?: { width: number; height: number };
     html?: string;
+    copies?: number;
+    scaling?: 'fit-to-page' | 'actual-size';
   }) =>
     ipcRenderer.invoke('pos:print-receipt', options || {}),
   exportPdf: (options: { fileName: string }) =>
     ipcRenderer.invoke('pos:export-report-pdf', options),
+  exportDesignPdf: (options: {
+    fileName: string;
+    html: string;
+    pageSize: { width: number; height: number };
+  }) =>
+    ipcRenderer.invoke('pos:export-design-pdf', options),
   shareReceiptToWhatsApp: (options: { phone: string; receiptNumber: string }) =>
     ipcRenderer.invoke('pos:share-receipt-whatsapp', options),
   getUpdateStatus: () => ipcRenderer.invoke('pos:updates:get-status'),
   checkForUpdates: () => ipcRenderer.invoke('pos:updates:check'),
   downloadUpdate: () => ipcRenderer.invoke('pos:updates:download'),
   installUpdate: () => ipcRenderer.invoke('pos:updates:install'),
-  restartWithScreenMode: (mode: 'pos' | 'rpos' | 'erp') =>
-    ipcRenderer.invoke('pos:app:restart-with-screen-mode', mode),
+  setDefaultScreenMode: (mode: 'pos' | 'rpos' | 'erp') =>
+    ipcRenderer.invoke('pos:app:set-default-screen-mode', mode),
   getBackupDirectory: () => ipcRenderer.invoke('pos:backup:get-directory'),
   getBackupConfiguration: () => ipcRenderer.invoke('pos:backup:get-configuration'),
   setBackupConfiguration: (configuration: { mode: 'on-close' | 'manual' | 'scheduled'; scheduledTime: string }) =>

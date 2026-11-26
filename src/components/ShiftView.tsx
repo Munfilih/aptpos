@@ -12,13 +12,12 @@ import type {
 } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
 import {
-  applyThermalPageSize,
-  buildStandaloneThermalPrintHtml,
-  measureThermalPageSize,
-  printWithThermalPageSize,
-  resolveInvoiceMarginsMm,
-  waitPrintSettlingDelay,
-} from '../utils/thermalPrinting';
+  createPrintTemplateJob,
+  printTemplateJob,
+} from '../printTemplates/render';
+import { getPrintDocumentFormat, resolvePrintTemplate } from '../printTemplates/catalog';
+import { DocumentTemplate } from '../printTemplates/DocumentTemplate';
+import type { PrintDocumentData } from '../printTemplates/types';
 
 interface ShiftViewProps {
   currentUser: UserSession;
@@ -130,12 +129,13 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
   const cashierUsername = currentUser.username.trim();
   const cashierName = currentUser.displayName?.trim() || cashierUsername;
   const currency = settings.currencySymbol || 'SAR';
-  const activeFormat: PaperWidth = settings.paperWidth || '80mm';
-  const templateSettings = settings.invoiceTemplates?.[activeFormat];
-  const invoiceMargins = resolveInvoiceMarginsMm(
-    activeFormat,
-    templateSettings?.invoiceMarginsMm
+  const activeFormat: PaperWidth = getPrintDocumentFormat(
+    settings,
+    'shift-report',
+    settings.paperWidth || '80mm'
   );
+  const shiftTemplateProfile = settings.printDocumentProfiles?.['shift-report']?.[activeFormat];
+  const shiftTemplate = resolvePrintTemplate('shift-report', activeFormat, shiftTemplateProfile?.templateId);
   const [activeShift, setActiveShift] = useState<CashierShift | null>(null);
   const [shiftHistory, setShiftHistory] = useState<CashierShift[]>([]);
   const [openingCash, setOpeningCash] = useState('0.00');
@@ -339,6 +339,78 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
     new Date(value).toLocaleString(language === 'ar' ? 'ar-SA' : 'en-US');
   const formatAmount = (amount: number) => `${currency} ${amount.toFixed(2)}`;
 
+  const getShiftPrintData = (): PrintDocumentData => {
+    if (!selectedShift || !selectedShiftReport) {
+      throw new Error('Shift details are not ready to print.');
+    }
+    const report = selectedShiftReport;
+    const rows = [
+      {
+        values: [
+          isRtl ? 'المبيعات' : 'Sales',
+          String(report.sales.count),
+          formatAmount(report.sales.amount),
+        ],
+      },
+      {
+        values: [
+          isRtl ? 'المرتجعات' : 'Sales returns',
+          String(report.returns.count),
+          formatAmount(report.returns.amount),
+        ],
+      },
+      {
+        values: [
+          isRtl ? 'دفتر النقدية' : 'Cashbook',
+          String(report.cashbook.count),
+          `${isRtl ? 'داخل' : 'In'} ${formatAmount(report.cashbook.moneyIn)} · ${isRtl ? 'خارج' : 'Out'} ${formatAmount(report.cashbook.moneyOut)}`,
+        ],
+      },
+      {
+        values: [
+          isRtl ? 'البنك' : 'Bank',
+          String(report.bank.count),
+          `${isRtl ? 'داخل' : 'In'} ${formatAmount(report.bank.moneyIn)} · ${isRtl ? 'خارج' : 'Out'} ${formatAmount(report.bank.moneyOut)}`,
+        ],
+      },
+      ...report.sales.byPaymentMethod.map((item) => ({
+        values: [`${isRtl ? 'مبيعات' : 'Sales'} · ${item.paymentMethod}`, String(item.count), formatAmount(item.amount)],
+      })),
+      ...report.returns.byPaymentMethod.map((item) => ({
+        values: [`${isRtl ? 'مرتجعات' : 'Returns'} · ${item.paymentMethod}`, String(item.count), formatAmount(item.amount)],
+      })),
+      ...report.bank.byAccount.map((account) => ({
+        values: [account.accountName, String(account.count), `${formatAmount(account.moneyIn)} / ${formatAmount(account.moneyOut)}`],
+      })),
+    ];
+    return {
+      documentType: 'shift-report',
+      title: isRtl ? 'تقرير الوردية' : 'Shift Report',
+      number: `#${selectedShift.id}`,
+      date: `${formatDate(report.from)} – ${formatDate(report.to)}`,
+      companyName: settings.storeName,
+      companyNameAr: settings.storeNameAr,
+      companyAddress: settings.address,
+      companyPhone: settings.phone,
+      companyLogo: settings.storeLogoDataUrl,
+      companyTaxId: settings.taxId,
+      fields: [
+        { label: isRtl ? 'الكاشير' : 'Cashier', value: selectedShift.cashierName },
+        { label: isRtl ? 'اسم المستخدم' : 'Username', value: selectedShift.cashierUsername },
+        { label: isRtl ? 'الحالة' : 'Status', value: selectedShift.closedAt ? (isRtl ? 'مغلقة' : 'Closed') : (isRtl ? 'مفتوحة' : 'Open') },
+        { label: isRtl ? 'وقت الفتح' : 'Opened', value: formatDate(selectedShift.openedAt) },
+        { label: isRtl ? 'وقت الإغلاق' : 'Closed', value: selectedShift.closedAt ? formatDate(selectedShift.closedAt) : '—' },
+        { label: isRtl ? 'الرصيد الافتتاحي' : 'Opening cash', value: formatAmount(selectedShift.openingCash) },
+        { label: isRtl ? 'الرصيد الختامي' : 'Closing cash', value: selectedShift.closingCash === null ? '—' : formatAmount(selectedShift.closingCash) },
+      ],
+      columns: [isRtl ? 'القسم' : 'Section', isRtl ? 'العدد' : 'Count', isRtl ? 'المبلغ / التفاصيل' : 'Amount / Details'],
+      rows,
+      totals: [{ label: isRtl ? 'إجمالي عدد المعاملات' : 'Total transactions', value: String(report.transactionCount) }],
+      footer: [settings.phone, settings.address].filter(Boolean).join(' · '),
+      direction: isRtl ? 'rtl' : 'ltr',
+    };
+  };
+
   const renderShiftSummary = (compact = false) => {
     if (!selectedShiftReport) return null;
     const report = selectedShiftReport;
@@ -428,54 +500,9 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
     setPrinting(true);
     setPrintError(null);
     try {
-      const thermalWidthMm = activeFormat === '58mm' ? 58 : 80;
-      const shiftElement = activeFormat === 'A4'
-        ? document.querySelector<HTMLElement>('.shift-print-page.paper-a4')
-        : document.querySelector<HTMLElement>('.shift-print-page:not(.paper-a4)');
-      const paddingCss = `${invoiceMargins.top}mm ${invoiceMargins.right}mm ${invoiceMargins.bottom}mm ${invoiceMargins.left}mm`;
-      const pageSize = activeFormat === 'A4'
-        ? { width: 210_000, height: 297_000 }
-        : measureThermalPageSize(
-            shiftElement,
-            {
-              elementWidthMm: thermalWidthMm,
-              pageWidthMm: thermalWidthMm,
-              padding: paddingCss,
-              container: document.querySelector<HTMLElement>('.shift-print-source'),
-            }
-          );
-      document.body.classList.add('shift-printing');
-      try {
-        if (window.electronAPI?.isElectron) {
-          const printerMode = templateSettings?.printerMode
-            || (templateSettings?.defaultPrinter ? 'saved-printer' : 'system-default');
-          const html = buildStandaloneThermalPrintHtml(shiftElement, {
-            widthMm: activeFormat === 'A4' ? 210 : thermalWidthMm,
-            pageSize,
-            padding: activeFormat === 'A4' ? undefined : paddingCss,
-          });
-          const result = await window.electronAPI.printReceipt({
-            silent: printerMode !== 'choose-at-print-time',
-            printerName: printerMode === 'saved-printer'
-              ? templateSettings?.defaultPrinter || undefined
-              : undefined,
-            pageSize,
-            html,
-          });
-          if (!result.ok) {
-            if (['cancelled', 'canceled'].includes(result.error?.toLowerCase() || '')) {
-              return false;
-            }
-            throw new Error(result.error || 'Shift report could not be printed.');
-          }
-        } else if (activeFormat !== 'A4') {
-          printWithThermalPageSize(pageSize);
-        } else {
-          window.print();
-        }
-      } finally {
-        document.body.classList.remove('shift-printing');
-      }
+      const job = await createPrintTemplateJob(getShiftPrintData(), settings, activeFormat, shiftTemplate.id);
+      const printed = await printTemplateJob(job);
+      if (!printed) return false;
       setShowPrintPreview(false);
       return true;
     } catch (printFailure) {
@@ -937,57 +964,14 @@ export const ShiftView: React.FC<ShiftViewProps> = ({ currentUser, settings, the
           <div className={`shift-print-source${showPrintPreview ? ' shift-print-preview-active' : ''}`}>
             <article
               className={`shift-print-page ${activeFormat === 'A4' ? 'paper-a4' : activeFormat === '58mm' ? 'paper-58mm' : 'paper-80mm'}`}
-              style={{
-                '--invoice-margin-top': `${invoiceMargins.top}mm`,
-                '--invoice-margin-right': `${invoiceMargins.right}mm`,
-                '--invoice-margin-bottom': `${invoiceMargins.bottom}mm`,
-                '--invoice-margin-left': `${invoiceMargins.left}mm`,
-              } as React.CSSProperties}
             >
-              <header className="mb-5 border-b-2 border-slate-900 pb-3 text-center">
-                <h1 className="text-lg font-black text-slate-950">{settings.storeName}</h1>
-                {settings.storeNameAr && (
-                  <p className="mt-1 text-sm font-bold text-slate-800" dir="rtl">{settings.storeNameAr}</p>
-                )}
-                <p className="mt-3 text-base font-extrabold uppercase tracking-wide text-slate-900">
-                  {isRtl ? 'تقرير الوردية' : 'Shift Report'}
-                </p>
-                <p className="mt-1 text-xs font-mono text-slate-700">#{selectedShift.id}</p>
-              </header>
-              <div className="space-y-2 text-xs text-slate-900">
-                {[
-                  [isRtl ? 'الكاشير' : 'Cashier', selectedShift.cashierName],
-                  [isRtl ? 'اسم المستخدم' : 'Username', selectedShift.cashierUsername],
-                  [isRtl ? 'الحالة' : 'Status', selectedShift.closedAt
-                    ? (isRtl ? 'مغلقة' : 'Closed')
-                    : (isRtl ? 'مفتوحة' : 'Open')],
-                  [isRtl ? 'وقت الفتح' : 'Opened', formatDate(selectedShift.openedAt)],
-                  [isRtl ? 'وقت الإغلاق' : 'Closed', selectedShift.closedAt
-                    ? formatDate(selectedShift.closedAt)
-                    : '—'],
-                ].map(([label, value]) => (
-                  <div key={label} className="flex justify-between gap-3 border-b border-dashed border-slate-300 pb-1.5">
-                    <span className="text-slate-600">{label}</span>
-                    <span className="min-w-0 break-words text-right font-semibold">{value}</span>
-                  </div>
-                ))}
-                <div className="flex justify-between gap-3 border-b border-dashed border-slate-300 pb-1.5">
-                  <span className="text-slate-600">{isRtl ? 'الرصيد الافتتاحي' : 'Opening cash'}</span>
-                  <span className="font-mono font-semibold">{formatAmount(selectedShift.openingCash)}</span>
-                </div>
-                <div className="flex justify-between gap-3 border-b border-dashed border-slate-300 pb-1.5">
-                  <span className="text-slate-600">{isRtl ? 'الرصيد الختامي' : 'Closing cash'}</span>
-                  <span className="font-mono font-semibold">
-                    {selectedShift.closingCash === null
-                      ? '—'
-                      : formatAmount(selectedShift.closingCash)}
-                  </span>
-                </div>
-              </div>
-              {renderShiftSummary(true)}
-              <footer className="mt-6 border-t border-slate-300 pt-2 text-center text-[10px] text-slate-500">
-                {settings.phone ? `${settings.phone} · ` : ''}{settings.address}
-              </footer>
+              {selectedShiftReport && (
+                <DocumentTemplate
+                  data={getShiftPrintData()}
+                  format={activeFormat}
+                  variant={shiftTemplate.variant}
+                />
+              )}
             </article>
             {showPrintPreview && (
               <div className="shift-print-controls no-print fixed bottom-4 left-1/2 z-[70] flex w-[min(94vw,480px)] -translate-x-1/2 items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-xl">

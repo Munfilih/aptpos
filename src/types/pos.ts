@@ -452,6 +452,22 @@ export interface CreateCashbookEntryInput {
 
 export type PaperWidth = '80mm' | '58mm' | 'A4';
 
+export type PrintDocumentType =
+  | 'sales-invoice'
+  | 'sales-return'
+  | 'purchase-invoice'
+  | 'purchase-return'
+  | 'kot'
+  | 'ledger-statement'
+  | 'shift-report'
+  | 'saudi-vat-report';
+
+export interface PrintDocumentProfile {
+  templateId: string;
+  printerName?: string;
+  printerMode?: 'system-default' | 'saved-printer' | 'choose-at-print-time';
+}
+
 export interface InvoiceMarginsMm {
   top: number;
   right: number;
@@ -549,6 +565,10 @@ export interface StoreSettings {
   invoiceShowFooter?: boolean;
   invoiceShowQrCode?: boolean;
   invoiceTemplates?: Partial<Record<PaperWidth, InvoiceTemplateSettings>>;
+  printDocumentFormats?: Partial<Record<PrintDocumentType, PaperWidth>>;
+  printDocumentProfiles?: Partial<
+    Record<PrintDocumentType, Partial<Record<PaperWidth, PrintDocumentProfile>>>
+  >;
   appVersion?: AppVersion;
   disabledAppComponents?: AppComponentId[];
   versionComponentPolicies?: VersionComponentPolicies;

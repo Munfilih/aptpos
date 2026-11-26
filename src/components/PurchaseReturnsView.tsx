@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   History,
   Plus,
+  Printer,
   Receipt,
   RotateCcw,
   Search,
@@ -17,6 +18,7 @@ import type {
   StoreSettings,
 } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
+import { createVoucherTemplateJob, printTemplateJob } from '../printTemplates/render';
 
 interface PurchaseReturnRegisterViewProps {
   purchases: PurchaseEntry[];
@@ -467,6 +469,7 @@ export const PurchaseReturnHistoryView: React.FC<PurchaseReturnHistoryViewProps>
   const [search, setSearch] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [printingId, setPrintingId] = useState<number | null>(null);
   const currency = isRtl ? 'ر.س ' : settings.currencySymbol || 'SAR ';
   const filteredVouchers = vouchers.filter((voucher) => {
     const query = search.trim().toLowerCase();
@@ -491,6 +494,25 @@ export const PurchaseReturnHistoryView: React.FC<PurchaseReturnHistoryViewProps>
       setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete purchase return.');
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const handlePrint = async (voucher: PurchaseReturnVoucher) => {
+    setPrintingId(voucher.id);
+    setError(null);
+    try {
+      const job = await createVoucherTemplateJob(
+        'purchase-return',
+        voucher.id,
+        settings,
+        settings.paperWidth || '80mm',
+        isRtl
+      );
+      await printTemplateJob(job);
+    } catch (printError) {
+      setError(printError instanceof Error ? printError.message : 'Purchase return could not be printed.');
+    } finally {
+      setPrintingId(null);
     }
   };
 
@@ -544,7 +566,7 @@ export const PurchaseReturnHistoryView: React.FC<PurchaseReturnHistoryViewProps>
               <th className="whitespace-nowrap border-b border-slate-200 px-3 py-2">{isRtl ? 'المورد' : 'Supplier'}</th>
               <th className="border-b border-slate-200 px-3 py-2">{isRtl ? 'الأصناف' : 'Items'}</th>
               <th className={`whitespace-nowrap border-b border-slate-200 px-3 py-2 ${isRtl ? 'text-left' : 'text-right'}`}>{isRtl ? 'قيمة الإرجاع' : 'Credit amount'}</th>
-              <th className="border-b border-slate-200 px-3 py-2 text-center">{isRtl ? 'حذف' : 'Delete'}</th>
+              <th className="border-b border-slate-200 px-3 py-2 text-center">{isRtl ? 'إجراءات' : 'Actions'}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 bg-white">
@@ -566,7 +588,16 @@ export const PurchaseReturnHistoryView: React.FC<PurchaseReturnHistoryViewProps>
                 <td className="px-3 py-2 text-center">
                   <button
                     type="button"
-                    disabled={deletingId === voucher.id}
+                    disabled={printingId === voucher.id}
+                    onClick={() => void handlePrint(voucher)}
+                    aria-label={`${isRtl ? 'طباعة سند' : 'Print voucher'} ${voucher.voucherNumber}`}
+                    className="rounded p-1.5 text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                  >
+                    <Printer className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={deletingId === voucher.id || printingId === voucher.id}
                     onClick={() => void handleDelete(voucher)}
                     aria-label={`${isRtl ? 'حذف سند' : 'Delete voucher'} ${voucher.voucherNumber}`}
                     className="rounded p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
