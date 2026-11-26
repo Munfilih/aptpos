@@ -903,8 +903,8 @@ function normalizeProductMultiUnits(value: unknown): ProductMultiUnit[] {
     if (!name || name.length > 100 || names.has(name.toLocaleLowerCase())) {
       throw new Error(`Multi-unit row ${index + 1} needs a unique name.`);
     }
-    if (!Number.isInteger(unitsPerBase) || unitsPerBase < 1) {
-      throw new Error(`Multi-unit row ${index + 1} must contain at least one base unit.`);
+    if (!Number.isFinite(unitsPerBase) || unitsPerBase <= 0) {
+      throw new Error(`Multi-unit row ${index + 1} must have a conversion factor greater than zero.`);
     }
     if (barcode.length > 255) {
       throw new Error(`Multi-unit barcode in row ${index + 1} is too long.`);
@@ -914,7 +914,7 @@ function normalizeProductMultiUnits(value: unknown): ProductMultiUnit[] {
     }
     ids.add(id);
     names.add(name.toLocaleLowerCase());
-    return { id, name, barcode, unitsPerBase, price };
+    return { id, name, barcode, unitsPerBase: Number(unitsPerBase.toFixed(6)), price };
   });
 }
 

@@ -270,6 +270,7 @@ interface MultiUnitDraft {
   name: string;
   barcode: string;
   unitsPerBase: string;
+  packsPerBase: string;
   price: string;
 }
 
@@ -368,6 +369,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const isRposMode = settings.posScreenLayout === 'rpos';
   const [search, setSearch] = useState('');
   const [stockFilter, setStockFilter] = useState<'all' | 'low' | 'out'>('all');
+  const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
   const [sortConfig, setSortConfig] = useState<{
     key: InventorySortKey;
     direction: InventorySortDirection;
@@ -619,8 +621,16 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     return nextBarcode;
   };
 
+  const productCategories = useMemo(
+    () => Array.from(new Set(products.map((p) => p.category).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [products]
+  );
+
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
+      if (categoryFilter !== 'ALL' && p.category !== categoryFilter) {
+        return false;
+      }
       if (stockFilter === 'low' && !(p.stock > 0 && p.stock <= p.reorderLevel)) {
         return false;
       }
@@ -639,11 +649,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       }
       return true;
     });
-  }, [products, stockFilter, search]);
+  }, [products, categoryFilter, stockFilter, search]);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [search, stockFilter]);
+  }, [search, stockFilter, categoryFilter]);
 
   const totalPages = Math.max(1, Math.ceil(filteredProducts.length / pageSize));
 
@@ -914,6 +924,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       name: unit.name,
       barcode: unit.barcode,
       unitsPerBase: String(unit.unitsPerBase),
+      packsPerBase: unit.unitsPerBase > 0 ? String(Number((1 / unit.unitsPerBase).toFixed(4))) : '1',
       price: unit.price === null ? '' : String(unit.price),
     })));
     setAdditionalBarcodeDrafts((product.additionalBarcodes || []).map((barcode) => ({
@@ -1112,18 +1123,18 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     );
     if (multiUnitEntries.some((unit) =>
       !unit.name.trim() ||
-      !Number.isInteger(Number(unit.unitsPerBase)) ||
-      Number(unit.unitsPerBase) < 1 ||
+      !Number.isFinite(Number(unit.unitsPerBase)) ||
+      Number(unit.unitsPerBase) <= 0 ||
       (unit.price.trim() !== '' && (!Number.isFinite(Number(unit.price)) || Number(unit.price) < 0))
     )) {
-      setFormError('Complete each multi-unit name and base-unit quantity, or remove the unfinished row.');
+      setFormError('Complete each multi-unit name and conversion quantity, or remove the unfinished row.');
       return;
     }
     const multiUnits: ProductMultiUnit[] = multiUnitEntries.map((unit) => ({
       id: unit.id,
       name: unit.name.trim(),
       barcode: unit.barcode.trim(),
-      unitsPerBase: Number(unit.unitsPerBase),
+      unitsPerBase: Number(Number(unit.unitsPerBase).toFixed(6)),
       price: unit.price.trim() === '' ? null : Number(unit.price),
     }));
     const additionalBarcodes: ProductAdditionalBarcode[] = additionalBarcodeDrafts
@@ -1654,7 +1665,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   };
 
   return (
-    <div className={editProductOnly ? 'hidden' : 'flex-1 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 bg-slate-50'}>
+    <div className={editProductOnly ? 'hidden' : 'flex-1 overflow-y-auto p-2 sm:p-4 space-y-3 bg-white'}>
       {/* Import Notification Banner */}
       {importSuccessMsg && (
         <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs flex items-center justify-between shadow-xs">
@@ -1688,36 +1699,34 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         </div>
       )}
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-xl font-bold text-slate-900">
-          {isFlyErpMode ? (isRtl ? 'الخدمات' : 'Services') : (isRtl ? 'المخزون' : 'Inventory')}
-        </h1>
-        <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-xs">
-          {([
-            ...(!isFlyErpMode ? [{ id: 'products' as const, label: isRtl ? 'المنتجات' : 'Products' }] : []),
-            { id: 'services' as const, label: isRtl ? 'الخدمات' : 'Services' },
-            { id: 'manage', label: isRtl ? 'إدارة الخيارات' : 'Manage' },
-          ] as const).map((section) => (
+      <div className="flex items-end gap-1 border-b border-slate-300 bg-slate-100 px-2 pt-1.5 rounded-t-lg">
+        {([
+          ...(!isFlyErpMode ? [{ id: 'products' as const, label: isRtl ? 'المنتجات' : 'Products' }] : []),
+          { id: 'services' as const, label: isRtl ? 'الخدمات' : 'Services' },
+          { id: 'manage', label: isRtl ? 'إدارة الخيارات' : 'Manage' },
+        ] as const).map((section) => {
+          const active = inventorySection === section.id;
+          return (
             <button
               key={section.id}
               type="button"
               onClick={() => setInventorySection(section.id)}
-              className={`rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${
-                inventorySection === section.id
-                  ? 'bg-blue-700 text-white shadow-sm'
-                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+              className={`relative rounded-t-lg px-4 py-2 text-xs transition-colors ${
+                active
+                  ? 'z-10 -mb-px border border-b-white border-slate-300 bg-white font-semibold text-slate-900'
+                  : 'border border-transparent font-medium text-slate-600 hover:bg-slate-200/70 hover:text-slate-900'
               }`}
             >
               {section.label}
             </button>
-          ))}
-        </div>
+          );
+        })}
       </div>
 
       {inventorySection === 'products' && !isFlyErpMode ? (
       <>
-      {/* Toolbar & Content */}
-      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+      {/* Toolbar & Excel-like Table */}
+      <div className="bg-white border border-slate-300 rounded-lg overflow-hidden">
         <div className="p-3 sm:p-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 flex-1">
             <div className="relative flex-1 max-w-sm">
@@ -1730,6 +1739,18 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 className={`w-full ${isRtl ? 'pr-9 pl-3' : 'pl-9 pr-3'} py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:bg-white focus:outline-none focus:border-blue-700`}
               />
             </div>
+
+            <select
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+              aria-label={isRtl ? 'تصفية حسب التصنيف' : 'Filter by category'}
+              className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-medium text-slate-700 focus:border-blue-700 focus:outline-none"
+            >
+              <option value="ALL">{isRtl ? 'كل التصنيفات' : 'All Categories'}</option>
+              {productCategories.map((category) => (
+                <option key={category} value={category}>{category}</option>
+              ))}
+            </select>
 
             <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto">
               {(
@@ -1786,14 +1807,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               type="button"
               onClick={() => openCreateModal()}
               disabled={optionsLoading}
-              title={isRtl ? 'إضافة منتج (F8)' : 'Add Product (F8)'}
               className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors whitespace-nowrap shrink-0 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>
-                {isRtl ? 'إضافة منتج' : 'Add Product'}{' '}
-                <kbd className="ml-1 rounded bg-blue-800 px-1 py-0.5 text-[10px] text-blue-100">F8</kbd>
-              </span>
+              <span>{isRtl ? 'إضافة منتج' : 'Add Product'}</span>
             </button>
           </div>
         </div>
@@ -1873,26 +1890,26 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           )}
         </div>
 
-        {/* Desktop Table View (>= md) */}
+        {/* Desktop Excel-like Table View (>= md) */}
         <div className="hidden md:block overflow-x-auto">
-          <table className={`w-full ${isRtl ? 'text-right' : 'text-left'} border-collapse`}>
+          <table className={`w-full ${isRtl ? 'text-right' : 'text-left'} border-collapse text-xs`}>
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
+              <tr className="bg-slate-100 border-b border-slate-300 text-[11px] font-semibold text-slate-700 [&>th]:border-e [&>th]:border-slate-300 [&>th:last-child]:border-e-0">
                 {renderSortHeader('sku', isRtl ? 'الرمز / الباركود' : 'SKU / Barcode')}
                 {renderSortHeader('name', isRtl ? 'اسم المنتج' : 'Product Name')}
                 {renderSortHeader('category', isRtl ? 'التصنيف' : 'Category')}
                 {renderSortHeader('costPrice', isRtl ? 'التكلفة' : 'Cost', isRtl ? 'text-left' : 'text-right')}
                 {renderSortHeader('retailPrice', isRtl ? 'البيع' : 'Retail', isRtl ? 'text-left' : 'text-right')}
                 {renderSortHeader('stock', isRtl ? 'المتوفر' : 'On Hand', isRtl ? 'text-left' : 'text-right')}
-                {renderSortHeader('unit', isRtl ? 'الوحدة الأساسية' : 'Base Unit')}
-                {renderSortHeader('taxRate', isRtl ? 'فئة الضريبة' : 'Tax Category', isRtl ? 'text-left' : 'text-right')}
-                <th className={`py-2.5 px-4 ${isRtl ? 'text-left' : 'text-right'}`}>{isRtl ? 'الإجراءات' : 'Actions'}</th>
+                {renderSortHeader('unit', isRtl ? 'الوحدة' : 'Unit')}
+                {renderSortHeader('taxRate', isRtl ? 'الضريبة' : 'Tax %', isRtl ? 'text-left' : 'text-right')}
+                <th className="py-2 px-3 text-center w-16">{isRtl ? 'تعديل' : 'Edit'}</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 text-xs">
+            <tbody className="text-xs">
               {paginatedProducts.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-500">
+                  <td colSpan={9} className="py-10 text-center text-slate-500 border-b border-slate-200">
                     {isRtl ? 'لا توجد أصناف مطابقة للبحث الحالي.' : 'No inventory items match the current filter.'}
                   </td>
                 </tr>
@@ -1901,64 +1918,55 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   return (
                     <tr
                       key={p.id}
-                      className="hover:bg-slate-50/80 transition-colors"
-                      title={isRtl ? 'انقر مرتين لعرض تفاصيل المنتج' : 'Double-click to view product details'}
+                      className="border-b border-slate-200 even:bg-slate-50/60 hover:bg-blue-50/50 transition-colors [&>td]:border-e [&>td]:border-slate-200 [&>td:last-child]:border-e-0"
                       onDoubleClick={(event) => handleProductRowDoubleClick(event, p)}
                     >
-                      <td className="py-2.5 px-4 font-mono text-slate-600 whitespace-nowrap">
-                        <div className="font-semibold text-slate-900">{p.sku}</div>
-                        <div className="text-[11px] text-slate-400">{p.barcode}</div>
+                      <td className="py-1.5 px-2.5 font-mono text-slate-700 whitespace-nowrap">
+                        <span className="font-semibold text-slate-900">{p.sku}</span>
+                        {p.barcode && <span className="ml-1.5 text-[11px] text-slate-400">{p.barcode}</span>}
                       </td>
-                      <td className="py-2.5 px-4 font-medium text-slate-900">
+                      <td className="py-1.5 px-2.5 font-medium text-slate-900">
                         {isRtl ? (
-                          <>
-                            <div className="font-bold text-slate-900">{p.nameAr || p.name}</div>
-                            {p.nameAr && p.name && (
-                              <div className="text-xs text-slate-500 font-sans mt-0.5">{p.name}</div>
-                            )}
-                          </>
+                          <span>
+                            {p.nameAr || p.name}
+                            {p.nameAr && p.name && <span className="ml-2 text-[11px] font-normal text-slate-500">{p.name}</span>}
+                          </span>
                         ) : (
-                          <>
-                            <div>{p.name}</div>
-                            {p.nameAr && (
-                              <div className="text-xs text-blue-700 font-semibold mt-0.5" dir="rtl">
-                                {p.nameAr}
-                              </div>
-                            )}
-                          </>
+                          <span>
+                            {p.name}
+                            {p.nameAr && <span className="ml-2 text-[11px] text-slate-500" dir="rtl">{p.nameAr}</span>}
+                          </span>
                         )}
                       </td>
-                      <td className="py-2.5 px-4 text-slate-600 whitespace-nowrap">
+                      <td className="py-1.5 px-2.5 text-slate-700 whitespace-nowrap">
                         {p.category}
                       </td>
-                      <td className={`py-2.5 px-4 ${isRtl ? 'text-left' : 'text-right'} font-mono text-slate-600 tabular-nums whitespace-nowrap`}>
-                        {c}
+                      <td className={`py-1.5 px-2.5 ${isRtl ? 'text-left' : 'text-right'} font-mono text-slate-700 tabular-nums whitespace-nowrap`}>
                         {p.costPrice.toFixed(2)}
                       </td>
-                      <td className={`py-2.5 px-4 ${isRtl ? 'text-left' : 'text-right'} font-mono font-semibold text-slate-900 tabular-nums whitespace-nowrap`}>
-                        {c}
+                      <td className={`py-1.5 px-2.5 ${isRtl ? 'text-left' : 'text-right'} font-mono font-semibold text-slate-900 tabular-nums whitespace-nowrap`}>
                         {p.retailPrice.toFixed(2)}
                       </td>
-                      <td className={`py-2.5 px-4 ${isRtl ? 'text-left' : 'text-right'} font-mono font-semibold text-slate-900 tabular-nums whitespace-nowrap`}>
-                        {p.stock} {p.unit}
+                      <td className={`py-1.5 px-2.5 ${isRtl ? 'text-left' : 'text-right'} font-mono font-semibold tabular-nums whitespace-nowrap ${
+                        p.stock <= 0 ? 'text-rose-700' : p.stock <= p.reorderLevel ? 'text-amber-700' : 'text-slate-900'
+                      }`}>
+                        {p.stock}
                       </td>
-                      <td className="py-2.5 px-4 text-slate-600 whitespace-nowrap">
+                      <td className="py-1.5 px-2.5 text-slate-600 whitespace-nowrap">
                         {p.unit}
                       </td>
-                      <td className={`py-2.5 px-4 ${isRtl ? 'text-left' : 'text-right'} font-mono text-slate-600 tabular-nums whitespace-nowrap`}>
+                      <td className={`py-1.5 px-2.5 ${isRtl ? 'text-left' : 'text-right'} font-mono text-slate-600 tabular-nums whitespace-nowrap`}>
                         {p.taxRate ?? 15}%
                       </td>
-                      <td className={`py-2.5 px-4 ${isRtl ? 'text-left' : 'text-right'} whitespace-nowrap`}>
-                        <div className="inline-flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => openEditModal(p)}
-                            className="p-1.5 text-slate-500 hover:text-blue-700 rounded hover:bg-slate-100"
-                            aria-label={`Edit ${p.name}`}
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                      <td className="py-1 px-2 text-center whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(p)}
+                          className="p-1 text-slate-500 hover:text-blue-700 rounded hover:bg-blue-50"
+                          aria-label={`Edit ${p.name}`}
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
                       </td>
                     </tr>
                   );
@@ -3063,7 +3071,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     type="button"
                     onClick={() => setMultiUnitDrafts((current) => [
                       ...current,
-                      { id: crypto.randomUUID(), name: '', barcode: '', unitsPerBase: '1', price: '' },
+                      { id: crypto.randomUUID(), name: '', barcode: '', unitsPerBase: '1', packsPerBase: '1', price: '' },
                     ])}
                     className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-[11px] font-semibold text-blue-700 hover:bg-blue-100"
                   >
@@ -3074,18 +3082,24 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 {multiUnitDrafts.length > 0 && (
                   <div className="space-y-2">
                     {multiUnitDrafts.map((unit, index) => (
-                      <div key={unit.id} className="grid grid-cols-2 gap-2 rounded-lg bg-slate-50 p-2 sm:grid-cols-4">
+                      <div key={unit.id} className="grid grid-cols-2 gap-2 rounded-lg bg-slate-50 p-2 sm:grid-cols-5">
                         <label className="text-[10px] font-semibold text-slate-600">
                           {isRtl ? 'اسم الوحدة' : 'Unit name'}
-                          <input
-                            type="text"
+                          <select
                             value={unit.name}
                             onChange={(event) => setMultiUnitDrafts((current) => current.map((entry) =>
                               entry.id === unit.id ? { ...entry, name: event.target.value } : entry
                             ))}
-                            placeholder={isRtl ? 'كرتون' : 'Carton'}
                             className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs font-normal text-slate-900 focus:border-blue-600 focus:outline-none"
-                          />
+                          >
+                            <option value="">{isRtl ? 'اختر وحدة...' : 'Select unit...'}</option>
+                            {unit.name && !units.includes(unit.name) && (
+                              <option value={unit.name}>{unit.name}</option>
+                            )}
+                            {units.map((unitOption) => (
+                              <option key={unitOption} value={unitOption}>{unitOption}</option>
+                            ))}
+                          </select>
                         </label>
                         <label className="text-[10px] font-semibold text-slate-600">
                           {isRtl ? 'باركود الوحدة' : 'Unit barcode'}
@@ -3099,16 +3113,56 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                           />
                         </label>
                         <label className="text-[10px] font-semibold text-slate-600">
-                          {isRtl ? 'عدد الوحدات الأساسية' : 'Base units per pack'}
+                          {isRtl ? 'وحدة أساسية / عبوة' : 'Base units / pack'}
                           <input
                             type="number"
-                            min="1"
-                            step="1"
+                            min="0.0001"
+                            step="any"
                             value={unit.unitsPerBase}
-                            onChange={(event) => setMultiUnitDrafts((current) => current.map((entry) =>
-                              entry.id === unit.id ? { ...entry, unitsPerBase: event.target.value } : entry
-                            ))}
-                            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs font-normal text-slate-900 focus:border-blue-600 focus:outline-none"
+                            onChange={(event) => {
+                              const nextUnitsPerBase = event.target.value;
+                              const parsed = Number(nextUnitsPerBase);
+                              setMultiUnitDrafts((current) => current.map((entry) =>
+                                entry.id === unit.id
+                                  ? {
+                                      ...entry,
+                                      unitsPerBase: nextUnitsPerBase,
+                                      packsPerBase:
+                                        Number.isFinite(parsed) && parsed > 0
+                                          ? String(Number((1 / parsed).toFixed(4)))
+                                          : entry.packsPerBase,
+                                    }
+                                  : entry
+                              ));
+                            }}
+                            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 font-mono text-xs font-normal text-slate-900 focus:border-blue-600 focus:outline-none"
+                          />
+                        </label>
+                        <label className="text-[10px] font-semibold text-slate-600">
+                          {isRtl ? 'عبوة / وحدة أساسية' : 'Packs / base unit'}
+                          <input
+                            type="number"
+                            min="0.0001"
+                            step="any"
+                            value={unit.packsPerBase}
+                            onChange={(event) => {
+                              const nextPacksPerBase = event.target.value;
+                              const parsed = Number(nextPacksPerBase);
+                              setMultiUnitDrafts((current) => current.map((entry) =>
+                                entry.id === unit.id
+                                  ? {
+                                      ...entry,
+                                      packsPerBase: nextPacksPerBase,
+                                      unitsPerBase:
+                                        Number.isFinite(parsed) && parsed > 0
+                                          ? String(Number((1 / parsed).toFixed(6)))
+                                          : entry.unitsPerBase,
+                                    }
+                                  : entry
+                              ));
+                            }}
+                            placeholder="e.g. 10"
+                            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 font-mono text-xs font-normal text-slate-900 focus:border-blue-600 focus:outline-none"
                           />
                         </label>
                         <label className="text-[10px] font-semibold text-slate-600">
@@ -3121,8 +3175,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                             onChange={(event) => setMultiUnitDrafts((current) => current.map((entry) =>
                               entry.id === unit.id ? { ...entry, price: event.target.value } : entry
                             ))}
-                            placeholder={`${Number(form.retailPrice || 0) * Number(unit.unitsPerBase || 1)}`}
-                            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs font-normal text-slate-900 focus:border-blue-600 focus:outline-none"
+                            placeholder={`${Number((Number(form.retailPrice || 0) * Number(unit.unitsPerBase || 1)).toFixed(2))}`}
+                            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 font-mono text-xs font-normal text-slate-900 focus:border-blue-600 focus:outline-none"
                           />
                         </label>
                         <button
@@ -3134,7 +3188,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                             ));
                           }}
                           aria-label={`${isRtl ? 'حذف الوحدة' : 'Remove unit'} ${index + 1}`}
-                          className="col-span-2 justify-self-end rounded-md p-1 text-slate-500 hover:bg-red-50 hover:text-red-700 sm:col-span-4"
+                          className="col-span-2 justify-self-end rounded-md p-1 text-slate-500 hover:bg-red-50 hover:text-red-700 sm:col-span-5"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>

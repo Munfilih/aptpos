@@ -45,6 +45,7 @@ export interface PrintDocumentData {
   companyTaxId?: string;
   companyCrNumber?: string;
   companyLogo?: string;
+  logoSizeMm?: number;
   fields: PrintDocumentField[];
   columns: string[];
   numericColumns?: number[];

@@ -190,7 +190,6 @@ export function buildStandaloneThermalPrintHtml(
         overflow: visible !important;
         -webkit-print-color-adjust: exact !important;
         print-color-adjust: exact !important;
-        filter: contrast(125%) brightness(100%) !important;
       }
       body * {
         visibility: visible !important;

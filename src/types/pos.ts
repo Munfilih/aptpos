@@ -9,6 +9,7 @@ export type SettingsSectionId =
   | 'general'
   | 'business'
   | 'billing'
+  | 'print'
   | 'customers'
   | 'payment'
   | 'users'
@@ -565,10 +566,12 @@ export interface StoreSettings {
   invoiceShowTaxDetails?: boolean;
   invoiceShowStoreAddress?: boolean;
   invoiceShowStoreLogo?: boolean;
+  invoiceLogoSizeMm?: number;
   invoiceShowReceiptBarcode?: boolean;
   invoiceShowFooter?: boolean;
   invoiceShowQrCode?: boolean;
   invoiceQrCodeSizeMm?: number;
+  invoiceMarginsMm?: Partial<InvoiceMarginsMm>;
   invoiceTemplates?: Partial<Record<PaperWidth, InvoiceTemplateSettings>>;
   printDocumentFormats?: Partial<Record<PrintDocumentType, PaperWidth>>;
   printDocumentProfiles?: Partial<

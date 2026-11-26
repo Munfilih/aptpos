@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { History, Plus, Save, Ticket, Trash2 } from 'lucide-react';
+import { ArrowLeftRight, Copy, History, Plane, Plus, Save, Search, Ticket, Trash2, X } from 'lucide-react';
 import type {
   Customer,
   PaymentMethod,
@@ -140,6 +140,8 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveConfirmationOpen, setSaveConfirmationOpen] = useState(false);
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
 
   const customer = customers.find((entry) => entry.id === customerId);
   const invoiceTaxType = settings.taxType;
@@ -238,9 +240,21 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
     const product = products.find((entry) => entry.id === row.productId);
     return product ? serviceLabel(product) : row.serviceSearch;
   };
+  const filteredCustomers = useMemo(() => {
+    const query = customerSearch.trim().toLocaleLowerCase();
+    if (!query) return customers.slice(0, 30);
+    return customers.filter((entry) =>
+      [entry.name, entry.nameAr, entry.phone, entry.vatNumber]
+        .filter(Boolean)
+        .join(' ')
+        .toLocaleLowerCase()
+        .includes(query)
+    ).slice(0, 30);
+  }, [customerSearch, customers]);
+
   const getServiceSuggestions = (query: string) => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
-    if (!normalizedQuery) return [];
+    if (!normalizedQuery) return travelServices.slice(0, 20);
     return travelServices.filter((service) => {
       const searchableText = [
         service.name,
@@ -250,7 +264,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
         service.category,
         service.unit,
       ].filter(Boolean).join(' ').toLocaleLowerCase();
-      return !normalizedQuery || searchableText.includes(normalizedQuery);
+      return searchableText.includes(normalizedQuery);
     });
   };
   const getServiceDropdownPosition = (input: HTMLInputElement) => {
@@ -441,6 +455,25 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
 
   const removeServiceRow = (rowId: number) => {
     setRows((current) => current.filter((row) => row.id !== rowId));
+  };
+
+  const duplicateServiceRow = (sourceRow: TravelSaleRow) => {
+    const rowId = nextRowId;
+    const duplicatedRow: TravelSaleRow = {
+      ...sourceRow,
+      id: rowId,
+      isEditing: true,
+    };
+    setRows((current) => [...current, duplicatedRow]);
+    setNextRowId((current) => current + 1);
+    setServiceModalRowId(rowId);
+    setServiceModalIsNew(true);
+    setServiceModalOriginalRow(null);
+    setServiceModalError(null);
+    window.requestAnimationFrame(() => {
+      const fields = serviceFieldRefs.current.get(rowId);
+      (fields?.passengerName || fields?.details)?.focus();
+    });
   };
 
   const closeServiceModal = () => {
@@ -732,18 +765,6 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
               >
                 {editingSale ? text('Cancel edit', 'إلغاء التعديل') : text('Clear', 'مسح')}
               </button>
-              <button
-                type="submit"
-                disabled={saving || travelServices.length === 0}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <Save className="h-3.5 w-3.5" aria-hidden="true" />
-                {saving
-                  ? text('Saving…', 'جارٍ الحفظ…')
-                  : editingSale
-                    ? text('Update invoice', 'تحديث الفاتورة')
-                    : text('Save invoice', 'حفظ الفاتورة')}
-              </button>
             </div>
           </div>
           <div className="border-b border-slate-200 bg-slate-50/70 px-3 py-2 sm:px-4">
@@ -810,7 +831,31 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
               ))}
             </div>
           </div>
-          {rows.length > 0 && (
+          {rows.length === 0 ? (
+            <div className="flex flex-1 flex-col items-center justify-center px-4 py-12 text-center">
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-amber-200 bg-amber-50 text-amber-700 shadow-sm">
+                <Plane className="h-6 w-6" aria-hidden="true" />
+              </div>
+              <h3 className="mt-3 text-sm font-semibold text-slate-900">
+                {text('No services added to this invoice yet', 'لم تتم إضافة خدمات إلى هذه الفاتورة بعد')}
+              </h3>
+              <p className="mt-1 max-w-md text-xs text-slate-500">
+                {travelServices.length === 0
+                  ? text('Add travel services in Service Master first to start billing.', 'أضف خدمات السفر في إدارة الخدمات أولاً للبدء في إصدار الفواتير.')
+                  : text('Select a frequent service above or add a new service line to enter passenger, PNR, and flight details.', 'اختر خدمة متكررة أعلاه أو أضف سطراً جديداً لإدخال بيانات المسافر ومرجع الحجز والرحلة.')}
+              </p>
+              {travelServices.length > 0 && (
+                <button
+                  type="button"
+                  onClick={addNewServiceRow}
+                  className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-amber-700 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-amber-800 focus:outline-none focus:ring-2 focus:ring-amber-300"
+                >
+                  <Plus className="h-4 w-4" aria-hidden="true" />
+                  {text('Add service line', 'إضافة سطر خدمة')}
+                </button>
+              )}
+            </div>
+          ) : (
             <div className="min-w-0 p-3">
               <div className="space-y-3">
               {displayedRows.map(({ row, index }, displayIndex) => (
@@ -823,7 +868,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                     : undefined}
                   className={row.isEditing
                     ? 'fixed left-1/2 top-1/2 z-[80] max-h-[calc(100dvh-2rem)] w-[min(640px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 shadow-2xl'
-                    : 'rounded-xl border border-slate-200 bg-white p-3 shadow-sm'}
+                    : 'rounded-xl border border-slate-200 bg-white p-3 shadow-sm transition-colors hover:border-amber-300 hover:bg-amber-50/30'}
                 >
                   {row.productId !== null && !row.isEditing ? (
                     <div className="flex min-w-0 items-center gap-2">
@@ -838,9 +883,9 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                           `Edit ${rowDetails[index]?.product?.name || row.serviceSearch}`,
                           `تعديل ${rowDetails[index]?.product?.nameAr || rowDetails[index]?.product?.name || row.serviceSearch}`
                         )}
-                        className={`flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left focus:outline-none focus:ring-2 focus:ring-amber-200 ${isRtl ? 'flex-row-reverse text-right' : ''}`}
+                        className={`flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left focus:outline-none ${isRtl ? 'flex-row-reverse text-right' : ''}`}
                       >
-                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-500">
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-50 text-xs font-semibold text-amber-800 border border-amber-200">
                           {displayIndex + 1}
                         </span>
                         <span className="min-w-0 flex-1">
@@ -849,13 +894,49 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                               ? rowDetails[index]?.product?.nameAr || rowDetails[index]?.product?.name || row.serviceSearch
                               : rowDetails[index]?.product?.name || row.serviceSearch}
                           </span>
-                          {getRowDescription(row, ' · ') && (
-                            <span className="mt-0.5 block truncate text-xs text-slate-500">
-                              {getRowDescription(row, ' · ')}
+                          {(row.passengerName.trim() || row.bookingReference.trim() || row.origin.trim() || row.destination.trim() || row.flightNumber.trim() || row.departureDate.trim() || row.details.trim()) && (
+                            <span className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px]">
+                              {(row.origin.trim() || row.destination.trim()) && (
+                                <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-900">
+                                  {row.origin.trim() || '---'} → {row.destination.trim() || '---'}
+                                </span>
+                              )}
+                              {row.bookingReference.trim() && (
+                                <span className="inline-flex items-center rounded-md border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono font-medium text-slate-700">
+                                  PNR: {row.bookingReference.trim()}
+                                </span>
+                              )}
+                              {row.passengerName.trim() && (
+                                <span className="inline-flex items-center rounded-md border border-slate-200 bg-white px-1.5 py-0.5 font-medium text-slate-700">
+                                  {row.passengerName.trim()}
+                                </span>
+                              )}
+                              {row.flightNumber.trim() && (
+                                <span className="inline-flex items-center rounded-md border border-slate-200 bg-white px-1.5 py-0.5 font-mono text-slate-600">
+                                  {row.flightNumber.trim()}
+                                </span>
+                              )}
+                              {row.departureDate.trim() && (
+                                <span className="inline-flex items-center rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-slate-600">
+                                  {row.departureDate.trim()}
+                                </span>
+                              )}
+                              {row.details.trim() && (
+                                <span className="truncate text-slate-500">
+                                  {row.details.trim()}
+                                </span>
+                              )}
                             </span>
                           )}
-                          <span className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-600">
+                          <span className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500">
                             <span>{text('Rate', 'السعر')}: {formatMoney(Number(row.unitPrice))}</span>
+                            {rowDetails[index]?.product?.requiresItinerary && (
+                              <span>
+                                {row.tripType === 'round-trip'
+                                  ? text('Round trip', 'ذهاب وعودة')
+                                  : text('One way', 'اتجاه واحد')}
+                              </span>
+                            )}
                           </span>
                         </span>
                         <span className="shrink-0 text-right">
@@ -866,6 +947,15 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                             {formatMoney(rowDetails[index]?.amount || 0)}
                           </span>
                         </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => duplicateServiceRow(row)}
+                        aria-label={text('Duplicate service', 'تكرار الخدمة')}
+                        title={text('Duplicate service', 'تكرار الخدمة')}
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-amber-50 hover:text-amber-700"
+                      >
+                        <Copy className="h-4 w-4" />
                       </button>
                       <button
                         type="button"
@@ -917,9 +1007,9 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                       }}
                       role="combobox"
                       aria-autocomplete="list"
-                      aria-expanded={servicePickerRowId === row.id && Boolean(row.serviceSearch.trim())}
+                      aria-expanded={servicePickerRowId === row.id}
                       aria-controls={
-                        servicePickerRowId === row.id && row.serviceSearch.trim()
+                        servicePickerRowId === row.id
                           ? `flyerp-service-options-${row.id}`
                           : undefined
                       }
@@ -931,8 +1021,11 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                       value={getRowServiceLabel(row)}
                       onFocus={(event) => {
                         serviceInputRef.current = event.currentTarget;
-                        setServicePickerRowId(null);
-                        setServiceDropdownPosition(null);
+                        if (travelServices.length > 0) {
+                          setServicePickerRowId(row.id);
+                          setActiveServiceSuggestionIndex(0);
+                          setServiceDropdownPosition(getServiceDropdownPosition(event.currentTarget));
+                        }
                       }}
                       onBlur={() => {
                         window.setTimeout(() => {
@@ -1026,11 +1119,11 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                     </label>
                   </div>
                   {rowDetails[index]?.product?.requiresItinerary === true && (
-                    <fieldset className="mt-4 rounded-lg border border-amber-200 bg-amber-50/50 p-3">
+                    <fieldset className="mt-4 space-y-3 rounded-lg border border-amber-200 bg-amber-50/50 p-3">
                       <legend className="px-1 text-xs font-semibold text-slate-800">
                         {text('Passenger and flight details', 'بيانات المسافر والرحلة')}
                       </legend>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                         <label className="block text-xs font-medium text-slate-600">
                           {text('Passenger name', 'اسم المسافر')}
                           <input
@@ -1054,14 +1147,14 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                           <input
                             ref={(element) => setServiceFieldRef(row.id, 'passportNumber', element)}
                             value={row.passportNumber}
-                            onChange={(event) => updateRow(row.id, { passportNumber: event.target.value })}
+                            onChange={(event) => updateRow(row.id, { passportNumber: event.target.value.toUpperCase() })}
                             onKeyDown={(event) => {
                               if (event.key === 'Enter') {
                                 event.preventDefault();
                                 focusNextServiceField(row, 'passportNumber');
                               }
                             }}
-                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 focus:border-amber-600 focus:outline-none"
                             aria-label={text(`Passport or ID number for service ${displayIndex + 1}`, `رقم الجواز أو الهوية للخدمة ${displayIndex + 1}`)}
                           />
                         </label>
@@ -1070,110 +1163,130 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                           <input
                             ref={(element) => setServiceFieldRef(row.id, 'bookingReference', element)}
                             value={row.bookingReference}
-                            onChange={(event) => updateRow(row.id, { bookingReference: event.target.value })}
+                            onChange={(event) => updateRow(row.id, { bookingReference: event.target.value.toUpperCase() })}
                             onKeyDown={(event) => {
                               if (event.key === 'Enter') {
                                 event.preventDefault();
                                 focusNextServiceField(row, 'bookingReference');
                               }
                             }}
-                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 focus:border-amber-600 focus:outline-none"
                             aria-label={text(`Booking reference for service ${displayIndex + 1}`, `مرجع الحجز للخدمة ${displayIndex + 1}`)}
                           />
                         </label>
-                        <label className="block text-xs font-medium text-slate-600">
-                          {text('Flight number', 'رقم الرحلة')}
-                          <input
-                            ref={(element) => setServiceFieldRef(row.id, 'flightNumber', element)}
-                            value={row.flightNumber}
-                            onChange={(event) => updateRow(row.id, { flightNumber: event.target.value })}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                event.preventDefault();
-                                focusNextServiceField(row, 'flightNumber');
-                              }
-                            }}
-                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
-                            aria-label={text(`Flight number for service ${displayIndex + 1}`, `رقم الرحلة للخدمة ${displayIndex + 1}`)}
-                          />
-                        </label>
-                        <label className="block text-xs font-medium text-slate-600">
-                          {text('From', 'من')}
-                          <input
-                            ref={(element) => setServiceFieldRef(row.id, 'origin', element)}
-                            value={row.origin}
-                            onChange={(event) => updateRow(row.id, { origin: event.target.value })}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                event.preventDefault();
-                                focusNextServiceField(row, 'origin');
-                              }
-                            }}
-                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
-                            aria-label={text(`Origin for service ${displayIndex + 1}`, `مغادرة الخدمة ${displayIndex + 1}`)}
-                          />
-                        </label>
-                        <label className="block text-xs font-medium text-slate-600">
-                          {text('To', 'إلى')}
-                          <input
-                            ref={(element) => setServiceFieldRef(row.id, 'destination', element)}
-                            value={row.destination}
-                            onChange={(event) => updateRow(row.id, { destination: event.target.value })}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                event.preventDefault();
-                                focusNextServiceField(row, 'destination');
-                              }
-                            }}
-                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
-                            aria-label={text(`Destination for service ${displayIndex + 1}`, `وجهة الخدمة ${displayIndex + 1}`)}
-                          />
-                        </label>
-                        <label className="block text-xs font-medium text-slate-600">
-                          {text('Trip type', 'نوع الرحلة')}
-                          <select
-                            ref={(element) => setServiceFieldRef(row.id, 'tripType', element)}
-                            value={row.tripType}
-                            onChange={(event) => {
-                              const tripType = event.target.value as TravelSaleRow['tripType'];
-                              updateRow(row.id, {
-                                tripType,
-                                ...(tripType === 'one-way'
-                                  ? { returnFlightNumber: '', returnDate: '' }
-                                  : {}),
-                              });
-                            }}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                event.preventDefault();
-                                focusNextServiceField(row, 'tripType');
-                              }
-                            }}
-                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
-                            aria-label={text(`Trip type for service ${displayIndex + 1}`, `نوع الرحلة للخدمة ${displayIndex + 1}`)}
-                          >
-                            <option value="one-way">{text('One way', 'اتجاه واحد')}</option>
-                            <option value="round-trip">{text('Round trip', 'ذهاب وعودة')}</option>
-                          </select>
-                        </label>
-                        <label className="block text-xs font-medium text-slate-600">
-                          {text('Departure date', 'تاريخ المغادرة')}
-                          <AppDateInput
-                            ref={(element) => setServiceFieldRef(row.id, 'departureDate', element)}
-                            value={row.departureDate}
-                          onChange={(departureDate) => updateRow(row.id, { departureDate })}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                event.preventDefault();
-                                focusNextServiceField(row, 'departureDate');
-                              }
-                            }}
-                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
-                            aria-label={text(`Departure date for service ${displayIndex + 1}`, `تاريخ المغادرة للخدمة ${displayIndex + 1}`)}
-                          />
-                        </label>
-                        {row.tripType === 'round-trip' && (
-                          <>
+                      </div>
+                      <div className="border-t border-amber-200/70 pt-3">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto_1fr]">
+                          <label className="block text-xs font-medium text-slate-600">
+                            {text('From', 'من')}
+                            <input
+                              ref={(element) => setServiceFieldRef(row.id, 'origin', element)}
+                              value={row.origin}
+                              onChange={(event) => updateRow(row.id, { origin: event.target.value.toUpperCase() })}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  focusNextServiceField(row, 'origin');
+                                }
+                              }}
+                              placeholder="RUH"
+                              className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 focus:border-amber-600 focus:outline-none"
+                              aria-label={text(`Origin for service ${displayIndex + 1}`, `مغادرة الخدمة ${displayIndex + 1}`)}
+                            />
+                          </label>
+                          <div className="flex items-end justify-center pb-1">
+                            <button
+                              type="button"
+                              onClick={() => updateRow(row.id, { origin: row.destination, destination: row.origin })}
+                              title={text('Swap origin and destination', 'تبديل المغادرة والوجهة')}
+                              aria-label={text('Swap origin and destination', 'تبديل المغادرة والوجهة')}
+                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-amber-200 bg-white text-amber-800 hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-200"
+                            >
+                              <ArrowLeftRight className="h-4 w-4" aria-hidden="true" />
+                            </button>
+                          </div>
+                          <label className="block text-xs font-medium text-slate-600">
+                            {text('To', 'إلى')}
+                            <input
+                              ref={(element) => setServiceFieldRef(row.id, 'destination', element)}
+                              value={row.destination}
+                              onChange={(event) => updateRow(row.id, { destination: event.target.value.toUpperCase() })}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  focusNextServiceField(row, 'destination');
+                                }
+                              }}
+                              placeholder="DXB"
+                              className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 focus:border-amber-600 focus:outline-none"
+                              aria-label={text(`Destination for service ${displayIndex + 1}`, `وجهة الخدمة ${displayIndex + 1}`)}
+                            />
+                          </label>
+                        </div>
+                        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                          <label className="block text-xs font-medium text-slate-600">
+                            {text('Flight number', 'رقم الرحلة')}
+                            <input
+                              ref={(element) => setServiceFieldRef(row.id, 'flightNumber', element)}
+                              value={row.flightNumber}
+                              onChange={(event) => updateRow(row.id, { flightNumber: event.target.value.toUpperCase() })}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  focusNextServiceField(row, 'flightNumber');
+                                }
+                              }}
+                              className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 focus:border-amber-600 focus:outline-none"
+                              aria-label={text(`Flight number for service ${displayIndex + 1}`, `رقم الرحلة للخدمة ${displayIndex + 1}`)}
+                            />
+                          </label>
+                          <label className="block text-xs font-medium text-slate-600">
+                            {text('Trip type', 'نوع الرحلة')}
+                            <select
+                              ref={(element) => setServiceFieldRef(row.id, 'tripType', element)}
+                              value={row.tripType}
+                              onChange={(event) => {
+                                const tripType = event.target.value as TravelSaleRow['tripType'];
+                                updateRow(row.id, {
+                                  tripType,
+                                  ...(tripType === 'one-way'
+                                    ? { returnFlightNumber: '', returnDate: '' }
+                                    : {}),
+                                });
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  focusNextServiceField(row, 'tripType');
+                                }
+                              }}
+                              className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                              aria-label={text(`Trip type for service ${displayIndex + 1}`, `نوع الرحلة للخدمة ${displayIndex + 1}`)}
+                            >
+                              <option value="one-way">{text('One way', 'اتجاه واحد')}</option>
+                              <option value="round-trip">{text('Round trip', 'ذهاب وعودة')}</option>
+                            </select>
+                          </label>
+                          <label className="block text-xs font-medium text-slate-600">
+                            {text('Departure date', 'تاريخ المغادرة')}
+                            <AppDateInput
+                              ref={(element) => setServiceFieldRef(row.id, 'departureDate', element)}
+                              value={row.departureDate}
+                              onChange={(departureDate) => updateRow(row.id, { departureDate })}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  focusNextServiceField(row, 'departureDate');
+                                }
+                              }}
+                              className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                              aria-label={text(`Departure date for service ${displayIndex + 1}`, `تاريخ المغادرة للخدمة ${displayIndex + 1}`)}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                      {row.tripType === 'round-trip' && (
+                        <div className="grid grid-cols-1 gap-3 border-t border-amber-200/70 pt-3 sm:grid-cols-2">
                             <label className="block text-xs font-medium text-slate-600">
                               {text('Return flight number', 'رقم رحلة العودة')}
                               <input
@@ -1206,9 +1319,8 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                                 aria-label={text(`Return date for service ${displayIndex + 1}`, `تاريخ العودة للخدمة ${displayIndex + 1}`)}
                               />
                             </label>
-                          </>
-                        )}
-                      </div>
+                        </div>
+                      )}
                     </fieldset>
                   )}
                   <label className="mt-3 block min-w-0 text-xs font-medium text-slate-600">
@@ -1265,7 +1377,6 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
           )}
           {servicePickerRowId !== null &&
             activeServiceRow &&
-            activeServiceRow.serviceSearch.trim() &&
             serviceDropdownPosition &&
             createPortal(
               <div
@@ -1333,7 +1444,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
         </section>
         <div className="sticky bottom-2 z-20 mx-2 mt-auto grid min-w-0 grid-cols-1 gap-x-5 gap-y-3 rounded-xl border border-slate-200 bg-white/95 px-4 py-3 shadow-[0_-8px_16px_-12px_rgba(15,23,42,0.5)] backdrop-blur lg:grid-cols-[minmax(0,1fr)_minmax(300px,0.8fr)] sm:px-5 sm:py-4">
             <div className="grid min-w-0 grid-cols-1 items-end gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              <div className="min-w-0 text-xs font-medium leading-5 text-slate-700">
+              <div className="relative min-w-0 text-xs font-medium leading-5 text-slate-700">
                 <div className="flex items-center justify-between gap-2">
                   <label htmlFor="flyerp-customer" className="truncate">
                     {text('Customer / Buyer', 'العميل / المشتري')}
@@ -1348,17 +1459,81 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                     {text('New', 'جديد')}
                   </button>
                 </div>
-                <select
-                  id="flyerp-customer"
-                  value={customerId ?? ''}
-                  onChange={(event) => setCustomerId(event.target.value ? Number(event.target.value) : null)}
-                  className={paymentInputClass}
-                >
-                  <option value="">{settings.defaultCustomer || text('Walk-in customer', 'عميل نقدي')}</option>
-                  {customers.map((entry) => (
-                    <option key={entry.id} value={entry.id}>{entry.name}</option>
-                  ))}
-                </select>
+                <div className="relative mt-1">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                  <input
+                    id="flyerp-customer"
+                    type="text"
+                    value={customerDropdownOpen ? customerSearch : (customer?.name || '')}
+                    placeholder={settings.defaultCustomer || text('Walk-in customer', 'عميل نقدي')}
+                    onFocus={() => {
+                      setCustomerSearch('');
+                      setCustomerDropdownOpen(true);
+                    }}
+                    onBlur={() => {
+                      window.setTimeout(() => setCustomerDropdownOpen(false), 140);
+                    }}
+                    onChange={(event) => {
+                      setCustomerSearch(event.target.value);
+                      setCustomerDropdownOpen(true);
+                    }}
+                    className="block w-full min-w-0 rounded-lg border border-slate-200 bg-white py-2.5 pl-8 pr-7 text-sm text-slate-900 outline-none focus:border-amber-600"
+                    autoComplete="off"
+                  />
+                  {(customerId !== null || customerSearch) && (
+                    <button
+                      type="button"
+                      onPointerDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        setCustomerId(null);
+                        setCustomerSearch('');
+                        setCustomerDropdownOpen(false);
+                      }}
+                      aria-label={text('Clear customer', 'مسح العميل')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                  {customerDropdownOpen && (
+                    <div className="absolute bottom-full left-0 z-30 mb-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white p-1 shadow-xl">
+                      <button
+                        type="button"
+                        onPointerDown={(event) => event.preventDefault()}
+                        onClick={() => {
+                          setCustomerId(null);
+                          setCustomerSearch('');
+                          setCustomerDropdownOpen(false);
+                        }}
+                        className={`flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-xs ${customerId === null ? 'bg-amber-50 font-semibold text-amber-900' : 'text-slate-700 hover:bg-slate-50'}`}
+                      >
+                        <span>{settings.defaultCustomer || text('Walk-in customer', 'عميل نقدي')}</span>
+                      </button>
+                      {filteredCustomers.length === 0 ? (
+                        <p className="px-2.5 py-2 text-xs text-slate-500">
+                          {text('No matching customers.', 'لا يوجد عملاء مطابقون.')}
+                        </p>
+                      ) : filteredCustomers.map((entry) => (
+                        <button
+                          key={entry.id}
+                          type="button"
+                          onPointerDown={(event) => event.preventDefault()}
+                          onClick={() => {
+                            setCustomerId(entry.id);
+                            setCustomerSearch('');
+                            setCustomerDropdownOpen(false);
+                          }}
+                          className={`flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-xs ${customerId === entry.id ? 'bg-amber-50 font-semibold text-amber-900' : 'text-slate-700 hover:bg-slate-50'}`}
+                        >
+                          <span className="truncate">{entry.name}</span>
+                          {entry.phone && (
+                            <span className="shrink-0 font-mono text-[10px] text-slate-400">{entry.phone}</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
               <label htmlFor="flyerp-invoice-date" className="block min-w-0 text-xs font-medium leading-5 text-slate-700">
                 {text('Invoice Date', 'تاريخ الفاتورة')}
@@ -1419,8 +1594,8 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                 <div className="flex justify-between gap-2 py-1 text-slate-600">
                   <dt>{text('Tax', 'الضريبة')}</dt><dd className="font-mono font-semibold tabular-nums text-slate-900">{formatMoney(totals.taxAmount)}</dd>
                 </div>
-                <div className="flex justify-between gap-2 border-t border-slate-200 py-1.5 text-sm font-bold text-slate-900">
-                  <dt>{text('Invoice total', 'إجمالي الفاتورة')}</dt><dd className="font-sans text-lg font-bold text-red-700">{formatMoney(totals.total)}</dd>
+                <div className="col-span-2 flex justify-between gap-2 border-t border-slate-200 py-1.5 text-sm font-bold text-slate-900">
+                  <dt>{text('Invoice total', 'إجمالي الفاتورة')}</dt><dd className="font-mono text-lg font-bold tabular-nums text-emerald-700">{formatMoney(totals.total)}</dd>
                 </div>
                 <div className="col-span-2 flex justify-between gap-2 py-1 text-slate-600">
                   <dt>{text('Payment status', 'حالة الدفع')}</dt>
@@ -1439,6 +1614,18 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                   </div>
                 )}
               </dl>
+              <button
+                type="submit"
+                disabled={saving || travelServices.length === 0 || rows.length === 0}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Save className="h-4 w-4" aria-hidden="true" />
+                {saving
+                  ? text('Saving…', 'جارٍ الحفظ…')
+                  : editingSale
+                    ? text('Update invoice', 'تحديث الفاتورة')
+                    : text('Save invoice', 'حفظ الفاتورة')}
+              </button>
             </div>
             {error && <p role="alert" className="rounded border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-700 lg:col-span-2">{error}</p>}
         </div>

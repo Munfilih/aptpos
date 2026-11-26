@@ -221,8 +221,8 @@ export function toVoucherDocumentData(
     pendingBalance = 0,
   } = options;
   const documentTitle = DOCUMENT_TITLES[documentType] || 'Voucher';
-  const customerVatNumber = asText(context.party.vatNumber).trim().replace(/[\s-]/g, '');
-  const salesInvoiceTitle = /^3\d{13}3$/.test(customerVatNumber)
+  const customerVatNumber = asText(context.party.vatNumber).trim();
+  const salesInvoiceTitle = customerVatNumber.length > 0
     ? 'Sales Tax Invoice / فاتورة ضريبية للمبيعات'
     : 'Simplified Tax Invoice / فاتورة ضريبية مبسطة';
   const voucherFields = Object.entries(context.voucher)

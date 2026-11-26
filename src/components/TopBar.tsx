@@ -153,6 +153,7 @@ export const TopBar: React.FC<TopBarProps> = ({
     general: language === 'ar' ? 'عام' : 'General',
     business: language === 'ar' ? 'الأعمال' : 'Business',
     billing: language === 'ar' ? 'الفوترة' : 'Billing',
+    print: language === 'ar' ? 'الطباعة' : 'Print',
     customers: language === 'ar' ? 'العملاء' : 'Customers',
     payment: language === 'ar' ? 'الدفع' : 'Payment',
     users: t.secUsersPerms,

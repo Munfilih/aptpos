@@ -29,32 +29,38 @@ const colors: Record<PrintTemplateVariant, { accent: string; muted: string; bord
 };
 
 const thermalFontSize: Record<PaperWidth, string> = {
-  '80mm': '10px',
-  '58mm': '9px',
+  '80mm': '11px',
+  '58mm': '10px',
   A4: '11px',
 };
 
 const monochromePalette = { accent: '#000000', muted: '#000000', border: '#000000' };
-const screenTextFont = '"Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-const screenDigitFont = '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace';
+const screenTextFont = 'Arial, "Segoe UI", Tahoma, sans-serif';
+const screenDigitFont = '"Consolas", "Courier New", monospace';
+const a4TextFont = '"Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+const a4DigitFont = '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace';
 
 export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
   data,
   format,
   variant,
 }) => {
-  const palette = format === 'A4' ? colors[variant] : monochromePalette;
+  const isThermal = format !== 'A4';
+  const palette = isThermal ? monochromePalette : colors[variant];
+  const textFont = isThermal ? screenTextFont : a4TextFont;
+  const digitFont = isThermal ? screenDigitFont : a4DigitFont;
   const isKot = data.documentType === 'kot';
   const hasSerialColumn =
     data.documentType === 'sales-invoice' ||
     data.documentType === 'sales-return' ||
     data.documentType === 'purchase-invoice' ||
     data.documentType === 'purchase-return';
-  const compact = format !== 'A4' || variant === 'minimal' || variant === 'kitchen-compact' || variant === 'tax-compact';
+  const compact = isThermal || variant === 'minimal' || variant === 'kitchen-compact' || variant === 'tax-compact';
   const tableFontSize = isKot
     ? format === '58mm' ? '12px' : format === '80mm' ? '14px' : '16px'
-    : format === '58mm' ? '8px' : format === '80mm' ? '9px' : '9px';
-  const foreground = format === 'A4' ? '#111827' : '#000000';
+    : format === '58mm' ? '9.5px' : format === '80mm' ? '10.5px' : '9px';
+  const foreground = isThermal ? '#000000' : '#111827';
+  const dividerStyle = isThermal ? '1px dashed #000000' : `1px solid ${palette.border}`;
 
   return (
     <article
@@ -66,19 +72,20 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
         maxWidth: '100%',
         margin: '0 auto',
         padding: 0,
+        paddingBottom: isThermal ? '4mm' : 0,
         background: '#fff',
         color: foreground,
-        fontFamily: screenTextFont,
+        fontFamily: textFont,
         fontSize: thermalFontSize[format],
-        lineHeight: 1.35,
+        lineHeight: isThermal ? 1.3 : 1.35,
         overflowWrap: 'anywhere',
       }}
     >
       <header
         style={{
-          borderBottom: `2px solid ${palette.accent}`,
-          paddingBottom: compact ? '5px' : '9px',
-          marginBottom: compact ? '7px' : '12px',
+          borderBottom: isThermal ? '1px dashed #000000' : `2px solid ${palette.accent}`,
+          paddingBottom: compact ? '6px' : '9px',
+          marginBottom: compact ? '6px' : '12px',
           textAlign: 'center',
         }}
       >
@@ -88,11 +95,11 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
             alt=""
             style={{
               display: 'block',
-              maxWidth: '34mm',
-              maxHeight: '18mm',
+              maxWidth: `${Math.min(60, Math.max(12, data.logoSizeMm ?? 34))}mm`,
+              maxHeight: `${Math.round(Math.min(60, Math.max(12, data.logoSizeMm ?? 34)) * 0.6)}mm`,
               objectFit: 'contain',
               margin: '0 auto 5px',
-              ...(format === 'A4' ? {} : { filter: 'grayscale(1) contrast(1.2)' }),
+              ...(isThermal ? { filter: 'grayscale(1) contrast(1.2)' } : {}),
             }}
           />
         )}
@@ -112,25 +119,25 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
         {!isKot && data.companyTaxId && (
           <div style={{ color: palette.muted, marginTop: '2px' }}>
             {data.multiLanguage ? 'VAT / الرقم الضريبي' : data.direction === 'rtl' ? 'الرقم الضريبي' : 'VAT'}:{' '}
-            <span style={{ fontFamily: screenDigitFont, fontVariantNumeric: 'tabular-nums' }}>{data.companyTaxId}</span>
+            <span style={{ fontFamily: digitFont, fontVariantNumeric: 'tabular-nums' }}>{data.companyTaxId}</span>
           </div>
         )}
-        <h1 style={{ color: palette.accent, fontSize: isKot ? '1.8em' : compact ? '1.25em' : '1.55em', margin: '7px 0 2px', fontWeight: 800 }}>
+        <h1 style={{ color: palette.accent, fontSize: isKot ? '1.7em' : compact ? '1.2em' : '1.55em', margin: '6px 0 2px', fontWeight: 800 }}>
           {data.title}
         </h1>
         {data.number && (
           <div style={{
             color: palette.muted,
             fontWeight: isKot ? 900 : 700,
-            fontSize: isKot ? '2em' : undefined,
-            fontFamily: screenDigitFont,
+            fontSize: isKot ? '1.9em' : undefined,
+            fontFamily: digitFont,
             fontVariantNumeric: 'tabular-nums',
           }}>
             {data.number}
           </div>
         )}
         {data.date && (
-          <div style={{ color: palette.muted, fontFamily: screenDigitFont, fontVariantNumeric: 'tabular-nums' }}>
+          <div style={{ color: palette.muted, fontFamily: digitFont, fontVariantNumeric: 'tabular-nums' }}>
             {data.date}
           </div>
         )}
@@ -142,8 +149,8 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
             display: 'grid',
             gridTemplateColumns: format === 'A4' ? 'repeat(2, minmax(0, 1fr))' : '1fr',
             gap: compact ? '3px 8px' : '6px 12px',
-            borderBottom: `1px solid ${palette.border}`,
-            paddingBottom: compact ? '5px' : '8px',
+            borderBottom: dividerStyle,
+            paddingBottom: compact ? '6px' : '8px',
             marginBottom: compact ? '6px' : '10px',
           }}
         >
@@ -159,12 +166,15 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
       {data.columns.length > 0 && (
         <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', fontSize: tableFontSize }}>
           <thead>
-            <tr style={{ background: variant === 'minimal' ? '#fff' : palette.accent, color: variant === 'minimal' ? palette.accent : '#fff' }}>
+            <tr style={{
+              background: isThermal || variant === 'minimal' ? '#ffffff' : palette.accent,
+              color: isThermal || variant === 'minimal' ? palette.accent : '#ffffff',
+            }}>
               {data.columns.map((column, index) => (
                 <th
                   key={`${column}-${index}`}
                   style={{
-                    borderBottom: `1px solid ${palette.border}`,
+                    borderBottom: isThermal ? '1px solid #000000' : `1px solid ${palette.border}`,
                     padding: compact ? '3px 2px' : '5px 4px',
                     textAlign: data.documentType === 'kot' && index === 1 ? 'end' : index === 0 ? 'center' : 'start',
                     ...(hasSerialColumn && index === 0
@@ -180,7 +190,10 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
           </thead>
           <tbody>
             {data.rows.map((row, rowIndex) => (
-              <tr key={rowIndex} style={{ borderBottom: `1px solid ${palette.border}`, fontWeight: row.emphasis ? 700 : 400 }}>
+              <tr key={rowIndex} style={{
+                borderBottom: isThermal ? '1px dotted #000000' : `1px solid ${palette.border}`,
+                fontWeight: row.emphasis ? 700 : 400,
+              }}>
                 {data.columns.map((_, columnIndex) => (
                   <td
                     key={`${rowIndex}-${columnIndex}`}
@@ -202,7 +215,7 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
                         ? { whiteSpace: 'pre-line' as const }
                         : {}),
                       ...(data.numericColumns?.includes(columnIndex)
-                        ? { fontFamily: screenDigitFont, fontVariantNumeric: 'tabular-nums' }
+                        ? { fontFamily: digitFont, fontVariantNumeric: 'tabular-nums' }
                         : {}),
                       overflowWrap: 'anywhere',
                     }}
@@ -224,7 +237,7 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
       )}
 
       {data.totals.length > 0 && (
-        <section style={{ marginTop: compact ? '7px' : '12px', borderTop: `1px solid ${palette.border}`, paddingTop: '5px' }}>
+        <section style={{ marginTop: compact ? '6px' : '12px', borderTop: dividerStyle, paddingTop: '5px' }}>
           {data.totals.map((total, index) => (
             <div
               key={`${total.label}-${index}`}
@@ -234,12 +247,13 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
                 gap: '8px',
                 padding: compact ? '2px 0' : '4px 0',
                 fontWeight: index === data.totals.length - 1 ? 800 : 600,
+                fontSize: isThermal && index === data.totals.length - 1 ? '1.15em' : undefined,
                 color: index === data.totals.length - 1 ? palette.accent : foreground,
-                borderTop: index === data.totals.length - 1 ? `1px solid ${palette.border}` : undefined,
+                borderTop: index === data.totals.length - 1 ? dividerStyle : undefined,
               }}
             >
               <span><bdi dir="auto">{total.label}</bdi></span>
-              <span style={{ textAlign: 'right', fontFamily: screenDigitFont, fontVariantNumeric: 'tabular-nums' }}>
+              <span style={{ textAlign: 'right', fontFamily: digitFont, fontVariantNumeric: 'tabular-nums' }}>
                 <bdi dir="auto">{total.value}</bdi>
               </span>
             </div>
@@ -248,7 +262,7 @@ export const DocumentTemplate: React.FC<DocumentTemplateProps> = ({
       )}
 
       {data.footer && (
-        <footer style={{ marginTop: compact ? '8px' : '14px', paddingTop: '5px', borderTop: `1px solid ${palette.border}`, textAlign: 'center', color: palette.muted }}>
+        <footer style={{ marginTop: compact ? '8px' : '14px', paddingTop: '5px', borderTop: dividerStyle, textAlign: 'center', color: palette.muted }}>
           {data.footer}
         </footer>
       )}

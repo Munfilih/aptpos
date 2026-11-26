@@ -1426,6 +1426,20 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     if (selectedTicketItemId === lineId) setSelectedTicketItemId(null);
   };
 
+  const adjustCartItemQuantity = (lineId: string, delta: number) => {
+    setCart((prev) =>
+      prev.flatMap((item) => {
+        if (getCartItemLineId(item) !== lineId) return [item];
+        const units = getUnitDetails(item.product, item.unitId || undefined).unitsPerBase;
+        const maximum = getMaxQuantityForItem(item, units);
+        const nextQty = item.quantity + delta;
+        if (nextQty <= 0) return [];
+        return [{ ...item, quantity: Math.min(maximum, nextQty) }];
+      })
+    );
+    setFeedback(null);
+  };
+
   const selectTicketItem = (lineId: string) => {
     setSelectedTicketItemId(lineId);
     requestAnimationFrame(() => {
@@ -1887,10 +1901,15 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         ? `/api/sales/${activeTab.editingSaleId}/invoice`
         : '/api/sales';
       const invoiceNumber = await ensureActiveInvoiceNumber();
+      const matchedCustomer = customers.find(
+        (entry) => entry.name.trim() === customerName.trim()
+      );
       const res = await fetch(salesUrl, {
         method: activeTab.editingSaleId ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          appScreenMode: isRpos ? 'rpos' : 'pos',
+          customerId: matchedCustomer ? matchedCustomer.id : null,
           customerName: customerName.trim() || settings.defaultCustomer || 'Walk-in Customer / عميل نقدي',
           invoiceNumber,
           discountType,
@@ -2661,10 +2680,37 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                           </button>
                         )}
                       </div>
-                      <div className="col-span-2 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] font-semibold text-slate-600">
-                        <span className="whitespace-nowrap font-mono text-xs font-bold text-blue-700">
-                          {item.quantity}
-                        </span>
+                      <div className="col-span-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[10px] font-semibold text-slate-600">
+                        {isRpos ? (
+                          <div
+                            className="inline-flex items-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => adjustCartItemQuantity(lineId, -1)}
+                              aria-label={isRtl ? 'إنقاص الكمية' : 'Decrease quantity'}
+                              className="flex h-6 w-6 items-center justify-center text-xs font-bold text-slate-700 hover:bg-slate-200 active:bg-slate-300"
+                            >
+                              −
+                            </button>
+                            <span className="min-w-[1.5rem] px-1 text-center font-mono text-xs font-bold text-blue-700">
+                              {item.quantity}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => adjustCartItemQuantity(lineId, 1)}
+                              aria-label={isRtl ? 'زيادة الكمية' : 'Increase quantity'}
+                              className="flex h-6 w-6 items-center justify-center text-xs font-bold text-slate-700 hover:bg-slate-200 active:bg-slate-300"
+                            >
+                              +
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="whitespace-nowrap font-mono text-xs font-bold text-blue-700">
+                            {item.quantity}
+                          </span>
+                        )}
                         <span className="whitespace-nowrap text-xs font-semibold text-slate-600">
                           · {item.unitName || item.product.unit || 'ea'} ·
                         </span>
@@ -2702,7 +2748,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                         )}
                         <span className="ml-auto whitespace-nowrap text-right">
                           {isRtl ? 'الإجمالي' : 'Total'}{' '}
-                          <strong className="font-mono text-xs font-black text-red-600">
+                          <strong className="font-mono text-xs font-black text-slate-900">
                             {lineTotal.toFixed(2)}
                           </strong>
                         </span>
@@ -3894,7 +3940,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
               )}
               <button
                 type="button"
-                onClick={() => void handleCompleteSale()}
+                onClick={() => void handleCompleteSale(true)}
                 disabled={!canCompleteSale || isPrintingKot || isPreparingKotPreview || isKotPreviewOpen}
                 className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-3 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
               >

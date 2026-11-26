@@ -132,13 +132,13 @@ function documentHtml(
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${escapeHtml(documentTitle)}</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
+    ${template.format === 'A4' ? `<link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700&display=swap" rel="stylesheet">` : ''}
     <style>
       @page { size: ${pageSize}; margin: ${margins.top}mm ${margins.right}mm ${pageBottomMarginMm}mm ${margins.left}mm; ${pageFooterRules} }
       *, *::before, *::after { box-sizing: border-box; }
-      html, body { margin: 0; padding: 0; width: ${widthMm}mm; min-height: 0; background: #fff; color: #111827; }
+      html, body { margin: 0; padding: 0; width: ${widthMm}mm; min-height: 0; background: #fff; color: ${template.format === 'A4' ? '#111827' : '#000000'}; }
       body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
       [data-print-document] {
         width: calc(${widthMm}mm - ${margins.left + margins.right}mm) !important;
@@ -204,13 +204,23 @@ async function measureThermalHeight(html: string, verticalMarginsMm: number): Pr
 
 export async function createPrintTemplateJob(
   data: PrintDocumentData,
-  _settings: StoreSettings,
+  settings: StoreSettings,
   format: PaperWidth,
   requestedTemplateId?: string
 ): Promise<PrintTemplateJob> {
-  const template = resolvePrintTemplate(data.documentType, format, requestedTemplateId);
-  const margins = resolveInvoiceMarginsMm(template.format);
-  const initialHtml = documentHtml(data, template, template.format === 'A4' ? 297 : 1200, margins);
+  const configuredProfile = settings.printDocumentProfiles?.[data.documentType]?.[format];
+  const resolvedTemplateId = requestedTemplateId || configuredProfile?.templateId;
+  const template = resolvePrintTemplate(data.documentType, format, resolvedTemplateId);
+  const resolvedData: PrintDocumentData = {
+    ...data,
+    multiLanguage: data.multiLanguage ?? settings.multiLanguageInvoices,
+    logoSizeMm: data.logoSizeMm ?? settings.invoiceLogoSizeMm,
+    qrSizeMm: data.qrSizeMm ?? settings.invoiceQrCodeSizeMm,
+    companyLogo: settings.invoiceShowStoreLogo === false ? undefined : data.companyLogo,
+    qrDataUrl: settings.invoiceShowQrCode === false ? undefined : data.qrDataUrl,
+  };
+  const margins = resolveInvoiceMarginsMm(template.format, settings.invoiceMarginsMm);
+  const initialHtml = documentHtml(resolvedData, template, template.format === 'A4' ? 297 : 1200, margins);
   const pageSize = template.format === 'A4'
     ? A4_PAGE_SIZE
     : {
@@ -218,8 +228,18 @@ export async function createPrintTemplateJob(
         height: await measureThermalHeight(initialHtml, margins.top + margins.bottom),
       };
   const pageHeightMm = pageSize.height / 1000;
-  const html = documentHtml(data, template, pageHeightMm, margins);
-  return { template, html, pageSize, silent: true };
+  const html = documentHtml(resolvedData, template, pageHeightMm, margins);
+  const printerName =
+    configuredProfile?.printerName ||
+    (data.documentType === 'kot' ? settings.kotPrinter : settings.defaultPrinter) ||
+    undefined;
+  return {
+    template,
+    html,
+    pageSize,
+    ...(printerName ? { printerName } : {}),
+    silent: true,
+  };
 }
 
 export function resolveInvoiceQrCodeSizeMm(value: number | undefined): number {

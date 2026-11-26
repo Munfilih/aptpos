@@ -96,11 +96,13 @@ export function getPrintFormats(documentType: PrintDocumentType): PaperWidth[] {
 }
 
 export function getPrintDocumentFormat(
-  settings: Pick<StoreSettings, 'paperWidth'>,
+  settings: Pick<StoreSettings, 'paperWidth' | 'printDocumentFormats'>,
   documentType: PrintDocumentType,
   fallback?: PaperWidth
 ): PaperWidth {
   const formats = getPrintFormats(documentType);
+  const configured = settings.printDocumentFormats?.[documentType];
+  if (configured && formats.includes(configured)) return configured;
   if (fallback && formats.includes(fallback)) return fallback;
   const defaultFormat = settings.paperWidth;
   if (defaultFormat && formats.includes(defaultFormat)) return defaultFormat;
