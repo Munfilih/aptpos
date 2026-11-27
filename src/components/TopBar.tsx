@@ -40,6 +40,46 @@ export type NavTab =
   | 'files'
   | 'unavailable';
 
+export interface LauncherSummaryData {
+  currencySymbol: string;
+  decimalPoints: number;
+  storeName: string;
+  todaySalesTotal: number;
+  todaySalesCount: number;
+  todayCashSales: number;
+  todayCardSales: number;
+  totalSalesTotal: number;
+  totalSalesCount: number;
+  draftSalesCount: number;
+  pendingReceivables: number;
+  totalVatCollected: number;
+  todayPurchasesTotal: number;
+  todayPurchasesCount: number;
+  totalPurchasesTotal: number;
+  totalPurchasesCount: number;
+  pendingPayables: number;
+  totalProducts: number;
+  lowStockCount: number;
+  outOfStockCount: number;
+  stockValue: number;
+  totalCustomers: number;
+  totalVendors: number;
+  salesReturnCount: number;
+  salesReturnTotal: number;
+  todaySalesReturnCount: number;
+  purchaseReturnCount: number;
+  purchaseReturnTotal: number;
+  todayPurchaseReturnCount: number;
+  cashbookBalance: number;
+  cashbookInTotal: number;
+  cashbookOutTotal: number;
+  cashbookEntriesCount: number;
+  taxRate: number;
+  eInvoiceEnabled: boolean;
+  paperWidth: string;
+  shiftMode: 'daily' | 'manual' | 'off';
+}
+
 interface TopBarProps {
   appName: string;
   appScreenMode: AppScreenMode;
@@ -62,6 +102,7 @@ interface TopBarProps {
   disabledAppComponents?: AppComponentId[];
   iconOnlyLauncher: boolean;
   launcherBackgroundDataUrl?: string;
+  launcherSummary?: LauncherSummaryData;
   openLauncherOnMount?: boolean;
   onLauncherOpened?: () => void;
   sideNavOpen?: boolean;
@@ -145,6 +186,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   disabledAppComponents = [],
   iconOnlyLauncher,
   launcherBackgroundDataUrl,
+  launcherSummary,
   openLauncherOnMount = false,
   onLauncherOpened,
   sideNavOpen = true,
@@ -555,6 +597,238 @@ export const TopBar: React.FC<TopBarProps> = ({
     setOpenNavigationGroup(null);
   };
 
+  const formatMoney = (amount: number) => {
+    const currency = launcherSummary?.currencySymbol || 'SAR';
+    const decimals = launcherSummary?.decimalPoints ?? 2;
+    return `${currency} ${Number(amount || 0).toLocaleString(undefined, {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    })}`;
+  };
+
+  interface TileSummaryContent {
+    subtitle: string;
+    headline: string;
+    headlineCaption: string;
+    badge?: { label: string; tone: 'emerald' | 'amber' | 'red' | 'blue' | 'slate' };
+    metrics: Array<{ label: string; value: string; tone?: 'emerald' | 'amber' | 'red' | 'blue' }>;
+  }
+
+  const getTileSummary = (entryId: string): TileSummaryContent | null => {
+    const s = launcherSummary;
+    if (!s) return null;
+    const isAr = language === 'ar';
+
+    switch (entryId) {
+      case 'sales':
+        return {
+          subtitle: isAr ? 'نقطة البيع والفواتير' : 'Billing & Point of Sale',
+          headline: formatMoney(s.todaySalesTotal),
+          headlineCaption: isAr ? 'مبيعات اليوم' : "Today's Sales",
+          badge: s.draftSalesCount > 0
+            ? { label: isAr ? `${s.draftSalesCount} مسودة` : `${s.draftSalesCount} Drafts`, tone: 'amber' }
+            : { label: isAr ? `${s.todaySalesCount} فاتورة` : `${s.todaySalesCount} Bills`, tone: 'emerald' },
+          metrics: [
+            { label: isAr ? 'اليوم' : 'Today Bills', value: String(s.todaySalesCount) },
+            { label: isAr ? 'الإجمالي' : 'Total Sales', value: formatMoney(s.totalSalesTotal) },
+            {
+              label: isAr ? 'مستحق' : 'Receivable',
+              value: formatMoney(s.pendingReceivables),
+              tone: s.pendingReceivables > 0 ? 'amber' : undefined,
+            },
+          ],
+        };
+      case 'purchase':
+        return {
+          subtitle: isAr ? 'المشتريات وفواتير الموردين' : 'Procurement & Vendor Bills',
+          headline: formatMoney(s.totalPurchasesTotal),
+          headlineCaption: isAr ? 'إجمالي المشتريات' : 'Total Purchases',
+          badge: s.pendingPayables > 0
+            ? { label: isAr ? 'مستحق للموردين' : 'Payables Due', tone: 'amber' }
+            : { label: isAr ? `${s.totalPurchasesCount} فاتورة` : `${s.totalPurchasesCount} Bills`, tone: 'blue' },
+          metrics: [
+            { label: isAr ? 'اليوم' : 'Today', value: formatMoney(s.todayPurchasesTotal) },
+            { label: isAr ? 'الفواتير' : 'Bills', value: String(s.totalPurchasesCount) },
+            {
+              label: isAr ? 'المدفوعات المستحقة' : 'Payables',
+              value: formatMoney(s.pendingPayables),
+              tone: s.pendingPayables > 0 ? 'amber' : undefined,
+            },
+          ],
+        };
+      case 'inventory':
+        return {
+          subtitle: isAr ? 'المنتجات والأسعار والمخزون' : 'Products, Stock & Pricing',
+          headline: isAr ? `${s.totalProducts} صنف` : `${s.totalProducts} Items`,
+          headlineCaption: isAr ? 'إجمالي الأصناف' : 'Active Catalog',
+          badge: s.outOfStockCount > 0
+            ? { label: isAr ? `${s.outOfStockCount} نفد` : `${s.outOfStockCount} Out`, tone: 'red' }
+            : s.lowStockCount > 0
+              ? { label: isAr ? `${s.lowStockCount} منخفض` : `${s.lowStockCount} Low`, tone: 'amber' }
+              : { label: isAr ? 'متوفر' : 'In Stock', tone: 'emerald' },
+          metrics: [
+            {
+              label: isAr ? 'منخفض' : 'Low Stock',
+              value: String(s.lowStockCount),
+              tone: s.lowStockCount > 0 ? 'amber' : undefined,
+            },
+            {
+              label: isAr ? 'نفد' : 'Out of Stock',
+              value: String(s.outOfStockCount),
+              tone: s.outOfStockCount > 0 ? 'red' : undefined,
+            },
+            { label: isAr ? 'قيمة المخزون' : 'Stock Value', value: formatMoney(s.stockValue) },
+          ],
+        };
+      case 'accounts':
+        return {
+          subtitle: isAr ? 'دفتر الحسابات والعملاء والموردين' : 'Ledger, Customers & Vendors',
+          headline: formatMoney(s.pendingReceivables),
+          headlineCaption: isAr ? 'ذمم العملاء المستحقة' : 'Customer Receivables',
+          badge: {
+            label: isAr ? `${s.totalCustomers + s.totalVendors} طرف` : `${s.totalCustomers + s.totalVendors} Parties`,
+            tone: 'blue',
+          },
+          metrics: [
+            { label: isAr ? 'العملاء' : 'Customers', value: String(s.totalCustomers) },
+            { label: isAr ? 'الموردون' : 'Vendors', value: String(s.totalVendors) },
+            {
+              label: isAr ? 'مستحقات الموردين' : 'Payables',
+              value: formatMoney(s.pendingPayables),
+              tone: s.pendingPayables > 0 ? 'amber' : undefined,
+            },
+          ],
+        };
+      case 'reports':
+        return {
+          subtitle: isAr ? 'التقارير المالية والضريبية' : 'Financial, Sales & Tax Analytics',
+          headline: formatMoney(s.totalSalesTotal - s.salesReturnTotal),
+          headlineCaption: isAr ? 'صافي المبيعات' : 'Net Sales Volume',
+          badge: { label: isAr ? 'تحليلات مباشرة' : 'Live Data', tone: 'blue' },
+          metrics: [
+            { label: isAr ? 'إجمالي الضريبة' : 'Total VAT', value: formatMoney(s.totalVatCollected) },
+            { label: isAr ? 'فواتير البيع' : 'Sales Bills', value: String(s.totalSalesCount) },
+            { label: isAr ? 'المرتجعات' : 'Returns', value: String(s.salesReturnCount) },
+          ],
+        };
+      case 'organization-shift':
+        return {
+          subtitle: isAr ? 'إدارة الورديات وإقفال الصندوق' : 'Counter Shift & Drawer Closing',
+          headline: formatMoney(s.todayCashSales),
+          headlineCaption: isAr ? 'مبيعات الكاش اليوم' : "Today's Cash Sales",
+          badge: {
+            label: s.shiftMode === 'daily'
+              ? (isAr ? 'وردية يومية' : 'Daily Shift')
+              : s.shiftMode === 'manual'
+                ? (isAr ? 'وردية يدوية' : 'Counter Shift')
+                : (isAr ? 'غير مفعل' : 'Off'),
+            tone: s.shiftMode === 'off' ? 'slate' : 'emerald',
+          },
+          metrics: [
+            { label: isAr ? 'بطاقة اليوم' : 'Card Today', value: formatMoney(s.todayCardSales) },
+            { label: isAr ? 'فواتير اليوم' : 'Today Bills', value: String(s.todaySalesCount) },
+            { label: isAr ? 'إجمالي اليوم' : 'Day Total', value: formatMoney(s.todaySalesTotal) },
+          ],
+        };
+      case 'cashbook':
+        return {
+          subtitle: isAr ? 'حركة النقدية والبنك اليومية' : 'Cash & Bank Movement Ledger',
+          headline: formatMoney(s.cashbookBalance),
+          headlineCaption: isAr ? 'الرصيد النقدي الصافي' : 'Net Cash Balance',
+          badge: {
+            label: isAr ? `${s.cashbookEntriesCount} قيد` : `${s.cashbookEntriesCount} Entries`,
+            tone: s.cashbookBalance >= 0 ? 'emerald' : 'red',
+          },
+          metrics: [
+            { label: isAr ? 'المقبوضات' : 'Cash In', value: formatMoney(s.cashbookInTotal), tone: 'emerald' },
+            { label: isAr ? 'المدفوعات' : 'Cash Out', value: formatMoney(s.cashbookOutTotal), tone: 'red' },
+            { label: isAr ? 'القيود' : 'Entries', value: String(s.cashbookEntriesCount) },
+          ],
+        };
+      case 'sales-return':
+        return {
+          subtitle: isAr ? 'مرتجعات فواتير المبيعات' : 'Customer Refunds & Returns',
+          headline: formatMoney(s.salesReturnTotal),
+          headlineCaption: isAr ? 'إجمالي المرتجعات' : 'Total Refunded',
+          badge: {
+            label: isAr ? `${s.salesReturnCount} سند` : `${s.salesReturnCount} Vouchers`,
+            tone: s.salesReturnCount > 0 ? 'amber' : 'slate',
+          },
+          metrics: [
+            { label: isAr ? 'اليوم' : 'Today', value: String(s.todaySalesReturnCount) },
+            { label: isAr ? 'الإجمالي' : 'Total Count', value: String(s.salesReturnCount) },
+          ],
+        };
+      case 'purchase-return':
+        return {
+          subtitle: isAr ? 'مرتجعات فواتير المشتريات' : 'Supplier Return Vouchers',
+          headline: formatMoney(s.purchaseReturnTotal),
+          headlineCaption: isAr ? 'إجمالي مرتجع المشتريات' : 'Total Returned',
+          badge: {
+            label: isAr ? `${s.purchaseReturnCount} سند` : `${s.purchaseReturnCount} Vouchers`,
+            tone: s.purchaseReturnCount > 0 ? 'amber' : 'slate',
+          },
+          metrics: [
+            { label: isAr ? 'اليوم' : 'Today', value: String(s.todayPurchaseReturnCount) },
+            { label: isAr ? 'الإجمالي' : 'Total Count', value: String(s.purchaseReturnCount) },
+          ],
+        };
+      case 'files':
+        return {
+          subtitle: isAr ? 'أرشيف المستندات والتصدير' : 'Documents & Export Center',
+          headline: isAr
+            ? `${s.totalSalesCount + s.totalPurchasesCount} مستند`
+            : `${s.totalSalesCount + s.totalPurchasesCount} Records`,
+          headlineCaption: isAr ? 'إجمالي الفواتير والسندات' : 'Indexed Vouchers',
+          metrics: [
+            { label: isAr ? 'مبيعات' : 'Sales', value: String(s.totalSalesCount) },
+            { label: isAr ? 'مشتريات' : 'Purchases', value: String(s.totalPurchasesCount) },
+            { label: isAr ? 'مرتجعات' : 'Returns', value: String(s.salesReturnCount + s.purchaseReturnCount) },
+          ],
+        };
+      case 'settings':
+        return {
+          subtitle: isAr ? 'إعدادات المتجر والطباعة والنظام' : 'Store, Tax, Print & Users',
+          headline: s.eInvoiceEnabled
+            ? (isAr ? 'الفوترة الإلكترونية مفعّلة' : 'E-Invoice Active')
+            : (isAr ? 'إعدادات النظام' : 'System Ready'),
+          headlineCaption: isAr ? 'حالة الامتثال والطباعة' : 'Compliance & Print Config',
+          badge: {
+            label: s.eInvoiceEnabled ? (isAr ? 'مفعّل' : 'Phase 1') : (isAr ? 'قياسي' : 'Standard'),
+            tone: s.eInvoiceEnabled ? 'emerald' : 'slate',
+          },
+          metrics: [
+            { label: isAr ? 'الضريبة' : 'VAT Rate', value: `${s.taxRate}%` },
+            { label: isAr ? 'الورق' : 'Paper', value: s.paperWidth },
+            { label: isAr ? 'العملة' : 'Currency', value: s.currencySymbol },
+          ],
+        };
+      default:
+        return null;
+    }
+  };
+
+  const activeLauncherItems = launcherItems
+    .filter((item) => !item.comingSoon)
+    .sort((a, b) => (a.id === 'files' ? 1 : b.id === 'files' ? -1 : 0));
+  const upgradeLauncherItems = launcherItems.filter((item) => item.comingSoon);
+
+  const badgeToneClass = (tone: 'emerald' | 'amber' | 'red' | 'blue' | 'slate') => {
+    if (tone === 'emerald') return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    if (tone === 'amber') return 'border-amber-200 bg-amber-50 text-amber-800';
+    if (tone === 'red') return 'border-red-200 bg-red-50 text-red-700';
+    if (tone === 'blue') return 'border-blue-200 bg-blue-50 text-blue-700';
+    return 'border-slate-200 bg-slate-100 text-slate-600';
+  };
+
+  const metricToneClass = (tone?: 'emerald' | 'amber' | 'red' | 'blue') => {
+    if (tone === 'emerald') return 'text-emerald-700';
+    if (tone === 'amber') return 'text-amber-700';
+    if (tone === 'red') return 'text-red-600';
+    if (tone === 'blue') return 'text-blue-700';
+    return 'text-slate-800';
+  };
+
   return (
     <>
       <header className={`win11-titlebar no-print relative h-14 min-w-0 overflow-hidden bg-white border-b border-slate-200 px-3 sm:px-6 flex items-center justify-between gap-2 sm:gap-6 shrink-0 ${
@@ -697,13 +971,14 @@ export const TopBar: React.FC<TopBarProps> = ({
 
       {!isFlyErpMode && showLauncher && (
         <div
-          className="app-launcher-backdrop fixed inset-x-0 bottom-0 top-14 z-[60] flex items-start justify-center bg-white p-2 backdrop-blur-md"
+          className="app-launcher-backdrop fixed inset-x-0 bottom-0 top-14 z-[60] flex items-start justify-center bg-white p-2 sm:p-4 backdrop-blur-md"
           onClick={(event) => {
             if (event.target === event.currentTarget) closeLauncher();
           }}
         >
           <div
-            className="win11-start-panel relative flex h-[calc(100dvh-4.5rem)] max-h-[calc(100dvh-4.5rem)] w-full max-w-5xl flex-col overflow-hidden rounded-t-3xl p-2 pb-[max(1rem,env(safe-area-inset-bottom))] sm:h-[38rem] sm:max-h-[calc(100dvh-6rem)] sm:rounded-3xl sm:px-8 sm:pb-8 sm:pt-2"
+            dir={language === 'ar' ? 'rtl' : 'ltr'}
+            className="win11-start-panel relative flex h-[calc(100dvh-4.5rem)] max-h-[calc(100dvh-4.5rem)] w-full max-w-7xl flex-col overflow-hidden rounded-t-3xl p-3 pb-[max(1rem,env(safe-area-inset-bottom))] sm:h-[calc(100dvh-5.5rem)] sm:max-h-[calc(100dvh-5.5rem)] sm:rounded-3xl sm:px-7 sm:pb-6 sm:pt-5"
             style={launcherBackgroundDataUrl
               ? {
                   backgroundImage: `linear-gradient(var(--theme-launcher-image-overlay), var(--theme-launcher-image-overlay)), url("${launcherBackgroundDataUrl}")`,
@@ -821,83 +1096,227 @@ export const TopBar: React.FC<TopBarProps> = ({
                 </nav>
               </>
             ) : (
-              <>
-                <div
-                  className="launcher-grid min-h-0 flex-1 grid w-full grid-cols-[repeat(auto-fit,minmax(8rem,1fr))] items-start justify-items-center content-start gap-5 overflow-y-auto overscroll-contain pb-[max(1rem,env(safe-area-inset-bottom))]"
-                >
-                {launcherItems.map((entry) => {
-                const Icon = entry.icon;
-                const label = language === 'ar' ? entry.labelAr : entry.label;
-                const isComingSoon = entry.comingSoon;
-                const accessibleLabel = isComingSoon
-                  ? `${label} - ${language === 'ar' ? 'ترقية' : 'Upgrade'}`
-                  : label;
-                const isMenuLanding = !selectedHubModule;
-                return (
-                  <button
-                    key={entry.id}
-                    type="button"
-                    disabled={Boolean(isComingSoon)}
-                    aria-label={accessibleLabel}
-                    title={accessibleLabel}
-                    onClick={() => {
-                      if (entry.action === 'logout') {
-                        closeLauncher();
-                        onLogout();
-                      } else if (entry.action === 'open-cashbook') {
-                        onOpenCashbook();
-                        setShowLauncher(false);
-                        setOpenNavigationGroup(null);
-                      } else if (entry.tab) {
-                        handleSelectNavigationTab(entry.tab);
-                      } else if (entry.moduleId === 'settings') {
-                        onSelectTab('settings');
-                        onSettingsLauncherChange(false);
-                        onSettingsComponentChange(false);
-                        setOpenNavigationGroup(null);
-                        setShowLauncher(false);
-                      } else if (entry.moduleId) {
-                        setOpenNavigationGroup(entry.moduleId);
-                      }
-                    }}
-                    className={`group flex min-h-32 w-32 min-w-0 flex-col items-center rounded-2xl border border-transparent p-2 text-center transition-colors ${
-                          iconOnlyLauncher ? 'justify-center' : 'justify-start gap-2.5'
-                        } ${
-                          isComingSoon
-                            ? 'cursor-not-allowed opacity-50'
-                            : 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300'
-                        }`}
-                  >
-                      <span
-                        data-art={isMenuLanding ? entry.id : undefined}
-                        className={`win11-launcher-icon relative flex h-20 w-20 shrink-0 items-center justify-center rounded-2xl transition-all sm:h-24 sm:w-24 ${
-                          isComingSoon ? '' : 'group-hover:-translate-y-0.5 group-hover:scale-105 group-hover:shadow-lg'
-                        }`}
-                      >
-                        {isMenuLanding ? (
-                          <LauncherAppArt id={entry.id} />
-                        ) : (
-                          <Icon
-                            strokeWidth={1.75}
-                            className="relative z-10 h-9 w-9 text-blue-700 sm:h-11 sm:w-11"
-                          />
+              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain pb-[max(1rem,env(safe-area-inset-bottom))]">
+                {launcherSummary && (
+                  <div className="flex flex-col gap-3 rounded-2xl border border-slate-200/90 bg-white/95 p-4 shadow-xs lg:flex-row lg:items-center lg:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="truncate text-base font-bold tracking-tight text-slate-900 sm:text-lg">
+                          {launcherSummary.storeName || appName}
+                        </h2>
+                        <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-700">
+                          {appName}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        {new Date(currentTime).toLocaleDateString(
+                          language === 'ar' ? 'ar-SA' : 'en-GB',
+                          { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' }
                         )}
-                      </span>
-                      {!iconOnlyLauncher && (
-                        <span className="w-24 whitespace-normal break-words text-center text-xs font-semibold leading-tight text-slate-700">
-                          {label}
-                        </span>
-                      )}
-                      {!iconOnlyLauncher && isComingSoon && (
-                        <span className="text-[10px] text-slate-500">
-                          {language === 'ar' ? 'ترقية' : 'Upgrade'}
-                        </span>
-                      )}
-                  </button>
-                );
-                })}
+                        {' · '}
+                        {new Date(currentTime).toLocaleTimeString(
+                          language === 'ar' ? 'ar-SA' : 'en-US',
+                          { hour: '2-digit', minute: '2-digit' }
+                        )}
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      <div className="rounded-xl border border-slate-200/80 bg-slate-50/90 px-3 py-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                          {language === 'ar' ? 'مبيعات اليوم' : "Today's Sales"}
+                        </div>
+                        <div className="mt-0.5 font-mono text-sm font-bold tabular-nums text-emerald-700">
+                          {formatMoney(launcherSummary.todaySalesTotal)}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-slate-200/80 bg-slate-50/90 px-3 py-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                          {language === 'ar' ? 'فواتير اليوم' : "Today's Bills"}
+                        </div>
+                        <div className="mt-0.5 font-mono text-sm font-bold tabular-nums text-slate-900">
+                          {launcherSummary.todaySalesCount}
+                          {launcherSummary.draftSalesCount > 0 && (
+                            <span className="ml-1.5 text-[10px] font-semibold text-amber-700">
+                              +{launcherSummary.draftSalesCount} {language === 'ar' ? 'مسودة' : 'draft'}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-slate-200/80 bg-slate-50/90 px-3 py-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                          {language === 'ar' ? 'تنبيهات المخزون' : 'Stock Alerts'}
+                        </div>
+                        <div className={`mt-0.5 font-mono text-sm font-bold tabular-nums ${
+                          launcherSummary.outOfStockCount > 0
+                            ? 'text-red-600'
+                            : launcherSummary.lowStockCount > 0
+                              ? 'text-amber-700'
+                              : 'text-emerald-700'
+                        }`}>
+                          {launcherSummary.lowStockCount + launcherSummary.outOfStockCount}
+                          <span className="ml-1 text-[10px] font-medium text-slate-500">
+                            / {launcherSummary.totalProducts}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-slate-200/80 bg-slate-50/90 px-3 py-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                          {language === 'ar' ? 'الرصيد النقدي' : 'Cash Balance'}
+                        </div>
+                        <div className={`mt-0.5 font-mono text-sm font-bold tabular-nums ${
+                          launcherSummary.cashbookBalance >= 0 ? 'text-blue-700' : 'text-red-600'
+                        }`}>
+                          {formatMoney(launcherSummary.cashbookBalance)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="launcher-grid grid w-full grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {activeLauncherItems.map((entry) => {
+                    const Icon = entry.icon;
+                    const label = language === 'ar' ? entry.labelAr : entry.label;
+                    const isMenuLanding = !selectedHubModule;
+                    const summary = getTileSummary(entry.id);
+                    return (
+                      <button
+                        key={entry.id}
+                        type="button"
+                        aria-label={label}
+                        title={label}
+                        onClick={() => {
+                          if (entry.action === 'logout') {
+                            closeLauncher();
+                            onLogout();
+                          } else if (entry.action === 'open-cashbook') {
+                            onOpenCashbook();
+                            setShowLauncher(false);
+                            setOpenNavigationGroup(null);
+                          } else if (entry.tab) {
+                            handleSelectNavigationTab(entry.tab);
+                          } else if (entry.moduleId === 'settings') {
+                            onSelectTab('settings');
+                            onSettingsLauncherChange(false);
+                            onSettingsComponentChange(false);
+                            setOpenNavigationGroup(null);
+                            setShowLauncher(false);
+                          } else if (entry.moduleId) {
+                            setOpenNavigationGroup(entry.moduleId);
+                          }
+                        }}
+                        className="group flex w-full min-w-0 flex-col justify-between gap-3 rounded-2xl border border-slate-200/90 bg-white/95 p-4 text-start shadow-xs transition-all hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <span
+                              data-art={isMenuLanding ? entry.id : undefined}
+                              className="win11-launcher-icon relative flex h-12 w-12 shrink-0 items-center justify-center rounded-xl transition-transform group-hover:scale-105"
+                            >
+                              {isMenuLanding ? (
+                                <LauncherAppArt id={entry.id} />
+                              ) : (
+                                <Icon strokeWidth={1.75} className="relative z-10 h-6 w-6 text-blue-700" />
+                              )}
+                            </span>
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-bold text-slate-900 group-hover:text-blue-700">
+                                {label}
+                              </div>
+                              {summary && (
+                                <div className="mt-0.5 truncate text-[11px] text-slate-500">
+                                  {summary.subtitle}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            {summary?.badge && (
+                              <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${badgeToneClass(summary.badge.tone)}`}>
+                                {summary.badge.label}
+                              </span>
+                            )}
+                            <ChevronRight
+                              className={`h-4 w-4 text-slate-400 transition-transform group-hover:translate-x-0.5 group-hover:text-blue-600 ${
+                                language === 'ar' ? 'rotate-180 group-hover:-translate-x-0.5' : ''
+                              }`}
+                            />
+                          </div>
+                        </div>
+
+                        {summary && (
+                          <div className="flex items-baseline justify-between gap-2 border-t border-slate-100 pt-2.5">
+                            <span className="truncate font-mono text-lg font-bold tabular-nums text-slate-900">
+                              {summary.headline}
+                            </span>
+                            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                              {summary.headlineCaption}
+                            </span>
+                          </div>
+                        )}
+
+                        {!iconOnlyLauncher && summary && summary.metrics.length > 0 && (
+                          <div
+                            className={`grid gap-2 rounded-xl bg-slate-50/90 px-2.5 py-2 ${
+                              summary.metrics.length === 2 ? 'grid-cols-2' : 'grid-cols-3'
+                            }`}
+                          >
+                            {summary.metrics.map((metric) => (
+                              <div key={metric.label} className="min-w-0">
+                                <div className="truncate text-[10px] font-medium text-slate-500">
+                                  {metric.label}
+                                </div>
+                                <div className={`mt-0.5 truncate font-mono text-xs font-bold tabular-nums ${metricToneClass(metric.tone)}`}>
+                                  {metric.value}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
-              </>
+
+                {upgradeLauncherItems.length > 0 && (
+                  <div className="space-y-2 border-t border-slate-200/80 pt-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                        {language === 'ar' ? 'وحدات إضافية (ترقية)' : 'Additional Modules (Upgrade)'}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                      {upgradeLauncherItems.map((entry) => {
+                        const label = language === 'ar' ? entry.labelAr : entry.label;
+                        const accessibleLabel = `${label} - ${language === 'ar' ? 'ترقية' : 'Upgrade'}`;
+                        return (
+                          <div
+                            key={entry.id}
+                            aria-label={accessibleLabel}
+                            title={accessibleLabel}
+                            className="flex items-center justify-between gap-2.5 rounded-xl border border-slate-200/70 bg-white/70 px-3 py-2.5 opacity-65"
+                          >
+                            <div className="flex min-w-0 items-center gap-2.5">
+                              <span
+                                data-art={entry.id}
+                                className="win11-launcher-icon relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
+                              >
+                                <LauncherAppArt id={entry.id} />
+                              </span>
+                              <span className="truncate text-xs font-semibold text-slate-700">
+                                {label}
+                              </span>
+                            </div>
+                            <span className="shrink-0 rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+                              {language === 'ar' ? 'ترقية' : 'Upgrade'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </div>

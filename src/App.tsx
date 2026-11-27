@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useLayoutEffect, useState } from 'react';
-import { TopBar, type NavTab } from './components/TopBar';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
+import { TopBar, type LauncherSummaryData, type NavTab } from './components/TopBar';
 import { FlyErpSideNav } from './components/FlyErpSideNav';
 import { RegisterView } from './components/RegisterView';
 import { ErpSalesView } from './components/ErpSalesView';
@@ -55,6 +55,8 @@ import {
   getAppProductName,
   getAppScreenModeFromLocation,
 } from './utils/appScreenMode';
+import { getSaleBalanceDue } from './utils/saleBalances';
+import { getInvoiceDateTime, toLocalDateKey } from './utils/dateFilters';
 
 const RPOS_TICKET_WIDTH_KEY = 'counterline_rpos_ticket_width';
 const DEFAULT_RPOS_TICKET_WIDTH = 320;
@@ -1312,6 +1314,151 @@ export function App() {
     />
   );
 
+  const launcherSummary = useMemo<LauncherSummaryData>(() => {
+    const todayKey = toLocalDateKey(new Date());
+    const completedSales = sales.filter((s) => s.status === 'COMPLETED');
+    const draftSalesCount = sales.filter((s) => s.status === 'DRAFT').length;
+    let todaySalesTotal = 0;
+    let todaySalesCount = 0;
+    let todayCashSales = 0;
+    let todayCardSales = 0;
+    let totalSalesTotal = 0;
+    let pendingReceivables = 0;
+    let totalVatCollected = 0;
+
+    for (const sale of completedSales) {
+      const total = Number(sale.total || 0);
+      totalSalesTotal += total;
+      totalVatCollected += Number(sale.taxAmount || 0);
+      pendingReceivables += getSaleBalanceDue(sale);
+      const saleDateKey = toLocalDateKey(getInvoiceDateTime(sale.invoiceDate, sale.createdAt));
+      if (saleDateKey === todayKey) {
+        todaySalesTotal += total;
+        todaySalesCount += 1;
+        const pm = (sale.paymentMethod || '').toUpperCase();
+        if (pm.includes('CASH')) todayCashSales += total;
+        else if (pm.includes('CARD') || pm.includes('BANK')) todayCardSales += total;
+      }
+    }
+
+    let todayPurchasesTotal = 0;
+    let todayPurchasesCount = 0;
+    let totalPurchasesTotal = 0;
+    let pendingPayables = 0;
+    for (const purchase of purchases) {
+      const total = Number(purchase.total || 0);
+      totalPurchasesTotal += total;
+      if (purchase.paymentStatus !== 'PAID') {
+        pendingPayables += Math.max(0, total - Number(purchase.paidAmount || 0));
+      }
+      const purchaseDateKey = purchase.receivedDate && /^\d{4}-\d{2}-\d{2}$/.test(purchase.receivedDate)
+        ? purchase.receivedDate
+        : toLocalDateKey(new Date(purchase.createdAt));
+      if (purchaseDateKey === todayKey) {
+        todayPurchasesTotal += total;
+        todayPurchasesCount += 1;
+      }
+    }
+
+    let lowStockCount = 0;
+    let outOfStockCount = 0;
+    let stockValue = 0;
+    for (const product of products) {
+      const stock = Number(product.stock || 0);
+      const reorder = Number(product.reorderLevel ?? 5);
+      if (stock <= 0) outOfStockCount += 1;
+      else if (stock <= reorder) lowStockCount += 1;
+      stockValue += Math.max(0, stock) * Number(product.costPrice || product.retailPrice || 0);
+    }
+
+    let salesReturnTotal = 0;
+    let todaySalesReturnCount = 0;
+    for (const voucher of salesReturnVouchers) {
+      salesReturnTotal += Number(voucher.refundAmount || 0);
+      if (toLocalDateKey(new Date(voucher.createdAt)) === todayKey) {
+        todaySalesReturnCount += 1;
+      }
+    }
+
+    let purchaseReturnTotal = 0;
+    let todayPurchaseReturnCount = 0;
+    for (const voucher of purchaseReturnVouchers) {
+      purchaseReturnTotal += Number(voucher.total || 0);
+      if (toLocalDateKey(new Date(voucher.createdAt)) === todayKey) {
+        todayPurchaseReturnCount += 1;
+      }
+    }
+
+    let cashbookInTotal = 0;
+    let cashbookOutTotal = 0;
+    for (const entry of cashbookEntries) {
+      const amt = Number(entry.amount || 0);
+      if (entry.direction === 'IN') cashbookInTotal += amt;
+      else cashbookOutTotal += amt;
+    }
+    const openingBal = Number(cashbookOpeningBalance?.amount || 0);
+    const cashbookBalance = openingBal + cashbookInTotal - cashbookOutTotal;
+
+    const shiftMode: 'daily' | 'manual' | 'off' =
+      settings.enableCounterShift === false
+        ? 'off'
+        : settings.enableDailyCounterShift
+          ? 'daily'
+          : 'manual';
+
+    return {
+      currencySymbol: settings.currencySymbol || 'SAR',
+      decimalPoints: settings.decimalPoints ?? 2,
+      storeName: settings.storeName || appName,
+      todaySalesTotal,
+      todaySalesCount,
+      todayCashSales,
+      todayCardSales,
+      totalSalesTotal,
+      totalSalesCount: completedSales.length,
+      draftSalesCount,
+      pendingReceivables,
+      totalVatCollected,
+      todayPurchasesTotal,
+      todayPurchasesCount,
+      totalPurchasesTotal,
+      totalPurchasesCount: purchases.length,
+      pendingPayables,
+      totalProducts: products.length,
+      lowStockCount,
+      outOfStockCount,
+      stockValue,
+      totalCustomers: customers.length,
+      totalVendors: vendors.length,
+      salesReturnCount: salesReturnVouchers.length,
+      salesReturnTotal,
+      todaySalesReturnCount,
+      purchaseReturnCount: purchaseReturnVouchers.length,
+      purchaseReturnTotal,
+      todayPurchaseReturnCount,
+      cashbookBalance,
+      cashbookInTotal,
+      cashbookOutTotal,
+      cashbookEntriesCount: cashbookEntries.length,
+      taxRate: settings.taxRate ?? 15,
+      eInvoiceEnabled: Boolean(settings.enableZatcaEinvoice),
+      paperWidth: settings.paperWidth || '80mm',
+      shiftMode,
+    };
+  }, [
+    appName,
+    cashbookEntries,
+    cashbookOpeningBalance,
+    customers.length,
+    products,
+    purchaseReturnVouchers,
+    purchases,
+    sales,
+    salesReturnVouchers,
+    settings,
+    vendors.length,
+  ]);
+
   return (
     <LanguageProvider initialLanguage={settings.appLanguage}>
       <>
@@ -1357,6 +1504,7 @@ export function App() {
             disabledAppComponents={settings.disabledAppComponents}
             iconOnlyLauncher={iconOnlyLauncher}
             launcherBackgroundDataUrl={settings.launcherBackgroundDataUrl}
+            launcherSummary={launcherSummary}
             openLauncherOnMount={openLauncherAfterLogin}
             onLauncherOpened={handleLauncherOpened}
             sideNavOpen={flyErpSideNavOpen}
@@ -1876,6 +2024,7 @@ export function App() {
               sale={flyErpCompletion.sale}
               sales={sales}
               settings={settings}
+              appScreenMode={effectiveScreenMode}
               customer={
                 customers.find((customer) => customer.id === flyErpCompletion.sale.customerId) ||
                 customers.find((customer) => customer.name === flyErpCompletion.sale.customerName)
