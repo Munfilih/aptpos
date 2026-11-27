@@ -67,14 +67,20 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
     }
   };
 
+  const nonDraftSales = useMemo(
+    () => sales.filter((s) => s.status !== 'DRAFT'),
+    [sales]
+  );
+
   const summary = useMemo(() => {
-    const completed = sales.filter((s) => s.status === 'COMPLETED');
-    const returnedCount = sales.filter((s) => Boolean(s.returnStatus)).length;
+    const completed = nonDraftSales.filter((s) => s.status === 'COMPLETED');
+    const returnedCount = nonDraftSales.filter((s) => Boolean(s.returnStatus)).length;
     return {
+      totalCount: nonDraftSales.length,
       completedCount: completed.length,
       returnedCount,
     };
-  }, [sales]);
+  }, [nonDraftSales]);
 
   const returnVouchersBySale = useMemo(() => {
     const vouchersBySale = new Map<number, SalesReturnVoucher[]>();
@@ -89,7 +95,7 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
   }, [returnVouchers]);
 
   const filteredSales = useMemo(() => {
-    return sales.filter((s) => {
+    return nonDraftSales.filter((s) => {
       if (statusFilter === 'COMPLETED' && s.status !== 'COMPLETED') return false;
       if (statusFilter === 'RETURNED' && !s.returnStatus) return false;
       if (!matchesDateBounds(s.invoiceDate || s.createdAt, dateBounds)) return false;
@@ -103,7 +109,7 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
       }
       return true;
     });
-  }, [sales, statusFilter, search, dateBounds]);
+  }, [nonDraftSales, statusFilter, search, dateBounds]);
 
   const formatSaleDate = (sale: Sale) =>
     getInvoiceDateTime(sale.invoiceDate, sale.createdAt).toLocaleString(isRtl ? 'ar-SA' : 'en-GB', {
@@ -129,16 +135,20 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
         type="button"
         onClick={() => onReprintSale(sale)}
         className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 lg:h-8 lg:w-8"
-        title={sale.appScreenMode === 'flyerp'
-          ? isRtl ? 'طباعة فاتورة السفر' : 'Print travel invoice'
-          : isRtl ? 'إعادة طباعة الوصل' : 'Reprint receipt'}
-        aria-label={sale.appScreenMode === 'flyerp'
-          ? isRtl ? 'طباعة فاتورة السفر' : 'Print travel invoice'
-          : isRtl ? 'إعادة طباعة الوصل' : 'Reprint receipt'}
+        title={sale.status === 'DRAFT'
+          ? isRtl ? 'طباعة مسودة المبيعات' : 'Print sales draft'
+          : sale.appScreenMode === 'flyerp'
+            ? isRtl ? 'طباعة فاتورة السفر' : 'Print travel invoice'
+            : isRtl ? 'إعادة طباعة الوصل' : 'Reprint receipt'}
+        aria-label={sale.status === 'DRAFT'
+          ? isRtl ? 'طباعة مسودة المبيعات' : 'Print sales draft'
+          : sale.appScreenMode === 'flyerp'
+            ? isRtl ? 'طباعة فاتورة السفر' : 'Print travel invoice'
+            : isRtl ? 'إعادة طباعة الوصل' : 'Reprint receipt'}
       >
         <Printer className="h-3.5 w-3.5 lg:h-4 lg:w-4" />
       </button>
-      {onEditInvoice && sale.status === 'COMPLETED' && !sale.returnStatus && (
+      {onEditInvoice && (sale.status === 'COMPLETED' || sale.status === 'DRAFT') && !sale.returnStatus && settings.enableZatcaEinvoice !== true && (
         <button
           type="button"
           onClick={() => onEditInvoice(sale)}
@@ -161,7 +171,7 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
           <RotateCcw className="h-3.5 w-3.5 lg:h-4 lg:w-4" />
         </button>
       )}
-      {onDeleteSale && !sale.returnStatus && (
+      {onDeleteSale && !sale.returnStatus && settings.enableZatcaEinvoice !== true && (
         <button
           type="button"
           disabled={isDeleting}
@@ -233,7 +243,7 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
                 {
                   value: 'ALL' as const,
                   label: isRtl ? 'الكل' : 'All',
-                  count: sales.length,
+                  count: summary.totalCount,
                 },
                 {
                   value: 'COMPLETED' as const,
@@ -334,15 +344,18 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
                 {filteredSales.map((sale) => {
                   const itemCount = sale.items.reduce((sum, item) => sum + item.quantity, 0);
                   const completed = sale.status === 'COMPLETED';
+                  const isDraft = sale.status === 'DRAFT';
                   const linkedReturnVouchers = returnVouchersBySale.get(sale.id) || [];
                   const statusClass =
                     sale.returnStatus === 'FULL'
                       ? 'bg-violet-50 text-violet-700'
                       : sale.returnStatus === 'PARTIAL'
                         ? 'bg-amber-50 text-amber-700'
-                        : completed
-                          ? 'bg-emerald-50 text-emerald-700'
-                          : 'bg-rose-50 text-rose-700';
+                        : isDraft
+                          ? 'bg-sky-50 text-sky-700'
+                          : completed
+                            ? 'bg-emerald-50 text-emerald-700'
+                            : 'bg-rose-50 text-rose-700';
                   return (
                     <tr key={sale.id} className="hover:bg-slate-50">
                       <td className="whitespace-nowrap px-3 py-2 font-mono font-semibold text-slate-900">
@@ -379,9 +392,11 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
                             ? (isRtl ? 'مُعادة' : 'Returned')
                             : sale.returnStatus === 'PARTIAL'
                               ? (isRtl ? 'إرجاع جزئي' : 'Partial')
-                              : completed
-                                ? (isRtl ? 'مكتملة' : 'Completed')
-                                : (isRtl ? 'ملغاة' : 'Voided')}
+                              : isDraft
+                                ? (isRtl ? 'مسودة' : 'Draft')
+                                : completed
+                                  ? (isRtl ? 'مكتملة' : 'Completed')
+                                  : (isRtl ? 'ملغاة' : 'Voided')}
                         </span>
                       </td>
                       <td className="whitespace-nowrap px-3 py-1.5">{renderActions(sale)}</td>

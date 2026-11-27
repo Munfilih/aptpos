@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeftRight, Copy, History, Plane, Plus, Save, Search, Ticket, Trash2, X } from 'lucide-react';
+import { ArrowLeftRight, ChevronDown, ChevronUp, Copy, FileText, Loader2, Plane, Plus, Printer, Save, Search, Ticket, Trash2, X } from 'lucide-react';
 import type {
   Customer,
   PaymentMethod,
@@ -17,6 +17,8 @@ import {
 import { AppDateInput } from './AppDateInput';
 import { CustomerFormModal } from './CustomerFormModal';
 import { ProductImage } from './ProductImage';
+import { getPrintDocumentFormat } from '../printTemplates/catalog';
+import { createVoucherTemplateJob, printTemplateJob } from '../printTemplates/render';
 
 const getTodayDate = () => {
   const date = new Date();
@@ -35,6 +37,8 @@ interface FlyErpSalesViewProps {
   editingSale?: Sale | null;
   onSaleCompleted: (sale: Sale, queuedOffline: boolean) => void;
   onCancelEdit?: () => void;
+  onLoadDraft?: (sale: Sale) => void;
+  onDeleteDraft?: (saleId: number) => Promise<void>;
   onCustomerCreated: (customer: Customer) => void;
   onOpenServiceMaster?: () => void;
   onOpenSalesHistory?: () => void;
@@ -103,6 +107,8 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
   editingSale = null,
   onSaleCompleted,
   onCancelEdit,
+  onLoadDraft,
+  onDeleteDraft,
   onCustomerCreated,
   onOpenServiceMaster,
   onOpenSalesHistory,
@@ -138,8 +144,15 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
   const serviceCardButtonRefs = useRef(new Map<number, HTMLButtonElement>());
   const serviceFieldRefs = useRef(new Map<number, Partial<Record<ServiceField, ServiceFieldElement>>>());
   const [error, setError] = useState<string | null>(null);
+  const [draftNotice, setDraftNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [savingAsDraft, setSavingAsDraft] = useState(false);
   const [saveConfirmationOpen, setSaveConfirmationOpen] = useState(false);
+  const [draftsModalOpen, setDraftsModalOpen] = useState(false);
+  const [draftsSearch, setDraftsSearch] = useState('');
+  const [deletingDraftId, setDeletingDraftId] = useState<number | null>(null);
+  const [printingDraftId, setPrintingDraftId] = useState<number | null>(null);
+  const [settlementExpanded, setSettlementExpanded] = useState(false);
   const [customerSearch, setCustomerSearch] = useState('');
   const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
 
@@ -158,6 +171,26 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
     () => products.filter((product) => isFlyErpServiceCategory(product.category)),
     [products]
   );
+  const draftSales = useMemo(
+    () =>
+      sales
+        .filter((sale) => sale.status === 'DRAFT')
+        .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt)),
+    [sales]
+  );
+  const filteredDraftSales = useMemo(() => {
+    const query = draftsSearch.trim().toLowerCase();
+    if (!query) return draftSales;
+    return draftSales.filter((draft) =>
+      draft.receiptNumber.toLowerCase().includes(query) ||
+      draft.customerName.toLowerCase().includes(query) ||
+      draft.items.some(
+        (item) =>
+          item.productName.toLowerCase().includes(query) ||
+          (item.description || '').toLowerCase().includes(query)
+      )
+    );
+  }, [draftSales, draftsSearch]);
   const frequentServices = useMemo(() => {
     const serviceIds = new Set(travelServices.map((service) => service.id));
     const usageCounts = new Map<number, number>();
@@ -602,6 +635,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
     setServiceDropdownPosition(null);
     setError(null);
     setServiceModalError(null);
+    setSettlementExpanded(false);
   };
 
   const cancelEdit = () => {
@@ -650,10 +684,12 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
     setSaveConfirmationOpen(true);
   };
 
-  const handleConfirmSave = async () => {
+  const handleConfirmSave = async (asDraft = false) => {
     if (saving) return;
     const billableRows = rows.filter((row) => row.productId !== null);
     setSaving(true);
+    setSavingAsDraft(asDraft);
+    setDraftNotice(null);
     try {
       const response = await fetch(
         editingSale ? `/api/sales/${editingSale.id}/invoice` : '/api/sales',
@@ -662,6 +698,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             appScreenMode: 'flyerp',
+            status: asDraft ? 'DRAFT' : 'COMPLETED',
             customerId: customer?.id ?? null,
             customerName: customer?.name || settings.defaultCustomer,
             ...(settings.allowInvoiceDateEdit ? { invoiceDate } : {}),
@@ -703,22 +740,31 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
       setSaveConfirmationOpen(false);
       onSaleCompleted(result.sale, result.queuedOfflinePrint === true);
       clearDraft();
+      if (asDraft) {
+        setDraftNotice(
+          text(
+            `Invoice ${result.sale.receiptNumber} saved to drafts.`,
+            `تم حفظ الفاتورة ${result.sale.receiptNumber} في المسودات.`
+          )
+        );
+      }
     } catch (submitError) {
       setError(submitError instanceof Error
         ? submitError.message
         : text('Could not save this travel invoice.', 'تعذر حفظ فاتورة السفر.'));
     } finally {
       setSaving(false);
+      setSavingAsDraft(false);
     }
   };
 
   const formatMoney = (value: number) =>
     `${currency} ${value.toFixed(decimals)}`;
   const paymentInputClass =
-    'mt-1 block w-full min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-amber-600';
+    'mt-1 block w-full min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-emerald-600';
 
   return (
-    <div className="flex min-h-0 flex-1 min-w-0 flex-col overflow-y-auto bg-slate-50 p-0">
+    <div className="flex min-h-0 flex-1 min-w-0 flex-col overflow-y-auto bg-emerald-50/50 p-0">
       <form onSubmit={handleSubmit} className="mx-auto flex min-h-full w-full max-w-[1440px] flex-col border-y border-slate-200 bg-white">
         <section className="border-b border-slate-200 bg-white">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-3 py-2 sm:px-4">
@@ -736,38 +782,24 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                     : text('Choose a frequent service or add a new service line to search saved services. Stock is not affected.', 'اختر خدمة متكررة أو أضف سطراً جديداً للبحث عن الخدمات المحفوظة. لا يتأثر المخزون.')}
               </p>
             </div>
-            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-              {onOpenSalesHistory && (
-                <button
-                  type="button"
-                  onClick={onOpenSalesHistory}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-amber-200"
-                >
-                  <History className="h-3.5 w-3.5" aria-hidden="true" />
-                  {text('History', 'سجل المبيعات')}
-                </button>
-              )}
-              {onOpenServiceMaster && (
-                <button
-                  type="button"
-                  onClick={onOpenServiceMaster}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-amber-200"
-                >
-                  <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-                  {text('Service Master', 'إدارة الخدمات')}
-                </button>
-              )}
+            <div className="flex shrink-0 items-center gap-2">
               <button
                 type="button"
-                onClick={editingSale ? cancelEdit : clearDraft}
-                disabled={saving}
-                className="inline-flex items-center rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-red-200 disabled:opacity-60"
+                onClick={() => {
+                  setDraftsSearch('');
+                  setDraftsModalOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 focus:outline-none focus:ring-2 focus:ring-emerald-200"
               >
-                {editingSale ? text('Cancel edit', 'إلغاء التعديل') : text('Clear', 'مسح')}
+                <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>{text('Drafts', 'المسودات')}</span>
+                <span className="rounded-full bg-emerald-700 px-1.5 py-0.5 font-mono text-[10px] font-bold text-white">
+                  {draftSales.length}
+                </span>
               </button>
             </div>
           </div>
-          <div className="border-b border-slate-200 bg-slate-50/70 px-3 py-2 sm:px-4">
+          <div className="border-b border-slate-200 bg-emerald-50/60 px-3 py-2 sm:px-4">
             {frequentServices.length > 0 && (
               <p className="mb-1.5 text-[10px] font-semibold text-slate-500">
                 {text('Frequent services', 'الخدمات المتكررة')}
@@ -778,16 +810,16 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                 type="button"
                 onClick={addNewServiceRow}
                 aria-label={text('Add a new service line', 'إضافة خدمة جديدة')}
-                className={`flex h-[76px] min-w-[200px] max-w-[220px] items-center gap-2 rounded-lg border border-dashed border-amber-300 bg-amber-50 p-2 text-amber-900 shadow-sm transition-colors hover:border-amber-500 hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-200 ${isRtl ? 'flex-row-reverse text-right' : 'text-left'}`}
+                className={`flex h-[76px] min-w-[200px] max-w-[220px] items-center gap-2 rounded-lg border border-dashed border-emerald-300 bg-emerald-50 p-2 text-emerald-900 shadow-sm transition-colors hover:border-emerald-500 hover:bg-emerald-100 focus:outline-none focus:ring-2 focus:ring-emerald-200 ${isRtl ? 'flex-row-reverse text-right' : 'text-left'}`}
               >
-                <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-amber-200 bg-white text-amber-700">
+                <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-emerald-200 bg-white text-emerald-700">
                   <Plus className="h-6 w-6" aria-hidden="true" />
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-xs font-semibold">
                     {text('New service', 'خدمة جديدة')}
                   </span>
-                  <span className="mt-1 block text-[10px] text-amber-800">
+                  <span className="mt-1 block text-[10px] text-emerald-800">
                     {text('Search saved services', 'ابحث عن الخدمات المحفوظة')}
                   </span>
                 </span>
@@ -799,9 +831,9 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                     onClick={() => addQuickService(service)}
                     aria-label={text(`Add ${service.name} to the invoice`, `إضافة ${service.nameAr || service.name} إلى الفاتورة`)}
                     title={service.nameAr ? `${service.name} · ${service.nameAr}` : service.name}
-                    className={`flex h-[76px] min-w-[200px] max-w-[220px] items-center gap-2 rounded-lg border border-slate-200 bg-white p-2 text-slate-700 shadow-sm transition-colors hover:border-amber-400 hover:bg-amber-50 hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-200 ${isRtl ? 'flex-row-reverse text-right' : 'text-left'}`}
+                    className={`flex h-[76px] min-w-[200px] max-w-[220px] items-center gap-2 rounded-lg border border-slate-200 bg-white p-2 text-slate-700 shadow-sm transition-colors hover:border-emerald-400 hover:bg-emerald-50 hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-200 ${isRtl ? 'flex-row-reverse text-right' : 'text-left'}`}
                   >
-                    <span className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border border-slate-200 bg-amber-50 text-amber-700">
+                    <span className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border border-slate-200 bg-emerald-50 text-emerald-700">
                       {service.imagePath || service.imageData ? (
                         <ProductImage
                           imagePath={service.imagePath}
@@ -823,7 +855,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                       >
                         {service.nameAr && !isRtl ? service.nameAr : service.category}
                       </span>
-                      <span className="mt-1 block font-mono text-[11px] font-semibold tabular-nums text-amber-800">
+                      <span className="mt-1 block font-mono text-[11px] font-semibold tabular-nums text-emerald-800">
                         {formatMoney(service.retailPrice)}
                       </span>
                     </span>
@@ -833,7 +865,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
           </div>
           {rows.length === 0 ? (
             <div className="flex flex-1 flex-col items-center justify-center px-4 py-12 text-center">
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-amber-200 bg-amber-50 text-amber-700 shadow-sm">
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-700 shadow-sm">
                 <Plane className="h-6 w-6" aria-hidden="true" />
               </div>
               <h3 className="mt-3 text-sm font-semibold text-slate-900">
@@ -848,7 +880,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                 <button
                   type="button"
                   onClick={addNewServiceRow}
-                  className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-amber-700 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-amber-800 focus:outline-none focus:ring-2 focus:ring-amber-300"
+                  className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-emerald-300"
                 >
                   <Plus className="h-4 w-4" aria-hidden="true" />
                   {text('Add service line', 'إضافة سطر خدمة')}
@@ -868,7 +900,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                     : undefined}
                   className={row.isEditing
                     ? 'fixed left-1/2 top-1/2 z-[80] max-h-[calc(100dvh-2rem)] w-[min(640px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 shadow-2xl'
-                    : 'rounded-xl border border-slate-200 bg-white p-3 shadow-sm transition-colors hover:border-amber-300 hover:bg-amber-50/30'}
+                    : 'rounded-xl border border-slate-200 bg-white p-3 shadow-sm transition-colors hover:border-emerald-300 hover:bg-emerald-50/40'}
                 >
                   {row.productId !== null && !row.isEditing ? (
                     <div className="flex min-w-0 items-center gap-2">
@@ -885,7 +917,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                         )}
                         className={`flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left focus:outline-none ${isRtl ? 'flex-row-reverse text-right' : ''}`}
                       >
-                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-50 text-xs font-semibold text-amber-800 border border-amber-200">
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-xs font-semibold text-emerald-800 border border-emerald-200">
                           {displayIndex + 1}
                         </span>
                         <span className="min-w-0 flex-1">
@@ -897,7 +929,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                           {(row.passengerName.trim() || row.bookingReference.trim() || row.origin.trim() || row.destination.trim() || row.flightNumber.trim() || row.departureDate.trim() || row.details.trim()) && (
                             <span className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px]">
                               {(row.origin.trim() || row.destination.trim()) && (
-                                <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-900">
+                                <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 font-semibold text-emerald-900">
                                   {row.origin.trim() || '---'} → {row.destination.trim() || '---'}
                                 </span>
                               )}
@@ -953,7 +985,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                         onClick={() => duplicateServiceRow(row)}
                         aria-label={text('Duplicate service', 'تكرار الخدمة')}
                         title={text('Duplicate service', 'تكرار الخدمة')}
-                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-amber-50 hover:text-amber-700"
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-emerald-50 hover:text-emerald-700"
                       >
                         <Copy className="h-4 w-4" />
                       </button>
@@ -981,7 +1013,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                             const product = products.find((entry) => entry.id === row.productId);
                             if (product) onEditService(product);
                           }}
-                          className="text-xs font-semibold text-amber-800 underline decoration-amber-300 underline-offset-2 hover:text-amber-900"
+                          className="text-xs font-semibold text-emerald-800 underline decoration-emerald-300 underline-offset-2 hover:text-emerald-900"
                         >
                           {text('Edit service details', 'تعديل تفاصيل الخدمة')}
                         </button>
@@ -1092,7 +1124,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                           setServiceDropdownPosition(null);
                         }
                       }}
-                      className={`min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none focus:ring-2 focus:ring-amber-100 ${isRtl ? 'text-right' : 'text-left'}`}
+                      className={`min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-100 ${isRtl ? 'text-right' : 'text-left'}`}
                       aria-label={text(`Search service ${displayIndex + 1}`, `ابحث عن الخدمة ${displayIndex + 1}`)}
                       placeholder={text('Search saved services', 'ابحث عن الخدمات المحفوظة')}
                     />
@@ -1113,13 +1145,13 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                           }
                         }}
                         placeholder={text('Optional service details', 'تفاصيل إضافية للخدمة')}
-                        className={`mt-1 block w-full min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none ${isRtl ? 'text-right' : 'text-left'}`}
+                        className={`mt-1 block w-full min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-emerald-600 focus:outline-none ${isRtl ? 'text-right' : 'text-left'}`}
                         aria-label={text(`Details for service ${displayIndex + 1}`, `تفاصيل الخدمة ${displayIndex + 1}`)}
                       />
                     </label>
                   </div>
                   {rowDetails[index]?.product?.requiresItinerary === true && (
-                    <fieldset className="mt-4 space-y-3 rounded-lg border border-amber-200 bg-amber-50/50 p-3">
+                    <fieldset className="mt-4 space-y-3 rounded-lg border border-emerald-200 bg-emerald-50/50 p-3">
                       <legend className="px-1 text-xs font-semibold text-slate-800">
                         {text('Passenger and flight details', 'بيانات المسافر والرحلة')}
                       </legend>
@@ -1138,7 +1170,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                                 focusNextServiceField(row, 'passengerName');
                               }
                             }}
-                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-emerald-600 focus:outline-none"
                             aria-label={text(`Passenger name for service ${displayIndex + 1}`, `اسم المسافر للخدمة ${displayIndex + 1}`)}
                           />
                         </label>
@@ -1154,7 +1186,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                                 focusNextServiceField(row, 'passportNumber');
                               }
                             }}
-                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 focus:border-amber-600 focus:outline-none"
+                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 focus:border-emerald-600 focus:outline-none"
                             aria-label={text(`Passport or ID number for service ${displayIndex + 1}`, `رقم الجواز أو الهوية للخدمة ${displayIndex + 1}`)}
                           />
                         </label>
@@ -1170,12 +1202,12 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                                 focusNextServiceField(row, 'bookingReference');
                               }
                             }}
-                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 focus:border-amber-600 focus:outline-none"
+                            className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 focus:border-emerald-600 focus:outline-none"
                             aria-label={text(`Booking reference for service ${displayIndex + 1}`, `مرجع الحجز للخدمة ${displayIndex + 1}`)}
                           />
                         </label>
                       </div>
-                      <div className="border-t border-amber-200/70 pt-3">
+                      <div className="border-t border-emerald-200/70 pt-3">
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto_1fr]">
                           <label className="block text-xs font-medium text-slate-600">
                             {text('From', 'من')}
@@ -1190,7 +1222,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                                 }
                               }}
                               placeholder="RUH"
-                              className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 focus:border-amber-600 focus:outline-none"
+                              className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 focus:border-emerald-600 focus:outline-none"
                               aria-label={text(`Origin for service ${displayIndex + 1}`, `مغادرة الخدمة ${displayIndex + 1}`)}
                             />
                           </label>
@@ -1200,7 +1232,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                               onClick={() => updateRow(row.id, { origin: row.destination, destination: row.origin })}
                               title={text('Swap origin and destination', 'تبديل المغادرة والوجهة')}
                               aria-label={text('Swap origin and destination', 'تبديل المغادرة والوجهة')}
-                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-amber-200 bg-white text-amber-800 hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-200"
+                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-emerald-200 bg-white text-emerald-800 hover:bg-emerald-100 focus:outline-none focus:ring-2 focus:ring-emerald-200"
                             >
                               <ArrowLeftRight className="h-4 w-4" aria-hidden="true" />
                             </button>
@@ -1218,7 +1250,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                                 }
                               }}
                               placeholder="DXB"
-                              className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 focus:border-amber-600 focus:outline-none"
+                              className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 focus:border-emerald-600 focus:outline-none"
                               aria-label={text(`Destination for service ${displayIndex + 1}`, `وجهة الخدمة ${displayIndex + 1}`)}
                             />
                           </label>
@@ -1236,7 +1268,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                                   focusNextServiceField(row, 'flightNumber');
                                 }
                               }}
-                              className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 focus:border-amber-600 focus:outline-none"
+                              className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 focus:border-emerald-600 focus:outline-none"
                               aria-label={text(`Flight number for service ${displayIndex + 1}`, `رقم الرحلة للخدمة ${displayIndex + 1}`)}
                             />
                           </label>
@@ -1260,7 +1292,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                                   focusNextServiceField(row, 'tripType');
                                 }
                               }}
-                              className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                              className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-emerald-600 focus:outline-none"
                               aria-label={text(`Trip type for service ${displayIndex + 1}`, `نوع الرحلة للخدمة ${displayIndex + 1}`)}
                             >
                               <option value="one-way">{text('One way', 'اتجاه واحد')}</option>
@@ -1279,14 +1311,14 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                                   focusNextServiceField(row, 'departureDate');
                                 }
                               }}
-                              className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                              className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-emerald-600 focus:outline-none"
                               aria-label={text(`Departure date for service ${displayIndex + 1}`, `تاريخ المغادرة للخدمة ${displayIndex + 1}`)}
                             />
                           </label>
                         </div>
                       </div>
                       {row.tripType === 'round-trip' && (
-                        <div className="grid grid-cols-1 gap-3 border-t border-amber-200/70 pt-3 sm:grid-cols-2">
+                        <div className="grid grid-cols-1 gap-3 border-t border-emerald-200/70 pt-3 sm:grid-cols-2">
                             <label className="block text-xs font-medium text-slate-600">
                               {text('Return flight number', 'رقم رحلة العودة')}
                               <input
@@ -1299,7 +1331,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                                     focusNextServiceField(row, 'returnFlightNumber');
                                   }
                                 }}
-                                className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                                className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-emerald-600 focus:outline-none"
                                 aria-label={text(`Return flight number for service ${displayIndex + 1}`, `رقم رحلة العودة للخدمة ${displayIndex + 1}`)}
                               />
                             </label>
@@ -1315,7 +1347,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                                     focusNextServiceField(row, 'returnDate');
                                   }
                                 }}
-                                className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-amber-600 focus:outline-none"
+                                className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-emerald-600 focus:outline-none"
                                 aria-label={text(`Return date for service ${displayIndex + 1}`, `تاريخ العودة للخدمة ${displayIndex + 1}`)}
                               />
                             </label>
@@ -1339,7 +1371,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                           saveServiceModal();
                         }
                       }}
-                      className="mt-1 block w-full min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-right font-mono text-sm tabular-nums text-slate-900 focus:border-amber-600 focus:outline-none"
+                      className="mt-1 block w-full min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-right font-mono text-sm tabular-nums text-slate-900 focus:border-emerald-600 focus:outline-none"
                       aria-label={text(`Rate for service ${displayIndex + 1}`, `سعر الخدمة ${displayIndex + 1}`)}
                     />
                   </label>
@@ -1352,7 +1384,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                     <button
                       type="button"
                       onClick={saveServiceModal}
-                      className="rounded-lg bg-amber-700 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-800"
+                      className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800"
                     >
                       {serviceModalIsNew
                         ? text('Add service', 'إضافة الخدمة')
@@ -1407,7 +1439,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                     onClick={() => selectService(activeServiceRow, service)}
                     className={`flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left ${
                       optionIndex === activeServiceSuggestionIndex
-                        ? 'bg-amber-50'
+                        ? 'bg-emerald-50'
                         : 'hover:bg-slate-50'
                     }`}
                   >
@@ -1442,7 +1474,71 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
               document.body
             )}
         </section>
-        <div className="sticky bottom-2 z-20 mx-2 mt-auto grid min-w-0 grid-cols-1 gap-x-5 gap-y-3 rounded-xl border border-slate-200 bg-white/95 px-4 py-3 shadow-[0_-8px_16px_-12px_rgba(15,23,42,0.5)] backdrop-blur lg:grid-cols-[minmax(0,1fr)_minmax(300px,0.8fr)] sm:px-5 sm:py-4">
+        {!settlementExpanded ? (
+          <div className="sticky bottom-3 z-20 mx-3 mt-auto mb-2 space-y-2">
+            {draftNotice && (
+              <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800 shadow-xs">
+                {draftNotice}
+              </p>
+            )}
+            {error && (
+              <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-700 shadow-xs">
+                {error}
+              </p>
+            )}
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-white/95 px-4 py-2.5 shadow-[0_10px_28px_-10px_rgba(6,78,59,0.28)] backdrop-blur">
+              <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
+                <div className="min-w-0">
+                  <span className="block text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    {text('Total', 'الإجمالي')}
+                  </span>
+                  <span className="font-mono text-lg font-bold tabular-nums text-emerald-700">
+                    {formatMoney(totals.total)}
+                  </span>
+                </div>
+                <div className="hidden h-7 w-px bg-slate-200 sm:block" />
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-600">
+                  <span>
+                    <strong className="font-mono font-semibold text-slate-900">{rows.length}</strong>{' '}
+                    {rows.length === 1 ? text('service', 'خدمة') : text('services', 'خدمات')}
+                  </span>
+                  <span className="text-slate-300">·</span>
+                  <span className="max-w-[160px] truncate font-medium text-slate-700">
+                    {customer?.name || settings.defaultCustomer || text('Walk-in customer', 'عميل نقدي')}
+                  </span>
+                  <span className="hidden text-slate-300 md:inline">·</span>
+                  <span className="hidden md:inline">
+                    {text('VAT', 'الضريبة')}:{' '}
+                    <strong className="font-mono font-semibold text-slate-800">{formatMoney(totals.taxAmount)}</strong>
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSettlementExpanded(true)}
+                className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-emerald-700 px-5 py-2.5 text-sm font-bold text-white shadow-sm transition-colors hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-emerald-300"
+              >
+                <span>{text('Settle', 'تسوية')}</span>
+                <ChevronUp className="h-4 w-4" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        ) : (
+        <div className="sticky bottom-2 z-20 mx-2 mt-auto rounded-xl border border-emerald-200 bg-white/95 shadow-[0_-8px_20px_-10px_rgba(6,78,59,0.28)] backdrop-blur">
+          <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-4 py-2 sm:px-5">
+            <span className="text-xs font-semibold text-slate-800">
+              {text('Customer & Settlement', 'العميل والتسوية')}
+            </span>
+            <button
+              type="button"
+              onClick={() => setSettlementExpanded(false)}
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+            >
+              <span>{text('Collapse', 'تصغير')}</span>
+              <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </div>
+          <div className="grid min-w-0 grid-cols-1 gap-x-5 gap-y-3 px-4 py-3 lg:grid-cols-[minmax(0,1fr)_minmax(300px,0.8fr)] sm:px-5 sm:py-4">
             <div className="grid min-w-0 grid-cols-1 items-end gap-3 sm:grid-cols-2 xl:grid-cols-3">
               <div className="relative min-w-0 text-xs font-medium leading-5 text-slate-700">
                 <div className="flex items-center justify-between gap-2">
@@ -1452,7 +1548,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setCustomerModalOpen(true)}
-                    className="inline-flex shrink-0 items-center gap-1 rounded-md px-1 text-[10px] font-semibold text-amber-800 hover:bg-amber-50"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md px-1 text-[10px] font-semibold text-emerald-800 hover:bg-emerald-50"
                     aria-label={text('Add new customer', 'إضافة عميل جديد')}
                   >
                     <Plus className="h-3 w-3" />
@@ -1477,7 +1573,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                       setCustomerSearch(event.target.value);
                       setCustomerDropdownOpen(true);
                     }}
-                    className="block w-full min-w-0 rounded-lg border border-slate-200 bg-white py-2.5 pl-8 pr-7 text-sm text-slate-900 outline-none focus:border-amber-600"
+                    className="block w-full min-w-0 rounded-lg border border-slate-200 bg-white py-2.5 pl-8 pr-7 text-sm text-slate-900 outline-none focus:border-emerald-600"
                     autoComplete="off"
                   />
                   {(customerId !== null || customerSearch) && (
@@ -1505,7 +1601,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                           setCustomerSearch('');
                           setCustomerDropdownOpen(false);
                         }}
-                        className={`flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-xs ${customerId === null ? 'bg-amber-50 font-semibold text-amber-900' : 'text-slate-700 hover:bg-slate-50'}`}
+                        className={`flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-xs ${customerId === null ? 'bg-emerald-50 font-semibold text-emerald-900' : 'text-slate-700 hover:bg-slate-50'}`}
                       >
                         <span>{settings.defaultCustomer || text('Walk-in customer', 'عميل نقدي')}</span>
                       </button>
@@ -1523,7 +1619,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                             setCustomerSearch('');
                             setCustomerDropdownOpen(false);
                           }}
-                          className={`flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-xs ${customerId === entry.id ? 'bg-amber-50 font-semibold text-amber-900' : 'text-slate-700 hover:bg-slate-50'}`}
+                          className={`flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-xs ${customerId === entry.id ? 'bg-emerald-50 font-semibold text-emerald-900' : 'text-slate-700 hover:bg-slate-50'}`}
                         >
                           <span className="truncate">{entry.name}</span>
                           {entry.phone && (
@@ -1608,27 +1704,48 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                   </dd>
                 </div>
                 {balanceDue > 0 && (
-                  <div className="col-span-2 flex justify-between gap-2 py-1 font-semibold text-amber-900">
+                  <div className="col-span-2 flex justify-between gap-2 py-1 font-semibold text-emerald-800">
                     <dt>{text('Balance due', 'الرصيد المستحق')}</dt>
                     <dd className="font-mono tabular-nums">{formatMoney(balanceDue)}</dd>
                   </div>
                 )}
               </dl>
-              <button
-                type="submit"
-                disabled={saving || travelServices.length === 0 || rows.length === 0}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <Save className="h-4 w-4" aria-hidden="true" />
-                {saving
-                  ? text('Saving…', 'جارٍ الحفظ…')
-                  : editingSale
-                    ? text('Update invoice', 'تحديث الفاتورة')
-                    : text('Save invoice', 'حفظ الفاتورة')}
-              </button>
+              <div className="grid grid-cols-4 gap-2">
+                <button
+                  type="button"
+                  onClick={editingSale ? cancelEdit : clearDraft}
+                  disabled={saving}
+                  className="col-span-1 inline-flex w-full items-center justify-center rounded-lg border border-red-200 bg-red-50 px-2 py-2.5 text-sm font-semibold text-red-700 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-red-200 disabled:opacity-60"
+                >
+                  <span className="truncate">
+                    {editingSale ? text('Cancel', 'إلغاء') : text('Clear', 'مسح')}
+                  </span>
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving || travelServices.length === 0 || rows.length === 0}
+                  className="col-span-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Save className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span className="truncate">
+                    {saving
+                      ? text('Saving…', 'جارٍ الحفظ…')
+                      : editingSale
+                        ? text('Update invoice', 'تحديث الفاتورة')
+                        : text('Save invoice', 'حفظ الفاتورة')}
+                  </span>
+                </button>
+              </div>
             </div>
+            {draftNotice && (
+              <p role="status" className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-xs font-medium text-emerald-800 lg:col-span-2">
+                {draftNotice}
+              </p>
+            )}
             {error && <p role="alert" className="rounded border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-700 lg:col-span-2">{error}</p>}
+          </div>
         </div>
+        )}
 
       </form>
       {customerModalOpen && (
@@ -1707,7 +1824,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                 <dd className="font-mono tabular-nums text-slate-800">{formatMoney(amountPaid)}</dd>
               </div>
               {balanceDue > 0 && (
-                <div className="flex justify-between gap-3 font-semibold text-amber-900">
+                <div className="flex justify-between gap-3 font-semibold text-emerald-800">
                   <dt>{text('Balance due', 'الرصيد المستحق')}</dt>
                   <dd className="font-mono tabular-nums">{formatMoney(balanceDue)}</dd>
                 </div>
@@ -1719,29 +1836,6 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                     ? text('This invoice is tax included', 'الضريبة مشمولة في هذه الفاتورة')
                     : text('This invoice is tax excluded', 'هذه الفاتورة غير شاملة للضريبة')}
                 </dd>
-              </div>
-              <div className="space-y-2 border-t border-slate-200 pt-2">
-                <h3 className="font-semibold text-slate-700">{text('Services', 'الخدمات')}</h3>
-                {rows.filter((row) => row.productId !== null).map((row) => {
-                  const product = products.find((entry) => entry.id === row.productId);
-                  return (
-                    <div key={row.id} className="flex justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="font-medium text-slate-800">
-                          {product ? serviceLabel(product) : row.serviceSearch}
-                        </p>
-                        {getRowDescription(row, ' · ') && (
-                          <p className="break-words text-xs font-normal text-slate-500">
-                            {getRowDescription(row, ' · ')}
-                          </p>
-                        )}
-                      </div>
-                      <span className="shrink-0 font-mono tabular-nums text-slate-700">
-                        {formatMoney(Number(row.unitPrice))}
-                      </span>
-                    </div>
-                  );
-                })}
               </div>
               <div className="flex justify-between gap-3 border-t border-slate-200 pt-2 text-xs">
                 <dt className="text-slate-500">{text('Subtotal', 'الإجمالي الفرعي')}</dt>
@@ -1767,7 +1861,7 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                 {error}
               </p>
             )}
-            <div className="mt-5 flex justify-end gap-2">
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
               <button
                 type="button"
                 disabled={saving}
@@ -1779,15 +1873,230 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
               <button
                 type="button"
                 disabled={saving}
-                onClick={() => void handleConfirmSave()}
-                className="rounded-lg bg-amber-700 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-60"
+                onClick={() => void handleConfirmSave(true)}
+                className="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-60"
               >
-                {saving
+                {saving && savingAsDraft
+                  ? text('Saving…', 'جارٍ الحفظ…')
+                  : text('Draft', 'مسودة')}
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void handleConfirmSave(false)}
+                className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60"
+              >
+                {saving && !savingAsDraft
                   ? text('Saving…', 'جارٍ الحفظ…')
                   : editingSale
                     ? text('Confirm and update', 'تأكيد وتحديث')
                     : text('Confirm and save', 'تأكيد وحفظ')}
               </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+      {draftsModalOpen && createPortal(
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/60 p-3 sm:p-5"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="flyerp-drafts-modal-title"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setDraftsModalOpen(false);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              setDraftsModalOpen(false);
+            }
+          }}
+        >
+          <div
+            dir={isRtl ? 'rtl' : 'ltr'}
+            className="flex max-h-[min(80dvh,640px)] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl"
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+              <div>
+                <h2 id="flyerp-drafts-modal-title" className="text-base font-bold text-slate-900">
+                  {text('Saved Drafts', 'المسودات المحفوظة')}
+                </h2>
+                <p className="text-xs text-slate-500">
+                  {text('Select a draft invoice to load it into Travel Billing.', 'اختر مسودة فاتورة لتحميلها في شاشة فواتير السفر.')}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDraftsModalOpen(false)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                aria-label={text('Close drafts', 'إغلاق المسودات')}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="border-b border-slate-200 bg-emerald-50/40 px-4 py-2.5">
+              <div className="relative">
+                <Search
+                  className={`pointer-events-none absolute top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400 ${isRtl ? 'right-2.5' : 'left-2.5'}`}
+                  aria-hidden="true"
+                />
+                <input
+                  type="search"
+                  value={draftsSearch}
+                  onChange={(event) => setDraftsSearch(event.target.value)}
+                  placeholder={text('Search by receipt, customer, or service…', 'ابحث برقم الفاتورة أو العميل أو الخدمة…')}
+                  className={`w-full rounded-lg border border-slate-200 bg-white py-2 text-xs text-slate-900 outline-none focus:border-emerald-600 ${isRtl ? 'pr-8 pl-3' : 'pl-8 pr-3'}`}
+                />
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              {filteredDraftSales.length === 0 ? (
+                <div className="flex flex-col items-center justify-center px-4 py-12 text-center">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700">
+                    <FileText className="h-5 w-5" aria-hidden="true" />
+                  </div>
+                  <p className="mt-3 text-sm font-semibold text-slate-800">
+                    {draftSales.length === 0
+                      ? text('No saved drafts yet', 'لا توجد مسودات محفوظة بعد')
+                      : text('No matching drafts found', 'لم يتم العثور على مسودات مطابقة')}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {draftSales.length === 0
+                      ? text('Use the Draft button in Confirm invoice to save an invoice for later.', 'استخدم زر المسودة في نافذة تأكيد الفاتورة لحفظ الفاتورة لاحقاً.')
+                      : text('Try a different search term.', 'جرّب كلمة بحث أخرى.')}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {filteredDraftSales.map((draft) => {
+                    const isCurrent = editingSale?.id === draft.id;
+                    const servicePreview = draft.items
+                      .map((item) => (isRtl ? item.nameAr || item.productName : item.productName))
+                      .join(', ');
+                    return (
+                      <div
+                        key={draft.id}
+                        className={`flex items-center justify-between gap-3 rounded-xl border p-3 transition-colors ${
+                          isCurrent
+                            ? 'border-emerald-300 bg-emerald-50/70'
+                            : 'border-slate-200 bg-white hover:border-emerald-300 hover:bg-emerald-50/30'
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono text-xs font-bold text-slate-900">
+                              {draft.receiptNumber}
+                            </span>
+                            <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[10px] font-semibold text-sky-700">
+                              {text('Draft', 'مسودة')}
+                            </span>
+                            {isCurrent && (
+                              <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
+                                {text('Loaded', 'محمّلة')}
+                              </span>
+                            )}
+                            <span className="text-[11px] text-slate-500">
+                              {(draft.invoiceDate || draft.createdAt.slice(0, 10)).split('-').reverse().join('/')}
+                            </span>
+                          </div>
+                          <div className="mt-1 truncate text-xs font-semibold text-slate-800">
+                            {draft.customerName}
+                          </div>
+                          <div className="mt-0.5 truncate text-[11px] text-slate-500" title={servicePreview}>
+                            {draft.items.length} {draft.items.length === 1 ? text('service', 'خدمة') : text('services', 'خدمات')}
+                            {servicePreview ? ` · ${servicePreview}` : ''}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <span className="font-mono text-xs font-bold tabular-nums text-emerald-800">
+                            {formatMoney(draft.total)}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={printingDraftId === draft.id}
+                            onClick={async () => {
+                              setPrintingDraftId(draft.id);
+                              setError(null);
+                              try {
+                                const salesFormat = getPrintDocumentFormat(settings, 'sales-invoice', 'A4');
+                                const salesTemplateId =
+                                  settings.printDocumentProfiles?.['sales-invoice']?.[salesFormat]?.templateId;
+                                const job = await createVoucherTemplateJob(
+                                  'sales-invoice',
+                                  draft.id,
+                                  settings,
+                                  salesFormat,
+                                  isRtl,
+                                  undefined,
+                                  salesTemplateId
+                                );
+                                await printTemplateJob({ ...job, silent: false });
+                              } catch (printErr) {
+                                setError(
+                                  printErr instanceof Error
+                                    ? printErr.message
+                                    : text('Could not print sales draft.', 'تعذرت طباعة مسودة المبيعات.')
+                                );
+                              } finally {
+                                setPrintingDraftId(null);
+                              }
+                            }}
+                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 disabled:opacity-40"
+                            title={text('Print sales draft', 'طباعة مسودة المبيعات')}
+                          >
+                            {printingDraftId === draft.id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Printer className="h-3.5 w-3.5" />
+                            )}
+                            <span>{text('Print', 'طباعة')}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDraftNotice(null);
+                              setError(null);
+                              onLoadDraft?.(draft);
+                              setDraftsModalOpen(false);
+                            }}
+                            className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800"
+                          >
+                            {text('Load', 'تحميل')}
+                          </button>
+                          {onDeleteDraft && (
+                            <button
+                              type="button"
+                              disabled={deletingDraftId === draft.id}
+                              onClick={async () => {
+                                setDeletingDraftId(draft.id);
+                                try {
+                                  await onDeleteDraft(draft.id);
+                                } catch (deleteErr) {
+                                  setError(
+                                    deleteErr instanceof Error
+                                      ? deleteErr.message
+                                      : text('Could not delete draft.', 'تعذر حذف المسودة.')
+                                  );
+                                } finally {
+                                  setDeletingDraftId(null);
+                                }
+                              }}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-400 hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+                              title={text('Delete draft', 'حذف المسودة')}
+                              aria-label={text('Delete draft', 'حذف المسودة')}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </div>,

@@ -534,6 +534,8 @@ function initSchema(database: Database): void {
     'ALTER TABLE cashbook_entries ADD COLUMN account_name TEXT',
     'ALTER TABLE products ADD COLUMN tax_rate REAL DEFAULT 15',
     'ALTER TABLE products ADD COLUMN requires_itinerary INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE products ADD COLUMN enable_flavors INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE products ADD COLUMN flavors TEXT NOT NULL DEFAULT "[]"',
     'ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT ""',
     'ALTER TABLE purchases ADD COLUMN paid_amount REAL NOT NULL DEFAULT 0',
     'CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)',
@@ -1086,10 +1088,32 @@ function attachProductAdditionalBarcodes(database: Database, products: Product[]
   }));
 }
 
+function normalizeProductFlavors(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string') continue;
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(trimmed);
+  }
+  return result;
+}
+
 function mapProductRow(row: unknown[]): Product {
   const multiUnits = normalizeProductMultiUnits(
     JSON.parse(String(row[16] || '[]')) as unknown
   );
+  let flavors: string[] = [];
+  try {
+    flavors = normalizeProductFlavors(JSON.parse(String(row[19] || '[]')) as unknown);
+  } catch {
+    flavors = [];
+  }
   return {
     id: Number(row[0]),
     sku: String(row[1]),
@@ -1108,6 +1132,8 @@ function mapProductRow(row: unknown[]): Product {
     imageData: row[14] ? String(row[14]) : '',
     imagePath: row[15] ? String(row[15]) : '',
     requiresItinerary: Number(row[17]) === 1,
+    enableFlavors: Number(row[18]) === 1,
+    flavors,
     multiUnits,
     additionalBarcodes: [],
   };
@@ -1140,7 +1166,7 @@ export async function listProducts(filters?: {
 }): Promise<Product[]> {
   const database = await getDb();
   const res = database.exec(
-    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary
+    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary, enable_flavors, flavors
      FROM products ORDER BY name ASC`
   );
   if (!res[0]) return [];
@@ -1419,8 +1445,8 @@ export async function createProduct(
   let newId: number;
   try {
     database.run(
-      `INSERT INTO products (sku, barcode, name, name_ar, category, cost_price, retail_price, tax_rate, stock, reorder_level, unit, updated_at, brand, image_data, image_path, multi_units, requires_itinerary)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO products (sku, barcode, name, name_ar, category, cost_price, retail_price, tax_rate, stock, reorder_level, unit, updated_at, brand, image_data, image_path, multi_units, requires_itinerary, enable_flavors, flavors)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         input.sku.trim(),
         barcode,
@@ -1439,6 +1465,8 @@ export async function createProduct(
         normalizeProductImagePath(input.imagePath),
         JSON.stringify(multiUnits),
         input.requiresItinerary === true ? 1 : 0,
+        input.enableFlavors === true ? 1 : 0,
+        JSON.stringify(normalizeProductFlavors(input.flavors)),
       ]
     );
     newId = Number(database.exec('SELECT last_insert_rowid()')[0].values[0][0]);
@@ -1451,7 +1479,7 @@ export async function createProduct(
   saveDatabase();
 
   const created = database.exec(
-    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary
+    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary, enable_flavors, flavors
      FROM products WHERE id = ?`,
     [newId]
   );
@@ -1473,7 +1501,7 @@ export async function updateProduct(
   }
   const database = await getDb();
   const existingRes = database.exec(
-    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary
+    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary, enable_flavors, flavors
      FROM products WHERE id = ?`,
     [id]
   );
@@ -1502,7 +1530,7 @@ export async function updateProduct(
   try {
     database.run(
       `UPDATE products
-       SET sku = ?, barcode = ?, name = ?, name_ar = ?, category = ?, cost_price = ?, retail_price = ?, tax_rate = ?, stock = ?, reorder_level = ?, unit = ?, updated_at = ?, brand = ?, image_data = ?, image_path = ?, multi_units = ?, requires_itinerary = ?
+       SET sku = ?, barcode = ?, name = ?, name_ar = ?, category = ?, cost_price = ?, retail_price = ?, tax_rate = ?, stock = ?, reorder_level = ?, unit = ?, updated_at = ?, brand = ?, image_data = ?, image_path = ?, multi_units = ?, requires_itinerary = ?, enable_flavors = ?, flavors = ?
        WHERE id = ?`,
       [
         input.sku !== undefined ? input.sku.trim() : current.sku,
@@ -1526,6 +1554,14 @@ export async function updateProduct(
         input.requiresItinerary !== undefined
           ? (input.requiresItinerary ? 1 : 0)
           : current.requiresItinerary ? 1 : 0,
+        input.enableFlavors !== undefined
+          ? (input.enableFlavors ? 1 : 0)
+          : current.enableFlavors ? 1 : 0,
+        JSON.stringify(
+          input.flavors !== undefined
+            ? normalizeProductFlavors(input.flavors)
+            : current.flavors || []
+        ),
         id,
       ]
     );
@@ -1539,7 +1575,7 @@ export async function updateProduct(
   saveDatabase();
 
   const updatedRes = database.exec(
-    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary
+    `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary, enable_flavors, flavors
      FROM products WHERE id = ?`,
     [id]
   );
@@ -1754,10 +1790,30 @@ export async function getSettings(): Promise<StoreSettings> {
     enableStockAlertsOnCheckout: map.enableStockAlertsOnCheckout !== 'false',
     defaultCustomer: map.defaultCustomer || 'Walk-in Customer / عميل نقدي',
     paymentMethods,
-    kotPrinter: map.kotPrinter || '',
+    kotPrinter: map.kotPrinter && !/^system default/i.test(map.kotPrinter.trim()) ? map.kotPrinter.trim() : '',
     enableKot: map.enableKot === 'true',
+    enableCashReceipt: map.enableCashReceipt === 'true',
+    posDefaultSearchField: (
+      map.posDefaultSearchField === 'name' ||
+      map.posDefaultSearchField === 'sku' ||
+      map.posDefaultSearchField === 'all'
+        ? map.posDefaultSearchField
+        : 'barcode'
+    ) as 'barcode' | 'name' | 'sku' | 'all',
+    enableCounterShift: map.enableCounterShift === 'true',
+    enableDailyCounterShift: map.enableDailyCounterShift === 'true',
+    dailyShiftOpenTime: /^\d{2}:\d{2}$/.test(String(map.dailyShiftOpenTime || ''))
+      ? String(map.dailyShiftOpenTime)
+      : '00:00',
+    dailyShiftCloseTime: /^\d{2}:\d{2}$/.test(String(map.dailyShiftCloseTime || ''))
+      ? String(map.dailyShiftCloseTime)
+      : '23:59',
+    dailyShiftCloseNextDay: map.dailyShiftCloseNextDay === 'true',
+    zatcaPhase: (map.zatcaPhase === '2' ? '2' : '1') as '1' | '2',
+    enableZatcaEinvoice: map.enableZatcaEinvoice === 'true',
     appLanguage: (map.appLanguage === 'ar' ? 'ar' : 'en') as 'en' | 'ar',
-    defaultPrinter: map.defaultPrinter || 'System Default / افتراضي النظام',
+    multiLanguageInvoices: map.multiLanguageInvoices === 'true',
+    defaultPrinter: map.defaultPrinter && !/^system default/i.test(map.defaultPrinter.trim()) ? map.defaultPrinter.trim() : '',
     invoiceShowProductName: map.invoiceShowProductName !== 'false',
     invoiceShowProductNameAr: map.invoiceShowProductNameAr !== 'false',
     invoiceShowBarcode: map.invoiceShowBarcode === 'true',
@@ -1766,10 +1822,33 @@ export async function getSettings(): Promise<StoreSettings> {
     invoiceShowTaxDetails: map.invoiceShowTaxDetails !== 'false',
     invoiceShowStoreAddress: map.invoiceShowStoreAddress !== 'false',
     invoiceShowStoreLogo: map.invoiceShowStoreLogo !== 'false',
+    invoiceLogoSizeMm:
+      map.invoiceLogoSizeMm !== undefined && Number.isFinite(Number(map.invoiceLogoSizeMm))
+        ? Number(map.invoiceLogoSizeMm)
+        : undefined,
     invoiceShowReceiptBarcode: map.invoiceShowReceiptBarcode !== 'false',
     invoiceShowFooter: map.invoiceShowFooter !== 'false',
     invoiceShowQrCode: map.invoiceShowQrCode !== 'false',
-    invoiceTemplates: map.invoiceTemplates ? JSON.parse(map.invoiceTemplates) : undefined,
+    invoiceQrCodeSizeMm:
+      map.invoiceQrCodeSizeMm !== undefined && Number.isFinite(Number(map.invoiceQrCodeSizeMm))
+        ? Number(map.invoiceQrCodeSizeMm)
+        : undefined,
+    invoiceMarginsMm: (() => {
+      if (!map.invoiceMarginsMm) return undefined;
+      try { return JSON.parse(map.invoiceMarginsMm); } catch { return undefined; }
+    })(),
+    invoiceTemplates: (() => {
+      if (!map.invoiceTemplates) return undefined;
+      try { return JSON.parse(map.invoiceTemplates); } catch { return undefined; }
+    })(),
+    printDocumentFormats: (() => {
+      if (!map.printDocumentFormats) return undefined;
+      try { return JSON.parse(map.printDocumentFormats); } catch { return undefined; }
+    })(),
+    printDocumentProfiles: (() => {
+      if (!map.printDocumentProfiles) return undefined;
+      try { return JSON.parse(map.printDocumentProfiles); } catch { return undefined; }
+    })(),
     appVersion,
     disabledAppComponents,
     versionComponentPolicies,
@@ -1983,7 +2062,7 @@ export async function listSales(): Promise<Sale[]> {
       paymentMethod: String(row[12]) as PaymentMethod,
       amountTendered: Number(row[13]),
       changeDue: Number(row[14]),
-      status: String(row[15]) === 'VOIDED' ? 'VOIDED' : 'COMPLETED',
+      status: String(row[15]) === 'VOIDED' ? 'VOIDED' : String(row[15]) === 'DRAFT' ? 'DRAFT' : 'COMPLETED',
       kotNumber: getKotNumberFromInvoice(String(row[1])),
       returnStatus:
         returnedQuantity === 0
@@ -2010,12 +2089,14 @@ export interface CreateSaleInput {
   discountValue: number;
   paymentMethod: PaymentMethod;
   amountTendered: number;
+  status?: 'COMPLETED' | 'DRAFT';
   items: Array<{
     productId: number;
     quantity: number;
     unitId?: string;
     unitPrice?: number;
     description?: string;
+    flavor?: string;
   }>;
 }
 
@@ -2025,8 +2106,9 @@ export async function createSale(input: CreateSaleInput): Promise<{
 }> {
   const database = await getDb();
   const settings = await getSettings();
+  const saleStatus: 'COMPLETED' | 'DRAFT' = input.status === 'DRAFT' ? 'DRAFT' : 'COMPLETED';
   const appScreenMode = input.appScreenMode || 'pos';
-  const tracksInventory = appScreenMode !== 'flyerp';
+  const tracksInventory = appScreenMode !== 'flyerp' && saleStatus === 'COMPLETED';
   if (input.taxType !== undefined && input.taxType !== 'inclusive' && input.taxType !== 'exclusive') {
     throw new Error('Invoice tax type must be inclusive or exclusive.');
   }
@@ -2056,7 +2138,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
       throw new Error('Product description must be text.');
     }
     const prodRes = database.exec(
-      `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary
+      `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary, enable_flavors, flavors
        FROM products WHERE id = ?`,
       [reqItem.productId]
     );
@@ -2088,8 +2170,16 @@ export async function createSale(input: CreateSaleInput): Promise<{
         ? Number(reqItem.unitPrice)
         : defaultUnitPrice;
     const lineTotal = Number((unitPrice * reqItem.quantity).toFixed(2));
+    const flavor = typeof reqItem.flavor === 'string' ? reqItem.flavor.trim() : '';
+    const productForSale: Product = flavor
+      ? {
+          ...product,
+          name: `${product.name} (${flavor})`,
+          nameAr: product.nameAr ? `${product.nameAr} (${flavor})` : '',
+        }
+      : product;
     resolvedItems.push({
-      product,
+      product: productForSale,
       quantity: reqItem.quantity,
       unitPrice,
       lineTotal,
@@ -2294,7 +2384,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
       subtotal, discount_type, discount_value, discount_amount,
       tax_rate, tax_type, tax_amount, total, payment_method,
       amount_tendered, change_due, status, app_screen_mode
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       receiptNumber,
       now,
@@ -2313,6 +2403,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
       input.paymentMethod,
       amountTendered,
       changeDue,
+      saleStatus,
       appScreenMode,
     ]
   );
@@ -2376,7 +2467,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
   }
 
   let queuedOfflinePrint = false;
-  if (!settings.printerOnline) {
+  if (!settings.printerOnline && saleStatus === 'COMPLETED') {
     database.run(
       `INSERT INTO print_queue (sale_id, receipt_number, created_at, total, status)
        VALUES (?, ?, ?, ?, 'QUEUED')`,
@@ -2408,7 +2499,7 @@ export async function createSale(input: CreateSaleInput): Promise<{
     paymentMethod: input.paymentMethod,
     amountTendered,
     changeDue,
-    status: 'COMPLETED',
+    status: saleStatus,
     items: saleItems,
   };
 
@@ -2420,6 +2511,10 @@ export async function voidSale(saleId: number): Promise<Sale | null> {
   const sales = await listSales();
   const target = sales.find((s) => s.id === saleId);
   if (!target) return null;
+  const currentSettings = await getSettings();
+  if (currentSettings.enableZatcaEinvoice === true && target.status !== 'DRAFT') {
+    throw new Error('ZATCA E-Invoicing is enabled. Sales invoices cannot be edited.');
+  }
   if (target.status === 'VOIDED') return target;
   if (target.returnStatus) throw new Error('Sales with returns cannot be voided.');
 
@@ -2690,7 +2785,11 @@ export async function updateSalesReturnVoucher(
   if (!input) {
     throw new Error('Invalid refund payment method.');
   }
-  const allowedPaymentMethods = (await getSettings()).paymentMethods || ['Cash', 'Card', 'Split'];
+  const currentSettings = await getSettings();
+  if (currentSettings.enableZatcaEinvoice === true) {
+    throw new Error('ZATCA E-Invoicing is enabled. Sales Return vouchers cannot be edited.');
+  }
+  const allowedPaymentMethods = currentSettings.paymentMethods || ['Cash', 'Card', 'Split'];
   if (!allowedPaymentMethods.includes(input.paymentMethod)) {
     throw new Error('Invalid refund payment method.');
   }
@@ -2866,6 +2965,11 @@ export async function updateSalesReturnVoucher(
 export async function deleteSalesReturnVoucher(voucherId: number): Promise<boolean> {
   if (!Number.isInteger(voucherId) || voucherId <= 0) {
     throw new Error('Invalid return voucher ID.');
+  }
+
+  const currentSettings = await getSettings();
+  if (currentSettings.enableZatcaEinvoice === true) {
+    throw new Error('ZATCA E-Invoicing is enabled. Sales Return vouchers cannot be deleted.');
   }
 
   const database = await getDb();
@@ -3097,29 +3201,53 @@ export async function listCashierShifts(
   };
 }
 
-export async function getCashierShiftReport(
-  shiftId: unknown,
-  cashierUsername: unknown
-): Promise<CashierShiftReport> {
-  if (typeof shiftId !== 'number' || !Number.isInteger(shiftId) || shiftId <= 0) {
-    throw new Error('A valid shift is required.');
+export async function assertCounterShiftOpen(): Promise<void> {
+  const settings = await getSettings();
+  if (settings.enableCounterShift !== true) {
+    return;
   }
-  if (typeof cashierUsername !== 'string' || !cashierUsername.trim()) {
-    throw new Error('Cashier username is required.');
-  }
+  if (settings.enableDailyCounterShift === true) {
+    const openTime = settings.dailyShiftOpenTime || '00:00';
+    const closeTime = settings.dailyShiftCloseTime || '23:59';
+    const closeNextDay = settings.dailyShiftCloseNextDay === true;
+    const [openH, openM] = openTime.split(':').map(Number);
+    const [closeH, closeM] = closeTime.split(':').map(Number);
+    const openMin = (openH || 0) * 60 + (openM || 0);
+    const closeMin = (closeH || 0) * 60 + (closeM || 0);
+    const now = new Date();
+    const nowMin = now.getHours() * 60 + now.getMinutes();
 
+    const isWithinShift = closeNextDay
+      ? nowMin >= openMin || nowMin <= closeMin
+      : nowMin >= openMin && nowMin <= closeMin;
+
+    if (!isWithinShift) {
+      const windowLabel = closeNextDay
+        ? `${openTime} – ${closeTime} (Next Day)`
+        : `${openTime} – ${closeTime}`;
+      throw new Error(
+        `Counter shift is closed right now. Vouchers can only be created within shift hours (${windowLabel}).`
+      );
+    }
+    return;
+  }
   const database = await getDb();
-  const shiftResult = database.exec(
-    `SELECT id, opened_at, closed_at
-     FROM cashier_shifts
-     WHERE id = ? AND lower(cashier_username) = lower(?)`,
-    [shiftId, cashierUsername.trim()]
+  const openShift = database.exec(
+    `SELECT id FROM cashier_shifts WHERE closed_at IS NULL LIMIT 1`
   );
-  const shift = shiftResult[0]?.values[0];
-  if (!shift) throw new Error('Shift not found for this cashier.');
+  if (!openShift[0]?.values?.length) {
+    throw new Error(
+      'Counter shift is closed. Please open the counter shift before creating any vouchers.'
+    );
+  }
+}
 
-  const from = String(shift[1]);
-  const to = shift[2] === null ? new Date().toISOString() : String(shift[2]);
+async function buildShiftReportForRange(
+  shiftId: number,
+  from: string,
+  to: string
+): Promise<CashierShiftReport> {
+  const database = await getDb();
   const range = [from, to];
   const salesResult = database.exec(
     `SELECT payment_method, COUNT(*), COALESCE(SUM(total), 0)
@@ -3220,6 +3348,60 @@ export async function getCashierShiftReport(
       })),
     },
   };
+}
+
+export async function getDailyCounterShiftReport(
+  dateParam?: unknown
+): Promise<CashierShiftReport> {
+  const settings = await getSettings();
+  const openTime = settings.dailyShiftOpenTime || '00:00';
+  const closeTime = settings.dailyShiftCloseTime || '23:59';
+  const closeNextDay = settings.dailyShiftCloseNextDay === true;
+
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const dateStr =
+    typeof dateParam === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateParam.trim())
+      ? dateParam.trim()
+      : todayStr;
+
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const [openHour, openMin] = openTime.split(':').map(Number);
+  const [closeHour, closeMin] = closeTime.split(':').map(Number);
+
+  const fromDate = new Date(year, month - 1, day, openHour || 0, openMin || 0, 0, 0);
+  const toDate = new Date(year, month - 1, day, closeHour || 23, closeMin || 59, 59, 999);
+  if (closeNextDay) {
+    toDate.setDate(toDate.getDate() + 1);
+  }
+
+  return buildShiftReportForRange(0, fromDate.toISOString(), toDate.toISOString());
+}
+
+export async function getCashierShiftReport(
+  shiftId: unknown,
+  cashierUsername: unknown
+): Promise<CashierShiftReport> {
+  if (typeof shiftId !== 'number' || !Number.isInteger(shiftId) || shiftId <= 0) {
+    throw new Error('A valid shift is required.');
+  }
+  if (typeof cashierUsername !== 'string' || !cashierUsername.trim()) {
+    throw new Error('Cashier username is required.');
+  }
+
+  const database = await getDb();
+  const shiftResult = database.exec(
+    `SELECT id, opened_at, closed_at
+     FROM cashier_shifts
+     WHERE id = ? AND lower(cashier_username) = lower(?)`,
+    [shiftId, cashierUsername.trim()]
+  );
+  const shift = shiftResult[0]?.values[0];
+  if (!shift) throw new Error('Shift not found for this cashier.');
+
+  const from = String(shift[1]);
+  const to = shift[2] === null ? new Date().toISOString() : String(shift[2]);
+  return buildShiftReportForRange(shiftId, from, to);
 }
 
 export async function openCashierShift(input: {
@@ -4844,6 +5026,10 @@ export async function deleteSale(saleId: number): Promise<boolean> {
   const sales = await listSales();
   const target = sales.find((s) => s.id === saleId);
   if (!target) return false;
+  const currentSettings = await getSettings();
+  if (currentSettings.enableZatcaEinvoice === true && target.status !== 'DRAFT') {
+    throw new Error('ZATCA E-Invoicing is enabled. Sales vouchers cannot be deleted.');
+  }
   const returnRes = database.exec(
     'SELECT 1 FROM sale_returns WHERE sale_id = ? LIMIT 1',
     [saleId]
@@ -4920,6 +5106,10 @@ export async function updateSale(
   const sales = await listSales();
   const target = sales.find((s) => s.id === saleId);
   if (!target) return null;
+  const currentSettings = await getSettings();
+  if (currentSettings.enableZatcaEinvoice === true && target.status !== 'DRAFT') {
+    throw new Error('ZATCA E-Invoicing is enabled. Sales invoices cannot be edited.');
+  }
   if (target.returnStatus && input.status === 'VOIDED') {
     throw new Error('Sales with returns cannot be voided.');
   }
@@ -5002,9 +5192,10 @@ export async function updateSaleInvoice(
   if (!input.items?.length) throw new Error('Invoice cannot be empty.');
 
   const settings = await getSettings();
+  const nextStatus: 'COMPLETED' | 'DRAFT' = input.status === 'DRAFT' ? 'DRAFT' : 'COMPLETED';
   const appScreenMode = input.appScreenMode ?? target.appScreenMode ?? 'pos';
-  const tracksInventory = appScreenMode !== 'flyerp';
-  const targetTracksInventory = target.appScreenMode !== 'flyerp';
+  const tracksInventory = appScreenMode !== 'flyerp' && nextStatus === 'COMPLETED';
+  const targetTracksInventory = target.appScreenMode !== 'flyerp' && target.status === 'COMPLETED';
   if (input.taxType !== undefined && input.taxType !== 'inclusive' && input.taxType !== 'exclusive') {
     throw new Error('Invoice tax type must be inclusive or exclusive.');
   }
@@ -5067,7 +5258,7 @@ export async function updateSaleInvoice(
     }
 
     const productResult = database.exec(
-      `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary
+      `SELECT id, sku, barcode, name, name_ar, category, cost_price, retail_price, stock, reorder_level, unit, updated_at, tax_rate, brand, image_data, image_path, multi_units, requires_itinerary, enable_flavors, flavors
        FROM products WHERE id = ?`,
       [item.productId]
     );
@@ -5225,7 +5416,7 @@ export async function updateSaleInvoice(
       `UPDATE sales
        SET cashier_name = ?, customer_name = ?, customer_id = ?, subtotal = ?, discount_type = ?, discount_value = ?,
            discount_amount = ?, tax_rate = ?, tax_type = ?, tax_amount = ?, total = ?, payment_method = ?,
-           amount_tendered = ?, change_due = ?, status = 'COMPLETED', app_screen_mode = ?
+           amount_tendered = ?, change_due = ?, status = ?, app_screen_mode = ?
        WHERE id = ?`,
       [
         target.cashierName,
@@ -5242,28 +5433,31 @@ export async function updateSaleInvoice(
         input.paymentMethod,
         amountTendered,
         changeDue,
+        nextStatus,
         appScreenMode,
         saleId,
       ]
     );
 
-    const pendingPrints = database.exec(
-      `SELECT id FROM print_queue WHERE sale_id = ? AND status = 'QUEUED'`,
-      [saleId]
-    );
-    if (pendingPrints[0]?.values.length) {
-      database.run(
-        `UPDATE print_queue SET created_at = ?, total = ? WHERE sale_id = ? AND status = 'QUEUED'`,
-        [now, total, saleId]
+    if (nextStatus === 'COMPLETED') {
+      const pendingPrints = database.exec(
+        `SELECT id FROM print_queue WHERE sale_id = ? AND status = 'QUEUED'`,
+        [saleId]
       );
-      queuedOfflinePrint = true;
-    } else if (!settings.printerOnline) {
-      database.run(
-        `INSERT INTO print_queue (sale_id, receipt_number, created_at, total, status)
-         VALUES (?, ?, ?, ?, 'QUEUED')`,
-        [saleId, target.receiptNumber, now, total]
-      );
-      queuedOfflinePrint = true;
+      if (pendingPrints[0]?.values.length) {
+        database.run(
+          `UPDATE print_queue SET created_at = ?, total = ? WHERE sale_id = ? AND status = 'QUEUED'`,
+          [now, total, saleId]
+        );
+        queuedOfflinePrint = true;
+      } else if (!settings.printerOnline) {
+        database.run(
+          `INSERT INTO print_queue (sale_id, receipt_number, created_at, total, status)
+           VALUES (?, ?, ?, ?, 'QUEUED')`,
+          [saleId, target.receiptNumber, now, total]
+        );
+        queuedOfflinePrint = true;
+      }
     }
     database.run('COMMIT');
   } catch (error) {

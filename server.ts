@@ -7,6 +7,7 @@ import type { Server } from 'http';
 import { fileURLToPath } from 'url';
 import {
   adjustProductStock,
+  assertCounterShiftOpen,
   authenticateUser,
   backupDatabase,
   closeCashierShift,
@@ -39,6 +40,7 @@ import {
   clearDemoAccess,
   getCashbookData,
   getCashierShiftReport,
+  getDailyCounterShiftReport,
   getSettings,
   getRegistrationSystemCode,
   importProducts,
@@ -1477,6 +1479,7 @@ async function startServer(): Promise<Server> {
 
   app.post('/api/cashbook/entries', async (req, res) => {
     try {
+      await assertCounterShiftOpen();
       const entry = await createCashbookEntry(req.body);
       res.status(201).json(entry);
     } catch (err) {
@@ -1496,6 +1499,14 @@ async function startServer(): Promise<Server> {
   app.get('/api/shifts', async (req, res) => {
     try {
       res.json(await listCashierShifts(req.query.cashierUsername));
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  app.get('/api/shifts/daily-report', async (req, res) => {
+    try {
+      res.json(await getDailyCounterShiftReport(req.query.date));
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
     }
@@ -1561,6 +1572,7 @@ async function startServer(): Promise<Server> {
 
   app.post('/api/sales', async (req, res) => {
     try {
+      await assertCounterShiftOpen();
       const result = await createSale(req.body);
       res.status(201).json(result);
     } catch (err) {
@@ -1578,6 +1590,7 @@ async function startServer(): Promise<Server> {
 
   app.post('/api/sales/:id/returns', async (req, res) => {
     try {
+      await assertCounterShiftOpen();
       const result = await createSaleReturn(Number(req.params.id), req.body);
       if (!result) {
         res.status(404).json({ error: 'Sale not found' });
@@ -1591,6 +1604,7 @@ async function startServer(): Promise<Server> {
 
   app.post('/api/sales-returns', async (req, res) => {
     try {
+      await assertCounterShiftOpen();
       const result = await createSalesReturnVoucher(req.body);
       if (!result) {
         res.status(404).json({ error: 'Sales invoices not found' });
@@ -1958,6 +1972,7 @@ async function startServer(): Promise<Server> {
 
   app.post('/api/purchase-returns', async (req, res) => {
     try {
+      await assertCounterShiftOpen();
       const voucher = await createPurchaseReturnVoucher(req.body);
       res.status(201).json(voucher);
     } catch (err) {
@@ -1989,6 +2004,7 @@ async function startServer(): Promise<Server> {
 
   app.post('/api/purchases', async (req, res) => {
     try {
+      await assertCounterShiftOpen();
       const purchase = await createPurchaseEntry(req.body);
       res.status(201).json(purchase);
     } catch (err) {

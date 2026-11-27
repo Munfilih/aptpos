@@ -9,6 +9,7 @@ import type {
 } from '../types/pos';
 import { getInvoiceDateTime } from './dateFilters';
 import { getSaleAppliedPayment, getSaleBalanceDue } from './saleBalances';
+import { getTaxExcludedUnitPrice } from './salesTax';
 import { generateZatcaTlvBase64 } from './zatcaQr';
 
 export interface PrintDataContext {
@@ -36,6 +37,8 @@ function companyData(settings: StoreSettings): Record<string, unknown> {
     currencySymbol: settings.currencySymbol,
     decimalPoints: settings.decimalPoints ?? 2,
     logo: settings.storeLogoDataUrl,
+    receiptFooter: settings.receiptFooter,
+    receiptFooterAr: settings.receiptFooterAr,
   };
 }
 
@@ -86,6 +89,7 @@ export function buildSalesInvoicePrintData(
     voucher: {
       number: sale.receiptNumber,
       date: sale.invoiceDate || sale.createdAt,
+      isDraft: sale.status === 'DRAFT',
       cashierName: sale.cashierName,
       paymentMethod: sale.paymentMethod,
       customerName: sale.customerName,
@@ -123,7 +127,13 @@ export function buildSalesInvoicePrintData(
       description: item.description,
       quantity: item.quantity,
       unit: item.unitName,
-      unitPrice: item.unitPrice,
+      unitPrice: getTaxExcludedUnitPrice(
+        item.unitPrice,
+        item.quantity,
+        sale.taxType ?? settings.taxType,
+        item.taxRate ?? sale.taxRate,
+        item.taxAmount
+      ),
       discount: item.discountAmount ?? 0,
       tax: item.taxAmount ?? 0,
       total: item.lineTotal,

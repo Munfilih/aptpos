@@ -125,3 +125,28 @@ export function getSaleTaxRateLabel(sale: Pick<Sale, 'taxRate' | 'items'>): stri
   )].sort((a, b) => a - b);
   return rates.length > 0 ? `${rates.join(', ')}%` : `${sale.taxRate}%`;
 }
+
+export function getTaxExcludedUnitPrice(
+  unitPrice: number,
+  quantity: number,
+  taxType: TaxType,
+  taxRate?: number,
+  taxAmount?: number
+): number {
+  const safeUnitPrice = Number(unitPrice) || 0;
+  if (taxType !== 'inclusive') return safeUnitPrice;
+  const rate = typeof taxRate === 'number' && Number.isFinite(taxRate)
+    ? Math.min(100, Math.max(0, taxRate))
+    : undefined;
+  if (rate !== undefined && rate > 0) {
+    return safeUnitPrice / (1 + rate / 100);
+  }
+  if (rate === 0) {
+    return safeUnitPrice;
+  }
+  const safeTaxAmount = typeof taxAmount === 'number' && Number.isFinite(taxAmount) ? taxAmount : 0;
+  if (safeTaxAmount > 0) {
+    return Math.max(0, safeUnitPrice - safeTaxAmount / Math.max(1, Number(quantity) || 1));
+  }
+  return safeUnitPrice;
+}

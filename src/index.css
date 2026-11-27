@@ -285,6 +285,25 @@
   --theme-launcher-icon-bg: linear-gradient(145deg, var(--theme-surface), var(--theme-surface-sunken));
 }
 
+[data-theme="light"] .pos-app-shell[data-screen-mode="flyerp"] {
+  --theme-bg: #f0fdf4;
+  --theme-surface-sunken: #e2f5ea;
+  --theme-accent: #047857;
+  --theme-accent-hover: #065f46;
+  --theme-accent-soft: color-mix(in oklch, var(--theme-accent) 10%, var(--theme-surface));
+  --theme-accent-border: color-mix(in oklch, var(--theme-accent) 28%, var(--theme-border));
+  --theme-content-gradient: linear-gradient(160deg, #f5fdf7 0%, #e6f7ec 100%);
+  --color-slate-50: #f0fdf4;
+  background-color: var(--theme-bg);
+}
+
+:is([data-theme="medium"], [data-theme="dark"]) .pos-app-shell[data-screen-mode="flyerp"] {
+  --theme-accent: #10b981;
+  --theme-accent-hover: #059669;
+  --theme-accent-soft: color-mix(in oklch, var(--theme-accent) 14%, var(--theme-surface));
+  --theme-accent-border: color-mix(in oklch, var(--theme-accent) 34%, var(--theme-border));
+}
+
 [data-theme="medium"] {
   color-scheme: light;
 
@@ -611,10 +630,8 @@
 }
 
 /* Print & product surfaces stay crisp white paper regardless of UI theme */
-:is([data-theme="medium"], [data-theme="dark"]) .thermal-receipt-print-area,
 :is([data-theme="medium"], [data-theme="dark"]) .purchase-print-area,
 :is([data-theme="medium"], [data-theme="dark"]) .report-print-area,
-:is([data-theme="medium"], [data-theme="dark"]) .kot-print-area,
 :is([data-theme="medium"], [data-theme="dark"]) .shift-print-page {
   --color-slate-50: oklch(98.4% 0.003 247.858);
   --color-slate-100: oklch(96.8% 0.007 247.896);
@@ -629,9 +646,7 @@
   --color-slate-950: oklch(12.9% 0.042 264.695);
 }
 
-:is([data-theme="medium"], [data-theme="dark"]) .thermal-receipt-print-area .bg-white,
 :is([data-theme="medium"], [data-theme="dark"]) .purchase-print-area .bg-white,
-:is([data-theme="medium"], [data-theme="dark"]) .kot-print-area .bg-white,
 [data-theme="medium"] .report-print-area .bg-white {
   background-color: #ffffff;
 }
@@ -900,15 +915,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-.receipt-print-source {
-  display: none !important;
-}
-
 .shift-print-source {
-  display: none !important;
-}
-
-.kot-print-source {
   display: none !important;
 }
 
@@ -1038,20 +1045,6 @@
     visibility: hidden !important;
   }
 
-  .thermal-receipt-print-area,
-  .thermal-receipt-print-area * {
-    visibility: visible !important;
-  }
-
-  body.receipt-printing * {
-    visibility: hidden !important;
-  }
-
-  body.receipt-printing .thermal-receipt-print-area,
-  body.receipt-printing .thermal-receipt-print-area * {
-    visibility: visible !important;
-  }
-
   body.shift-printing * {
     visibility: hidden !important;
   }
@@ -1064,55 +1057,6 @@
   .report-print-area,
   .report-print-area * {
     visibility: visible !important;
-  }
-
-  body.kot-printing * {
-    visibility: hidden !important;
-  }
-
-  .kot-print-source {
-    display: block !important;
-    position: absolute !important;
-    top: 0 !important;
-    left: 0 !important;
-    width: 100% !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    z-index: 99999 !important;
-  }
-
-  body.kot-printing .kot-print-area,
-  body.kot-printing .kot-print-area * {
-    visibility: visible !important;
-  }
-
-  body.kot-printing .kot-print-area {
-    position: static !important;
-    width: var(--kot-paper-width, 80mm) !important;
-    max-width: var(--kot-paper-width, 80mm) !important;
-    height: auto !important;
-    min-height: 0 !important;
-    margin: 0 !important;
-    padding:
-      var(--kot-margin-top, 0mm)
-      var(--kot-margin-right, 2mm)
-      var(--kot-margin-bottom, 2mm)
-      var(--kot-margin-left, 2mm) !important;
-    box-sizing: border-box !important;
-    transform: none !important;
-    background: #ffffff !important;
-    color: #000000 !important;
-    box-shadow: none !important;
-    border: none !important;
-    -webkit-print-color-adjust: exact !important;
-    print-color-adjust: exact !important;
-  }
-
-  body.kot-printing .kot-print-area.paper-a4 {
-    page: invoice-a4;
-    position: static !important;
-    inset: auto !important;
-    min-height: 297mm !important;
   }
 
   .report-print-area {
@@ -1249,124 +1193,6 @@
       var(--invoice-margin-right, 5mm)
       var(--invoice-margin-bottom, 5mm)
       var(--invoice-margin-left, 5mm) !important;
-  }
-
-  .pos-app-shell.invoice-print-open {
-    display: block !important;
-    width: auto !important;
-    height: auto !important;
-    max-height: none !important;
-    overflow: visible !important;
-    background: transparent !important;
-  }
-
-  .pos-app-shell.invoice-print-open > :not(.invoice-print-modal) {
-    display: none !important;
-  }
-
-  .invoice-print-modal {
-    position: static !important;
-    display: block !important;
-    width: auto !important;
-    height: auto !important;
-    padding: 0 !important;
-    background: transparent !important;
-    overflow: visible !important;
-  }
-
-  .invoice-print-dialog {
-    display: block !important;
-    width: auto !important;
-    max-width: none !important;
-    max-height: none !important;
-    overflow: visible !important;
-    border: 0 !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
-  }
-
-  /* Thermal roll format defaults (80mm) */
-  .thermal-receipt-print-area {
-    position: static !important;
-    width: 80mm !important;
-    max-width: 80mm !important;
-    height: auto !important;
-    min-height: 0 !important;
-    max-height: none !important;
-    margin: 0 !important;
-    box-sizing: border-box !important;
-    padding:
-      var(--invoice-margin-top, 0mm)
-      var(--invoice-margin-right, 2mm)
-      var(--invoice-margin-bottom, 2mm)
-      var(--invoice-margin-left, 2mm) !important;
-    transform: none !important;
-    overflow: visible !important;
-    background: #ffffff !important;
-    color: #000000 !important;
-    box-shadow: none !important;
-    border: none !important;
-    -webkit-print-color-adjust: exact !important;
-    print-color-adjust: exact !important;
-  }
-
-  .thermal-receipt-print-area.paper-58mm {
-    width: 58mm !important;
-    max-width: 58mm !important;
-    padding:
-      var(--invoice-margin-top, 0mm)
-      var(--invoice-margin-right, 1mm)
-      var(--invoice-margin-bottom, 2mm)
-      var(--invoice-margin-left, 1mm) !important;
-  }
-
-  /* A4 pages flow separately so every item is paginated without clipping. */
-  .thermal-receipt-print-area.paper-a4 {
-    position: static !important;
-    display: block !important;
-    width: 210mm !important;
-    max-width: none !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    background: #ffffff !important;
-    color: #000000 !important;
-    box-shadow: none !important;
-    border: none !important;
-    -webkit-print-color-adjust: exact !important;
-    print-color-adjust: exact !important;
-  }
-
-  .a4-invoice-page {
-    page: invoice-a4;
-    box-sizing: border-box !important;
-    display: flex !important;
-    flex-direction: column !important;
-    gap: 3mm !important;
-    width: 210mm !important;
-    height: 297mm !important;
-    padding:
-      var(--invoice-margin-top, 5mm)
-      var(--invoice-margin-right, 5mm)
-      var(--invoice-margin-bottom, 5mm)
-      var(--invoice-margin-left, 5mm) !important;
-    background: #ffffff !important;
-    color: #000000 !important;
-    break-after: auto;
-    page-break-after: auto;
-  }
-
-  .a4-invoice-page + .a4-invoice-page {
-    break-before: page;
-    page-break-before: always;
-  }
-
-  .a4-invoice-page thead {
-    display: table-header-group;
-  }
-
-  .a4-invoice-page tr {
-    break-inside: avoid;
-    page-break-inside: avoid;
   }
 
   .no-print {
@@ -1610,4 +1436,9 @@
     inset-inline-end: 0.75rem;
     bottom: 0.75rem;
   }
+}
+
+/* Crisp, reduced corner roundness across all buttons */
+button:not(.rounded-none):not([role="switch"]) {
+  border-radius: 5px !important;
 }

@@ -478,7 +478,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({
             <div className="relative mb-6">
               <div className="login-logo-badge flex h-20 w-20 items-center justify-center rounded-2xl">
                 {appScreenMode === 'flyerp'
-                  ? <Plane className="h-10 w-10 text-amber-100" />
+                  ? <Plane className="h-10 w-10 text-emerald-100" />
                   : <ShoppingBag className="h-10 w-10 text-violet-100" />}
               </div>
               <div className="absolute -top-1.5 -right-1.5 flex h-7 w-7 items-center justify-center rounded-full border border-fuchsia-300/30 bg-violet-500/20">
@@ -488,7 +488,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({
 
             {/* POS Name */}
             <h1 className="font-display text-4xl sm:text-5xl font-black tracking-tight text-white mb-2">
-              apt<span className={appScreenMode === 'erp' ? 'text-violet-300' : appScreenMode === 'flyerp' ? 'text-amber-300' : 'text-blue-400'}>{appNameSuffix}</span>
+              apt<span className={appScreenMode === 'erp' ? 'text-violet-300' : appScreenMode === 'flyerp' ? 'text-emerald-300' : 'text-blue-400'}>{appNameSuffix}</span>
             </h1>
             <p className="text-sm sm:text-base font-medium text-slate-400 max-w-xs">
               {appScreenMode === 'flyerp'

@@ -53,6 +53,8 @@ export interface PrintDocumentData {
   totals: PrintDocumentField[];
   pendingBalance?: string;
   multiLanguage?: boolean;
+  enableEnglish?: boolean;
+  enableArabic?: boolean;
   compactPartyDetails?: boolean;
   footer?: string;
   qrDataUrl?: string;

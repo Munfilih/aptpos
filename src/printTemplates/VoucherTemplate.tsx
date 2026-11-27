@@ -212,23 +212,29 @@ export function toVoucherDocumentData(
   options: {
     includeArabicCompanyName?: boolean;
     includePartyDetails?: boolean;
+    isFlyErp?: boolean;
     pendingBalance?: number;
   } = {}
 ): PrintDocumentData {
   const {
     includeArabicCompanyName = false,
     includePartyDetails = false,
+    isFlyErp = false,
     pendingBalance = 0,
   } = options;
   const documentTitle = DOCUMENT_TITLES[documentType] || 'Voucher';
+  const isDraft = Boolean(context.voucher.isDraft);
   const customerVatNumber = asText(context.party.vatNumber).trim();
-  const salesInvoiceTitle = customerVatNumber.length > 0
-    ? 'Sales Tax Invoice / فاتورة ضريبية للمبيعات'
-    : 'Simplified Tax Invoice / فاتورة ضريبية مبسطة';
+  const salesInvoiceTitle = isDraft
+    ? localizeLabel('Sales Draft', 'مسودة مبيعات', isRtl, multiLanguage)
+    : customerVatNumber.length > 0
+      ? localizeLabel('Sales Tax Invoice', 'فاتورة ضريبية للمبيعات', isRtl, multiLanguage)
+      : localizeLabel('Simplified Tax Invoice', 'فاتورة ضريبية مبسطة', isRtl, multiLanguage);
   const voucherFields = Object.entries(context.voucher)
     .filter(([key, value]) =>
       key !== 'number' &&
       key !== 'date' &&
+      key !== 'isDraft' &&
       key !== 'customer' &&
       key !== 'vendor' &&
       key !== 'eInvoiceQrCodePhase1' &&
@@ -279,7 +285,7 @@ export function toVoucherDocumentData(
       })
     : [];
 
-  const isFlyErpInvoice = includePartyDetails && documentType === 'sales-invoice';
+  const isFlyErpInvoice = Boolean(isFlyErp) && documentType === 'sales-invoice';
   const parsedServiceDetails = isFlyErpInvoice
     ? context.items.map((item) => parseFlyErpServiceDetails(asText(item.description)))
     : [];
@@ -356,7 +362,7 @@ export function toVoucherDocumentData(
     : undefined;
   return {
     documentType,
-    title: includePartyDetails && documentType === 'sales-invoice'
+    title: documentType === 'sales-invoice'
       ? salesInvoiceTitle
       : localizeLabel(documentTitle, DOCUMENT_TITLES_AR[documentType], isRtl, multiLanguage),
     number: asText(context.voucher.number),
@@ -387,14 +393,20 @@ export function toVoucherDocumentData(
     totals,
     pendingBalance: formattedPendingBalance,
     multiLanguage,
-    footer: documentType === 'sales-invoice'
-      ? undefined
-      : localizeLabel(
-          'Thank you for your business',
-          'شكراً لتعاملكم معنا',
-          isRtl,
-          multiLanguage
-        ),
+    footer: (() => {
+      const enFooter = asText(context.company.receiptFooter);
+      const arFooter = asText(context.company.receiptFooterAr);
+      if (enFooter || arFooter) {
+        if (multiLanguage && enFooter && arFooter) return `${enFooter} · ${arFooter}`;
+        return isRtl ? (arFooter || enFooter) : (enFooter || arFooter);
+      }
+      return localizeLabel(
+        'Thank you for your business',
+        'شكراً لتعاملكم معنا',
+        isRtl,
+        multiLanguage
+      );
+    })(),
     qrDataUrl,
     direction: isRtl && !multiLanguage ? 'rtl' : 'ltr',
   };

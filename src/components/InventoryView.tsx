@@ -134,7 +134,7 @@ const EMPTY_FORM: ProductFormState = {
   unit: 'ea',
 };
 
-type ProductFormTab = 'general' | 'advanced' | 'history' | 'settings';
+type ProductFormTab = 'general' | 'advanced' | 'flavors' | 'history' | 'settings';
 type ProductHistoryFilter = 'all' | 'purchases' | 'purchaseReturns' | 'sales' | 'salesReturns';
 
 interface ProductHistoryRow {
@@ -385,6 +385,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const [deleteProductError, setDeleteProductError] = useState<string | null>(null);
   const [deletingProduct, setDeletingProduct] = useState(false);
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM);
+  const [enableFlavors, setEnableFlavors] = useState(false);
+  const [flavorList, setFlavorList] = useState<string[]>([]);
+  const [flavorInput, setFlavorInput] = useState('');
   const [productLookupCode, setProductLookupCode] = useState('');
   const [productLookupMessage, setProductLookupMessage] = useState<{
     type: 'error' | 'status';
@@ -890,6 +893,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     setProductLookupMessage(null);
     setMultiUnitDrafts([]);
     setAdditionalBarcodeDrafts([]);
+    setEnableFlavors(false);
+    setFlavorList([]);
+    setFlavorInput('');
     setProductImagePath('');
     setProductImageData('');
     setFormError(null);
@@ -949,6 +955,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     });
     setProductImagePath(product.imagePath || '');
     setProductImageData(product.imageData || '');
+    setEnableFlavors(product.enableFlavors === true);
+    setFlavorList(product.flavors || []);
+    setFlavorInput('');
     setFormError(null);
     setFormSuccess(null);
     setModalOpen(true);
@@ -1000,6 +1009,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     setEditingProduct(null);
     setMultiUnitDrafts([]);
     setAdditionalBarcodeDrafts([]);
+    setEnableFlavors(false);
+    setFlavorList([]);
+    setFlavorInput('');
     setForm({
       ...EMPTY_FORM,
       sku: nextSku,
@@ -1183,6 +1195,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           ? Math.min(100, Math.max(0, enteredTaxRate))
           : 15,
         requiresItinerary: isServiceInventory && form.requiresItinerary,
+        enableFlavors: !isServiceInventory && enableFlavors,
+        flavors: !isServiceInventory && enableFlavors ? flavorList : [],
         ...(editingProduct ? {} : { stock: Math.max(0, parseInt(form.stock, 10) || 0) }),
         reorderLevel: Math.max(0, parseInt(form.reorderLevel, 10) || 0),
         unit: form.unit.trim() || defaultUnit,
@@ -2617,6 +2631,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   ...(!isServiceInventory
                     ? [{ id: 'advanced' as const, label: isRtl ? 'متقدم' : 'Advanced' }]
                     : []),
+                  ...(!isServiceInventory && enableFlavors
+                    ? [{ id: 'flavors' as const, label: isRtl ? `النكهات (${flavorList.length})` : `Flavors (${flavorList.length})` }]
+                    : []),
                   { id: 'history', label: isRtl ? 'السجل' : 'History' },
                   ...(!isServiceInventory
                     ? [{ id: 'settings' as const, label: isRtl ? 'الإعدادات' : 'Settings' }]
@@ -3052,6 +3069,99 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                       </div>
                     )}
                   </div>
+
+                  <div className="mt-3 flex items-center justify-between gap-3 border-t border-slate-100 pt-3">
+                    <div>
+                      <span className="block text-xs font-semibold text-slate-800">
+                        {isRtl ? 'تفعيل النكهات' : 'Enable Flavors'}
+                      </span>
+                      <span className="mt-0.5 block text-[10px] text-slate-500">
+                        {isRtl
+                          ? 'إظهار تبويب النكهات لإضافة نكهات لهذا المنتج والاختيار منها عند البيع.'
+                          : 'Show a Flavors tab to add flavor choices and prompt for flavor when adding to cart.'}
+                      </span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      aria-label={isRtl ? 'تفعيل النكهات' : 'Enable Flavors'}
+                      checked={enableFlavors}
+                      onChange={(e) => setEnableFlavors(e.target.checked)}
+                      className="h-4 w-4 accent-emerald-700"
+                    />
+                  </div>
+                </section>
+              )}
+
+              {activeProductTab === 'flavors' && !isServiceInventory && enableFlavors && (
+                <section className="rounded-lg border border-slate-200 bg-white p-3 space-y-3">
+                  <div>
+                    <h3 className="font-semibold text-slate-800">
+                      {isRtl ? 'نكهات المنتج' : 'Product Flavors'}
+                    </h3>
+                    <p className="mt-0.5 text-[10px] text-slate-500">
+                      {isRtl
+                        ? 'أضف النكهات المتاحة لهذا المنتج. سيُطلب اختيار النكهة عند إضافته للفاتورة.'
+                        : 'Add available flavors for this product. Cashiers will be prompted to pick a flavor when adding to cart.'}
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={flavorInput}
+                      onChange={(e) => setFlavorInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          const trimmed = flavorInput.trim();
+                          if (trimmed && !flavorList.some((f) => f.toLowerCase() === trimmed.toLowerCase())) {
+                            setFlavorList((prev) => [...prev, trimmed]);
+                          }
+                          setFlavorInput('');
+                        }
+                      }}
+                      placeholder={isRtl ? 'مثال: شوكولاتة، فانيليا، حار...' : 'e.g., Chocolate, Vanilla, Spicy...'}
+                      className="flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-blue-700 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const trimmed = flavorInput.trim();
+                        if (trimmed && !flavorList.some((f) => f.toLowerCase() === trimmed.toLowerCase())) {
+                          setFlavorList((prev) => [...prev, trimmed]);
+                        }
+                        setFlavorInput('');
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      <span>{isRtl ? 'إضافة' : 'Add'}</span>
+                    </button>
+                  </div>
+                  {flavorList.length === 0 ? (
+                    <p className="rounded-lg border border-dashed border-slate-200 py-4 text-center text-[11px] text-slate-400">
+                      {isRtl ? 'لم يتم إضافة نكهات بعد.' : 'No flavors added yet.'}
+                    </p>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {flavorList.map((flavor) => (
+                        <span
+                          key={flavor}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-900"
+                        >
+                          <span>{flavor}</span>
+                          <button
+                            type="button"
+                            onClick={() => setFlavorList((prev) => prev.filter((item) => item !== flavor))}
+                            className="rounded p-0.5 text-emerald-700 hover:bg-emerald-200/70"
+                            aria-label={`Remove ${flavor}`}
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </section>
               )}
 

@@ -9,6 +9,7 @@ export type SettingsSectionId =
   | 'general'
   | 'business'
   | 'billing'
+  | 'zatca'
   | 'print'
   | 'customers'
   | 'payment'
@@ -188,6 +189,8 @@ export interface Product {
   imageData?: string;
   imagePath?: string;
   requiresItinerary?: boolean;
+  enableFlavors?: boolean;
+  flavors?: string[];
   stock: number;
   reorderLevel: number;
   unit: string;
@@ -205,6 +208,7 @@ export interface CartItem {
   unitsPerBase?: number;
   lineId?: string;
   scannedBarcode?: string;
+  flavor?: string;
 }
 
 export type PaymentMethod = 'Cash' | 'Card' | 'Split' | (string & {});
@@ -250,7 +254,7 @@ export interface Sale {
   paymentMethod: PaymentMethod;
   amountTendered: number;
   changeDue: number;
-  status: 'COMPLETED' | 'VOIDED';
+  status: 'COMPLETED' | 'VOIDED' | 'DRAFT';
   returnStatus?: 'PARTIAL' | 'FULL';
   returnedTotal?: number;
   returnedTaxAmount?: number;
@@ -453,10 +457,12 @@ export interface CreateCashbookEntryInput {
   createdBy: string;
 }
 
-export type PaperWidth = '80mm' | '58mm' | 'A4';
+export type PaperWidth = '80mm' | '58mm' | 'A4' | 'A5' | 'Custom';
 
 export type PrintDocumentType =
   | 'sales-invoice'
+  | 'cash-receipt'
+  | 'bank-receipt'
   | 'sales-return'
   | 'purchase-invoice'
   | 'purchase-return'
@@ -469,6 +475,15 @@ export interface PrintDocumentProfile {
   templateId: string;
   printerName?: string;
   printerMode?: 'system-default' | 'saved-printer' | 'choose-at-print-time';
+  marginsMm?: Partial<InvoiceMarginsMm>;
+  customWidthMm?: number;
+  customHeightMm?: number;
+  enableLogo?: boolean;
+  logoDataUrl?: string;
+  enableEnglish?: boolean;
+  enableArabic?: boolean;
+  footer?: string;
+  footerAr?: string;
 }
 
 export interface InvoiceMarginsMm {
@@ -553,6 +568,15 @@ export interface StoreSettings {
   paymentMethods?: string[];
   kotPrinter?: string;
   enableKot?: boolean;
+  enableCashReceipt?: boolean;
+  posDefaultSearchField?: 'barcode' | 'name' | 'sku' | 'all';
+  enableCounterShift?: boolean;
+  enableDailyCounterShift?: boolean;
+  dailyShiftOpenTime?: string;
+  dailyShiftCloseTime?: string;
+  dailyShiftCloseNextDay?: boolean;
+  zatcaPhase?: '1' | '2';
+  enableZatcaEinvoice?: boolean;
 
   // Application language
   appLanguage?: 'en' | 'ar';

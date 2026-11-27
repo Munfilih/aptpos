@@ -64,6 +64,8 @@ interface TopBarProps {
   launcherBackgroundDataUrl?: string;
   openLauncherOnMount?: boolean;
   onLauncherOpened?: () => void;
+  sideNavOpen?: boolean;
+  onToggleSideNav?: () => void;
   purchaseVoucherNumber?: string;
   purchaseVendor?: {
     name: string;
@@ -145,6 +147,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   launcherBackgroundDataUrl,
   openLauncherOnMount = false,
   onLauncherOpened,
+  sideNavOpen = true,
+  onToggleSideNav,
   purchaseVoucherNumber,
   purchaseVendor,
 }) => {
@@ -153,6 +157,7 @@ export const TopBar: React.FC<TopBarProps> = ({
     general: language === 'ar' ? 'عام' : 'General',
     business: language === 'ar' ? 'الأعمال' : 'Business',
     billing: language === 'ar' ? 'الفوترة' : 'Billing',
+    zatca: language === 'ar' ? 'الفوترة الإلكترونية' : 'E-Invoicing',
     print: language === 'ar' ? 'الطباعة' : 'Print',
     customers: language === 'ar' ? 'العملاء' : 'Customers',
     payment: language === 'ar' ? 'الدفع' : 'Payment',
@@ -250,11 +255,15 @@ export const TopBar: React.FC<TopBarProps> = ({
     return null;
   })();
 
+  const isFlyErpMode = appScreenMode === 'flyerp';
+
   useEffect(() => {
     if (!openLauncherOnMount) return;
-    setShowLauncher(true);
+    if (!isFlyErpMode) {
+      setShowLauncher(true);
+    }
     onLauncherOpened?.();
-  }, [openLauncherOnMount, onLauncherOpened]);
+  }, [isFlyErpMode, openLauncherOnMount, onLauncherOpened]);
 
   const navItems: TopNavItem[] = [
     ...(appScreenMode === 'erp' || appScreenMode === 'flyerp'
@@ -556,6 +565,10 @@ export const TopBar: React.FC<TopBarProps> = ({
           <button
             type="button"
             onClick={() => {
+              if (isFlyErpMode) {
+                onToggleSideNav?.();
+                return;
+              }
               if (showLauncher) {
                 closeLauncher();
               } else {
@@ -565,8 +578,12 @@ export const TopBar: React.FC<TopBarProps> = ({
               }
             }}
             className="p-1.5 -ml-1 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg"
-            aria-label={language === 'ar' ? 'فتح مشغل التطبيقات' : 'Open app launcher'}
-            aria-expanded={showLauncher}
+            aria-label={
+              isFlyErpMode
+                ? (language === 'ar' ? 'تبديل قائمة التنقل' : 'Toggle navigation panel')
+                : (language === 'ar' ? 'فتح مشغل التطبيقات' : 'Open app launcher')
+            }
+            aria-expanded={isFlyErpMode ? sideNavOpen : showLauncher}
           >
             <Menu className="w-5 h-5" />
           </button>
@@ -581,7 +598,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             }}
             className="font-display text-base sm:text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 rounded flex items-center gap-1.5"
           >
-            <span>apt<span className={appName === 'aptERP' ? 'text-violet-700' : appName === 'aptFlyERP' ? 'text-amber-700' : 'text-blue-700'}>{appName.slice(3)}</span></span>
+            <span>apt<span className={appName === 'aptERP' ? 'text-violet-700' : appName === 'aptFlyERP' ? 'text-emerald-700' : 'text-blue-700'}>{appName.slice(3)}</span></span>
           </button>
           {activePageLabel && (
             <span className="border-l border-slate-200 pl-2 text-xs font-medium text-slate-600 sm:pl-3">
@@ -626,7 +643,11 @@ export const TopBar: React.FC<TopBarProps> = ({
           >
             {currentUser.demoMode && (
               <span
-                className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-800"
+                className={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-bold ${
+                  isFlyErpMode
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                    : 'border-amber-200 bg-amber-50 text-amber-800'
+                }`}
                 aria-label={
                   demoSecondsRemaining === null
                     ? (language === 'ar' ? 'وضع تجريبي' : 'Demo Mode')
@@ -674,7 +695,7 @@ export const TopBar: React.FC<TopBarProps> = ({
 
       </header>
 
-      {showLauncher && (
+      {!isFlyErpMode && showLauncher && (
         <div
           className="app-launcher-backdrop fixed inset-x-0 bottom-0 top-14 z-[60] flex items-start justify-center bg-white p-2 backdrop-blur-md"
           onClick={(event) => {

@@ -9,23 +9,25 @@ export const MINIMUM_INVOICE_MARGIN_MM: Record<PaperWidth, number> = {
   '80mm': 2,
   '58mm': 1,
   A4: 5,
+  A5: 5,
+  Custom: 5,
 };
 
 export function resolveInvoiceMarginsMm(
   format: PaperWidth,
   configured?: Partial<InvoiceMarginsMm>
 ): InvoiceMarginsMm {
-  const minimum = MINIMUM_INVOICE_MARGIN_MM[format];
-  const resolveMargin = (value: number | undefined, marginMinimum = minimum) =>
+  const defaultMargin = MINIMUM_INVOICE_MARGIN_MM[format];
+  const resolveMargin = (value: number | undefined, fallback = defaultMargin) =>
     typeof value === 'number' && Number.isFinite(value)
-      ? Math.min(20, Math.max(marginMinimum, value))
-      : marginMinimum;
+      ? Math.min(100, Math.max(0, value))
+      : fallback;
 
   return {
-    top: resolveMargin(configured?.top, 0),
-    right: resolveMargin(configured?.right, minimum),
-    bottom: resolveMargin(configured?.bottom, minimum),
-    left: resolveMargin(configured?.left, minimum),
+    top: resolveMargin(configured?.top, defaultMargin),
+    right: resolveMargin(configured?.right, defaultMargin),
+    bottom: resolveMargin(configured?.bottom, defaultMargin),
+    left: resolveMargin(configured?.left, defaultMargin),
   };
 }
 

@@ -324,7 +324,7 @@ export const LedgerView: React.FC<LedgerViewProps> = ({
         'ledger-statement',
         settings.paperWidth === 'A4' ? 'A4' : '80mm'
       );
-      const template = resolvePrintTemplate('ledger-statement', format);
+      const template = resolvePrintTemplate('ledger-statement', format, settings.printDocumentProfiles?.['ledger-statement']?.[format]?.templateId);
       let data: PrintDocumentData;
 
       if (selectedAccount) {

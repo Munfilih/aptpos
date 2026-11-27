@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { X } from 'lucide-react';
+import { Languages, Loader2, X } from 'lucide-react';
 import type { Customer } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
+import { translateEnglishToArabic } from '../utils/arabicTranslate';
 
 interface CustomerFormState {
   name: string;
@@ -87,6 +88,7 @@ export const CustomerFormModal: React.FC<CustomerFormModalProps> = ({
   const [form, setForm] = useState<CustomerFormState>(() => getCustomerForm(customer));
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [translatingAr, setTranslatingAr] = useState(false);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -182,9 +184,31 @@ export const CustomerFormModal: React.FC<CustomerFormModalProps> = ({
               />
             </div>
             <div>
-              <label className="mb-1 block font-medium text-slate-700">
-                {isRtl ? 'اسم العميل (عربي)' : 'Customer Name (Arabic)'}
-              </label>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <label className="block font-medium text-slate-700">
+                  {isRtl ? 'اسم العميل (عربي)' : 'Customer Name (Arabic)'}
+                </label>
+                <button
+                  type="button"
+                  disabled={translatingAr || !form.name.trim()}
+                  onClick={async () => {
+                    setTranslatingAr(true);
+                    setFormError(null);
+                    try {
+                      const translated = await translateEnglishToArabic(form.name);
+                      setForm((prev) => ({ ...prev, nameAr: translated }));
+                    } catch (err) {
+                      setFormError(err instanceof Error ? err.message : 'Arabic translation failed.');
+                    } finally {
+                      setTranslatingAr(false);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-45"
+                >
+                  {translatingAr ? <Loader2 className="h-3 w-3 animate-spin" /> : <Languages className="h-3 w-3" />}
+                  <span>{isRtl ? 'ترجمة' : 'Translate'}</span>
+                </button>
+              </div>
               <input
                 type="text"
                 dir="rtl"

@@ -77,6 +77,7 @@ interface RegisterState {
 interface RegisterViewProps {
   products: Product[];
   customers?: Customer[];
+  sales?: Sale[];
   settings: StoreSettings;
   rposTicketWidth: number;
   onRposTicketWidthChange: (width: number) => void;
@@ -286,6 +287,7 @@ function playErrorBeep() {
 export const RegisterView: React.FC<RegisterViewProps> = ({
   products,
   customers = [],
+  sales = [],
   settings,
   rposTicketWidth,
   onRposTicketWidthChange,
@@ -327,12 +329,20 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   };
   const [mobileTab, setMobileTab] = useState<'table' | 'checkout'>('table');
   const [barcodeInput, setBarcodeInput] = useState('');
+  const [posSearchHighlightIndex, setPosSearchHighlightIndex] = useState(0);
+  const [flavorPickerRequest, setFlavorPickerRequest] = useState<{
+    product: Product;
+    unitId?: string;
+    scannedBarcode?: string;
+  } | null>(null);
   const [isCatalogOpen, setIsCatalogOpen] = useState(false);
   const [isBrowsingCategories, setIsBrowsingCategories] = useState(false);
   const [catalogSearch, setCatalogSearch] = useState('');
   const [catalogView, setCatalogView] = useState<'grid' | 'list'>('grid');
   const [highlightedCatalogProductId, setHighlightedCatalogProductId] = useState<number | null>(null);
-  const [catalogSort, setCatalogSort] = useState<'featured' | 'name' | 'price-low' | 'price-high'>('featured');
+  const [catalogSort, setCatalogSort] = useState<'frequent' | 'featured' | 'name' | 'price-low' | 'price-high'>(
+    () => (settings.posScreenLayout === 'rpos' ? 'frequent' : 'featured')
+  );
   const [catalogCategory, setCatalogCategory] = useState<string>('All');
   const [rposCategories, setRposCategories] = useState<Array<{ value: string; imageData: string }>>([]);
   const [rposCategoriesLoaded, setRposCategoriesLoaded] = useState(false);
@@ -668,7 +678,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   };
 
   const kotFormat: PaperWidth = getPrintDocumentFormat(settings, 'kot', settings.paperWidth || '80mm');
-  const kotTemplate = resolvePrintTemplate('kot', kotFormat);
+  const kotTemplate = resolvePrintTemplate('kot', kotFormat, settings.printDocumentProfiles?.kot?.[kotFormat]?.templateId);
   const getKotPrintData = (kotNumber: string): PrintDocumentData => ({
     documentType: 'kot',
     title: isRtl ? 'طلب المطبخ' : 'Kitchen Order',
@@ -676,10 +686,16 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     date: new Date().toLocaleString(isRtl ? 'ar-SA' : 'en-GB'),
     companyName: '',
     companyLogo: settings.storeLogoDataUrl,
-    fields: [{
-      label: isRtl ? 'العميل' : 'Customer',
-      value: customerName || defaultCustomerName,
-    }],
+    fields: [
+      {
+        label: isRtl ? 'العميل' : 'Customer',
+        value: customerName || defaultCustomerName,
+      },
+      {
+        label: isRtl ? 'الكاشير' : 'Cashier',
+        value: settings.cashierName || 'Cashier',
+      },
+    ],
     columns: [isRtl ? 'الصنف' : 'Item', isRtl ? 'الكمية' : 'Qty'],
     numericColumns: [1],
     rows: cart.map((item) => {
@@ -1223,20 +1239,28 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   };
 
   // Add a product in its scanned or selected unit while reserving base-unit stock.
-  const addToCart = (product: Product, unitId?: string, scannedBarcode?: string) => {
+  const addToCart = (product: Product, unitId?: string, scannedBarcode?: string, chosenFlavor?: string) => {
     setFeedback(null);
+    if (!chosenFlavor && product.enableFlavors && product.flavors && product.flavors.length > 0) {
+      setFlavorPickerRequest({ product, unitId, scannedBarcode });
+      return;
+    }
     const unit = getUnitDetails(product, unitId);
     if (unitId && !unit.unitId) {
       setFeedback({ type: 'error', text: `The selected unit is not available for ${product.name}.` });
       return;
     }
     const isZeroPriced = unit.unitPrice <= 0;
-    const unitLinePrefix = `${product.id}:${unit.unitId || 'base'}`;
+    const flavorSuffix = chosenFlavor ? `:flavor:${chosenFlavor}` : '';
+    const unitLinePrefix = `${product.id}:${unit.unitId || 'base'}${flavorSuffix}`;
     const lineId = isZeroPriced ? `${unitLinePrefix}:${crypto.randomUUID()}` : unitLinePrefix;
     const existing = isZeroPriced
       ? undefined
       : cart.find(
-          (item) => item.product.id === product.id && (item.unitId || '') === (unit.unitId || '')
+          (item) =>
+            item.product.id === product.id &&
+            (item.unitId || '') === (unit.unitId || '') &&
+            (item.flavor || '') === (chosenFlavor || '')
         );
     const availableBaseUnits = getAvailableBaseUnits(product.id);
     if (!settings.allowNegativeStock && availableBaseUnits < unit.unitsPerBase) {
@@ -1254,6 +1278,10 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       (isZeroPriced ? unit.unitPrice : originalItem?.unitPrice ?? unit.unitPrice);
     const productForCart: Product = {
       ...product,
+      name: chosenFlavor ? `${product.name} (${chosenFlavor})` : product.name,
+      nameAr: product.nameAr
+        ? (chosenFlavor ? `${product.nameAr} (${chosenFlavor})` : product.nameAr)
+        : product.nameAr,
       stock: product.stock + getOriginalBaseUnits(product.id),
       unit: unit.unitName,
       retailPrice: itemUnitPrice,
@@ -1266,6 +1294,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       unitsPerBase: unit.unitsPerBase,
       lineId,
       scannedBarcode,
+      flavor: chosenFlavor,
     };
     if (settings.barcodeScanBeep) playScannerBeep();
     if (isZeroPriced) {
@@ -1276,7 +1305,10 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 
     setCart((prev) => {
       const sameUnit = prev.find(
-        (item) => item.product.id === product.id && (item.unitId || '') === (unit.unitId || '')
+        (item) =>
+          item.product.id === product.id &&
+          (item.unitId || '') === (unit.unitId || '') &&
+          (item.flavor || '') === (chosenFlavor || '')
       );
       if (sameUnit) {
         return [
@@ -1570,6 +1602,57 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
     return bMap;
   }, [products]);
 
+  const posSearchMode = settings.posDefaultSearchField || 'barcode';
+
+  const posSearchMatches = useMemo(() => {
+    if (posSearchMode === 'barcode') return [];
+    const raw = barcodeInput.trim();
+    if (!raw) return [];
+    const tokens = normalizeCatalogSearch(raw).split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return [];
+
+    return products
+      .filter((product) => {
+        if (posSearchMode === 'name') {
+          const haystack = normalizeCatalogSearch([product.name, product.nameAr || ''].join(' '));
+          return tokens.every((token) => haystack.includes(token));
+        }
+        if (posSearchMode === 'sku') {
+          const haystack = normalizeCatalogSearch(product.sku || '');
+          return tokens.every((token) => haystack.includes(token));
+        }
+        // 'all': search across every product attribute including tax rate %
+        const taxRate = product.taxRate ?? settings.taxRate ?? 0;
+        const haystack = normalizeCatalogSearch([
+          product.name,
+          product.nameAr || '',
+          product.sku,
+          product.barcode,
+          product.category,
+          product.brand || '',
+          product.unit || '',
+          String(product.retailPrice),
+          product.retailPrice.toFixed(settings.decimalPoints ?? 2),
+          String(product.costPrice),
+          String(product.stock),
+          String(taxRate),
+          `${taxRate}%`,
+          ...(product.multiUnits || []).flatMap((unit) => [
+            unit.name,
+            unit.barcode,
+            String(unit.price),
+          ]),
+          ...(product.additionalBarcodes || []).map((entry) => entry.barcode),
+        ].join(' '));
+        return tokens.every((token) => haystack.includes(token));
+      })
+      .slice(0, 12);
+  }, [barcodeInput, posSearchMode, products, settings.decimalPoints, settings.taxRate]);
+
+  useEffect(() => {
+    setPosSearchHighlightIndex(0);
+  }, [barcodeInput, posSearchMode]);
+
   // BARCODE SCAN HANDLER WITH SCANNER-LOCK ON INVALID BARCODE
   const handleBarcodeSubmit = (e: React.SyntheticEvent) => {
     e.preventDefault();
@@ -1583,12 +1666,29 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 
     const q = raw.toLowerCase();
 
-    // Barcode entry is exact-match only; use product search for names and SKUs.
+    // Exact barcode match always works immediately across all modes.
     const exactMatch = barcodeMap.get(q);
 
     if (exactMatch) {
       addToCart(exactMatch.product, exactMatch.unitId, raw);
       setBarcodeInput('');
+      focusBarcodeInput();
+      return;
+    }
+
+    if (posSearchMode !== 'barcode') {
+      const selected = posSearchMatches[posSearchHighlightIndex] || posSearchMatches[0];
+      if (selected) {
+        addToCart(selected);
+        setBarcodeInput('');
+        setPosSearchHighlightIndex(0);
+        focusBarcodeInput();
+        return;
+      }
+      setFeedback({
+        type: 'error',
+        text: isRtl ? `لم يتم العثور على منتج مطابق لـ "${raw}"` : `No matching product found for "${raw}"`,
+      });
       focusBarcodeInput();
       return;
     }
@@ -1608,6 +1708,17 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   useEffect(() => {
     setCatalogPage(1);
   }, [catalogCategory, catalogSearch, catalogSort]);
+
+  const productUsageFrequency = useMemo(() => {
+    const counts = new Map<number, number>();
+    sales.forEach((sale) => {
+      if (sale.status !== 'COMPLETED') return;
+      sale.items.forEach((item) => {
+        counts.set(item.productId, (counts.get(item.productId) || 0) + Math.max(1, item.quantity || 1));
+      });
+    });
+    return counts;
+  }, [sales]);
 
   // Catalog filtered products
   const catalogFilteredProducts = useMemo(() => {
@@ -1630,6 +1741,12 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       return true;
     });
 
+    if (catalogSort === 'frequent') {
+      return [...filtered].sort((a, b) => {
+        const diff = (productUsageFrequency.get(b.id) || 0) - (productUsageFrequency.get(a.id) || 0);
+        return diff !== 0 ? diff : a.name.localeCompare(b.name);
+      });
+    }
     if (catalogSort === 'name') {
       return filtered.sort((a, b) => a.name.localeCompare(b.name));
     }
@@ -1640,7 +1757,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       return filtered.sort((a, b) => b.retailPrice - a.retailPrice || a.name.localeCompare(b.name));
     }
     return filtered;
-  }, [products, catalogCategory, catalogSearch, catalogSort]);
+  }, [products, catalogCategory, catalogSearch, catalogSort, productUsageFrequency]);
 
   const totalCatalogPages = Math.max(1, Math.ceil(catalogFilteredProducts.length / CATALOG_PAGE_SIZE));
 
@@ -1922,6 +2039,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             unitPrice: item.product.retailPrice,
             unitId: item.unitId || null,
             description: item.description ?? '',
+            ...(item.flavor ? { flavor: item.flavor } : {}),
           })),
         }),
       });
@@ -2226,9 +2344,9 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
               mobileTab === 'table' ? 'flex' : 'hidden lg:flex'
             }`}
           >
-            {/* 1. RPOS Category Selector */}
-            <div className="p-3 sm:p-4 bg-white border-b border-slate-200 shrink-0 shadow-xs">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            {/* 1. RPOS Category Selector & Colored Block Toolbar */}
+            <div className="shrink-0 border-b border-slate-200 bg-slate-100/80 p-2.5 sm:p-3">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
                 <button
                   type="button"
                   onClick={() => {
@@ -2242,18 +2360,18 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                     }
                   }}
                   aria-pressed={isBrowsingCategories}
-                  className={`inline-flex w-full shrink-0 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs font-bold shadow-xs sm:w-auto ${
+                  className={`inline-flex w-full shrink-0 items-center justify-center gap-2 rounded-xl border px-3.5 py-2.5 text-xs font-bold shadow-xs transition-colors sm:w-auto ${
                     isBrowsingCategories
-                      ? 'border-blue-600 bg-blue-700 text-white'
-                      : 'border-slate-300 bg-white text-slate-800 hover:bg-slate-50'
+                      ? 'border-blue-800 bg-blue-800 text-white ring-2 ring-blue-300'
+                      : 'border-blue-600 bg-blue-600 text-white hover:bg-blue-700'
                   }`}
                 >
-                  <LayoutGrid className={`h-4 w-4 ${isBrowsingCategories ? 'text-white' : 'text-blue-600'}`} />
+                  <LayoutGrid className="h-4 w-4 text-white" />
                   <span>{getGroupDisplayName('All')}</span>
                 </button>
-                <div className="flex min-w-0 flex-1 items-center gap-2">
+                <div className="flex min-w-0 flex-1 items-stretch gap-2">
                   <div className="relative min-w-0 flex-1">
-                    <Search className={`absolute top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 ${isRtl ? 'right-3' : 'left-3'}`} />
+                    <Search className={`pointer-events-none absolute top-1/2 h-4 w-4 -translate-y-1/2 text-sky-600 ${isRtl ? 'right-3' : 'left-3'}`} />
                     <input
                       type="text"
                       value={catalogSearch}
@@ -2268,13 +2386,13 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                             ? `بحث في ${getGroupDisplayName(catalogCategory)}...`
                             : `Search ${getGroupDisplayName(catalogCategory)}...`
                       }
-                      className={`w-full rounded-lg border border-slate-300 bg-slate-50 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 ${isRtl ? 'pr-9 pl-9' : 'pl-9 pr-9'}`}
+                      className={`h-full w-full rounded-[5px] border border-sky-200 bg-sky-50 py-2.5 text-xs font-medium text-slate-900 shadow-xs placeholder:text-sky-700/60 focus:border-sky-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-200 ${isRtl ? 'pr-9 pl-9' : 'pl-9 pr-9'}`}
                     />
                     {catalogSearch && (
                       <button
                         type="button"
                         onClick={() => setCatalogSearch('')}
-                        className={`absolute top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700 ${isRtl ? 'left-2' : 'right-2'}`}
+                        className={`absolute top-1/2 -translate-y-1/2 rounded-lg p-1 text-sky-600 hover:bg-sky-200/70 hover:text-sky-900 ${isRtl ? 'left-2' : 'right-2'}`}
                         aria-label={isRtl ? 'مسح البحث' : 'Clear search'}
                       >
                         <X className="h-3.5 w-3.5" />
@@ -2285,10 +2403,10 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                     <button
                       type="button"
                       onClick={onOpenSalesHistory}
-                      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:border-blue-500 hover:bg-blue-50 hover:text-blue-700"
+                      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl border border-emerald-600 bg-emerald-600 px-3.5 py-2.5 text-xs font-bold text-white shadow-xs transition-colors hover:bg-emerald-700"
                     >
-                      <HistoryIcon className="h-4 w-4" />
-                      {isRtl ? 'سجل المبيعات' : 'Sales History'}
+                      <HistoryIcon className="h-4 w-4 text-white" />
+                      <span>{isRtl ? 'سجل المبيعات' : 'Sales History'}</span>
                     </button>
                   )}
                 </div>
@@ -2296,8 +2414,9 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   aria-label={isRtl ? 'ترتيب المنتجات' : 'Sort products'}
                   value={catalogSort}
                   onChange={(event) => setCatalogSort(event.target.value as typeof catalogSort)}
-                  className="w-full shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100 sm:w-40"
+                  className="w-full shrink-0 rounded-[5px] border border-violet-200 bg-violet-50 px-3 py-2.5 text-xs font-bold text-violet-900 shadow-xs transition-colors hover:bg-violet-100 focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-200 sm:w-44"
                 >
+                  <option value="frequent">{isRtl ? 'الأكثر استخداماً' : 'Frequently Used'}</option>
                   <option value="featured">{isRtl ? 'الترتيب الافتراضي' : 'Featured'}</option>
                   <option value="name">{isRtl ? 'الاسم: أ إلى ي' : 'Name: A to Z'}</option>
                   <option value="price-low">{isRtl ? 'السعر: الأقل أولاً' : 'Price: Low to high'}</option>
@@ -2564,15 +2683,87 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                     type="text"
                     value={barcodeInput}
                     onKeyDown={(e) => {
+                      if (posSearchMode !== 'barcode' && posSearchMatches.length > 0) {
+                        if (e.key === 'ArrowDown') {
+                          e.preventDefault();
+                          setPosSearchHighlightIndex((prev) => (prev + 1) % posSearchMatches.length);
+                          return;
+                        }
+                        if (e.key === 'ArrowUp') {
+                          e.preventDefault();
+                          setPosSearchHighlightIndex((prev) => (prev - 1 + posSearchMatches.length) % posSearchMatches.length);
+                          return;
+                        }
+                        if (e.key === 'Escape') {
+                          e.preventDefault();
+                          setBarcodeInput('');
+                          return;
+                        }
+                      }
                       if (e.key === 'Enter') {
                         e.preventDefault();
                         handleBarcodeSubmit(e);
                       }
                     }}
                     onChange={(e) => setBarcodeInput(e.target.value)}
-                    placeholder={t.scanOrSearch}
+                    placeholder={
+                      posSearchMode === 'name'
+                        ? (isRtl ? 'ابحث باسم المنتج...' : 'Search by product name...')
+                        : posSearchMode === 'sku'
+                          ? (isRtl ? 'ابحث برمز الصنف (SKU)...' : 'Search by SKU...')
+                          : posSearchMode === 'all'
+                            ? (isRtl ? 'ابحث بالاسم، الرمز، الباركود، الفئة، الضريبة %...' : 'Search by name, SKU, barcode, category, price, tax %...')
+                            : t.scanOrSearch
+                    }
                     className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 font-mono text-xs text-slate-900 placeholder:text-slate-400 transition-colors focus:outline-none disabled:bg-slate-100 disabled:opacity-50 sm:text-sm"
                   />
+                  {posSearchMode !== 'barcode' && barcodeInput.trim() !== '' && (
+                    <div className="absolute left-0 right-0 top-full z-40 mt-1 max-h-72 overflow-y-auto rounded-lg border border-slate-200 bg-white p-1 shadow-xl">
+                      {posSearchMatches.length === 0 ? (
+                        <div className="px-3 py-2 text-xs text-slate-500">
+                          {isRtl ? 'لا توجد منتجات مطابقة.' : 'No matching products.'}
+                        </div>
+                      ) : (
+                        posSearchMatches.map((product, idx) => {
+                          const highlighted = idx === posSearchHighlightIndex;
+                          const prodTax = product.taxRate ?? settings.taxRate ?? 0;
+                          return (
+                            <button
+                              key={product.id}
+                              type="button"
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => {
+                                addToCart(product);
+                                setBarcodeInput('');
+                                setPosSearchHighlightIndex(0);
+                                focusBarcodeInput();
+                              }}
+                              onMouseEnter={() => setPosSearchHighlightIndex(idx)}
+                              className={`flex w-full items-center justify-between gap-3 px-2.5 py-2 text-start text-xs transition-colors ${
+                                highlighted ? 'bg-blue-50 text-blue-900' : 'text-slate-800 hover:bg-slate-50'
+                              }`}
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="truncate font-semibold">
+                                  {isRtl && product.nameAr ? product.nameAr : product.name}
+                                  {product.nameAr && !isRtl ? ` · ${product.nameAr}` : ''}
+                                </div>
+                                <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[10px] text-slate-500">
+                                  {product.sku && <span className="font-mono">SKU: {product.sku}</span>}
+                                  {product.barcode && <span className="font-mono">{product.barcode}</span>}
+                                  {product.category && <span>{product.category}</span>}
+                                  <span className="font-mono">VAT {prodTax}%</span>
+                                </div>
+                              </div>
+                              <div className="shrink-0 font-mono text-xs font-bold tabular-nums text-blue-700">
+                                {c} {product.retailPrice.toFixed(settings.decimalPoints ?? 2)}
+                              </div>
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="flex gap-1.5">
                   <button
@@ -3651,7 +3842,36 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   {feedback.text}
                 </div>
               )}
-              <div className="grid grid-cols-2 gap-3">
+
+              {/* Amount Due Summary Hero */}
+              <div className="rounded-xl border border-blue-200/80 bg-gradient-to-br from-blue-50 to-slate-50 p-3.5">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-600">
+                    {isRtl ? 'الإجمالي المستحق' : 'Amount Due'}
+                  </span>
+                  <strong className="font-mono text-2xl font-extrabold tabular-nums text-blue-800">
+                    {c} {total.toFixed(2)}
+                  </strong>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-blue-200/60 pt-2 text-[11px] text-slate-600">
+                  <span>
+                    {isRtl ? 'المجموع الفرعي' : 'Subtotal'}:{' '}
+                    <strong className="font-mono text-slate-800">{c} {subtotal.toFixed(settings.decimalPoints ?? 2)}</strong>
+                  </span>
+                  {discountAmount > 0 && (
+                    <span className="text-red-700">
+                      {isRtl ? 'الخصم' : 'Discount'}:{' '}
+                      <strong className="font-mono">−{c} {discountAmount.toFixed(2)}</strong>
+                    </span>
+                  )}
+                  <span>
+                    {isRtl ? 'الضريبة' : 'VAT'}:{' '}
+                    <strong className="font-mono text-slate-800">{c} {taxAmount.toFixed(2)}</strong>
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="min-w-0">
                   <label className="mb-1 block text-xs font-semibold text-slate-700">
                     {isRtl ? 'العميل' : 'Customer'}
@@ -3880,83 +4100,87 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   </div>
                 </section>
               )}
-
-              <div className="space-y-2 rounded-xl border border-blue-100 bg-blue-50/60 p-4">
-                <div className="flex justify-between text-sm text-slate-600">
-                  <span>{isRtl ? 'المجموع الفرعي' : 'Subtotal'}</span>
-                  <span className="font-mono">{c} {subtotal.toFixed(settings.decimalPoints ?? 2)}</span>
-                </div>
-                {discountAmount > 0 && (
-                  <div className="flex justify-between text-sm text-red-700">
-                    <span>{isRtl ? 'الخصم' : 'Discount'}</span>
-                    <span className="font-mono">−{c} {discountAmount.toFixed(2)}</span>
-                  </div>
-                )}
-                <div className="flex justify-between text-sm text-slate-600">
-                  <span>{isRtl ? 'ضريبة القيمة المضافة' : 'VAT'}</span>
-                  <span className="font-mono">{c} {taxAmount.toFixed(2)}</span>
-                </div>
-                <div className="flex items-baseline justify-between border-t border-blue-200 pt-2">
-                  <span className="font-bold text-slate-900">{isRtl ? 'الإجمالي المستحق' : 'Amount Due'}</span>
-                  <strong className="font-mono text-2xl text-blue-800">{c} {total.toFixed(2)}</strong>
-                </div>
-              </div>
             </div>
 
-            <footer className="flex shrink-0 flex-col gap-2 border-t border-slate-200 bg-white p-4 sm:flex-row sm:gap-3">
+            <footer className="grid shrink-0 grid-cols-3 gap-2.5 border-t border-slate-200 bg-slate-50/70 p-4">
               <button
                 type="button"
                 onClick={() => setIsTenderModalOpen(false)}
                 disabled={isSubmitting}
-                className="w-full rounded-lg border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 sm:w-auto"
+                className="col-span-1 rounded-lg border border-slate-300 bg-white px-3 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
-                {isRtl ? 'رجوع للتذكرة' : 'Back to Ticket'}
+                {isRtl ? 'رجوع' : 'Back'}
               </button>
-              {settings.enableKot === true && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => void handlePreviewKot()}
-                    disabled={cart.length === 0 || isSubmitting || isPrintingKot || isPreparingKotPreview}
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
-                  >
-                    <Eye className="h-5 w-5" />
-                    {isPreparingKotPreview
-                      ? (isRtl ? 'جارٍ تجهيز المعاينة...' : 'Preparing preview...')
-                      : (isRtl ? 'معاينة KOT' : 'Preview KOT')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handlePrintKot()}
-                    disabled={cart.length === 0 || isSubmitting || isPrintingKot || isPreparingKotPreview}
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-red-600 px-4 py-3 text-sm font-bold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
-                  >
-                    <Printer className="h-5 w-5" />
-                    {isPrintingKot
-                      ? (isRtl ? 'جارٍ طباعة KOT...' : 'Printing KOT...')
-                      : (isRtl ? 'طباعة KOT' : 'KOT')}
-                  </button>
-                </>
-              )}
               <button
                 type="button"
                 onClick={() => void handleCompleteSale(true)}
                 disabled={!canCompleteSale || isPrintingKot || isPreparingKotPreview || isKotPreviewOpen}
-                className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-3 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                className="col-span-2 inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-3 text-sm font-bold text-white shadow-sm hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
               >
                 <CheckCircle2 className="h-5 w-5" />
                 {isSubmitting
                   ? (isRtl ? 'جارٍ إتمام البيع...' : 'Completing Sale...')
                   : activeTab.editingSaleId
                     ? (isRtl ? 'حفظ الفاتورة' : 'Save Invoice')
-                    : (isRtl ? 'تسوية الدفع وإتمام البيع' : 'Settle Tender & Complete Sale')}
+                    : (isRtl ? 'إتمام البيع' : 'Complete Sale')}
               </button>
             </footer>
           </div>
         </div>
       )}
 
-      {isPrintingKot && <div className="kot-print-source">{kotPrintArea}</div>}
+      {flavorPickerRequest && (
+        <div
+          className="fixed inset-0 z-[130] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setFlavorPickerRequest(null);
+          }}
+        >
+          <div
+            dir={isRtl ? 'rtl' : 'ltr'}
+            className="w-full max-w-md overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl"
+          >
+            <header className="flex items-center justify-between gap-3 border-b border-slate-200 bg-emerald-50/50 px-5 py-3.5">
+              <div className="min-w-0">
+                <h3 className="truncate text-sm font-bold text-slate-900">
+                  {isRtl ? 'اختر النكهة' : 'Choose Flavor'}
+                </h3>
+                <p className="mt-0.5 truncate text-xs text-slate-500">
+                  {isRtl && flavorPickerRequest.product.nameAr
+                    ? flavorPickerRequest.product.nameAr
+                    : flavorPickerRequest.product.name}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFlavorPickerRequest(null)}
+                className="rounded-lg p-1.5 text-slate-500 hover:bg-white hover:text-slate-800"
+                aria-label={isRtl ? 'إغلاق' : 'Close'}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </header>
+            <div className="grid max-h-[60vh] grid-cols-2 gap-2.5 overflow-y-auto p-4 sm:grid-cols-3">
+              {(flavorPickerRequest.product.flavors || []).map((flavor) => (
+                <button
+                  key={flavor}
+                  type="button"
+                  onClick={() => {
+                    const req = flavorPickerRequest;
+                    setFlavorPickerRequest(null);
+                    addToCart(req.product, req.unitId, req.scannedBarcode, flavor);
+                  }}
+                  className="flex min-h-[52px] items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50/60 px-3 py-2.5 text-center text-xs font-bold text-emerald-900 transition-colors hover:border-emerald-500 hover:bg-emerald-600 hover:text-white"
+                >
+                  {flavor}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {isKotPreviewOpen && (
         <div

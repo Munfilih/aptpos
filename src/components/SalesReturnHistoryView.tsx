@@ -1,19 +1,29 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { AlertTriangle, CalendarRange, Pencil, Printer, Receipt, RotateCcw, Search, Trash2 } from 'lucide-react';
+import {
+  AlertTriangle,
+  CalendarRange,
+  Download,
+  Loader2,
+  Pencil,
+  Printer,
+  Receipt,
+  RotateCcw,
+  Search,
+  SlidersHorizontal,
+  Trash2,
+  X,
+} from 'lucide-react';
 import type { PaperWidth, SalesReturnVoucher, StoreSettings } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
 import { AppDateInput } from './AppDateInput';
 import { matchesDateBounds, resolveDateBounds, type DateFilter } from '../utils/dateFilters';
-import {
-  applyThermalPageSize,
-  applyThermalPageWidth,
-  buildStandaloneThermalPrintHtml,
-  measureThermalPageSize,
-  printWithThermalPageSize,
-  resolveInvoiceMarginsMm,
-  waitPrintSettlingDelay,
-} from '../utils/thermalPrinting';
+import { resolveInvoiceMarginsMm } from '../utils/thermalPrinting';
+import { getPrintDocumentFormat, resolvePrintTemplate } from '../printTemplates/catalog';
 import { createVoucherTemplateJob, printTemplateJob } from '../printTemplates/render';
+import {
+  OneTimeTemplateModal,
+  type OneTimeDocumentOverride,
+} from './OneTimeTemplateModal';
 
 interface SalesReturnHistoryViewProps {
   vouchers: SalesReturnVoucher[];
@@ -38,13 +48,63 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [printingVoucher, setPrintingVoucher] = useState<SalesReturnVoucher | null>(null);
+  const [printModalVoucher, setPrintModalVoucher] = useState<SalesReturnVoucher | null>(null);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [oneTimeOverrides, setOneTimeOverrides] = useState<
+    Partial<Record<'sales-return', OneTimeDocumentOverride>>
+  >({});
   const [isPrinting, setIsPrinting] = useState(false);
+  const [printNotice, setPrintNotice] = useState<string | null>(null);
   const [printError, setPrintError] = useState<string | null>(null);
   const printAreaRef = useRef<HTMLDivElement>(null);
   const currency = isRtl ? 'ر.س ' : settings.currencySymbol || 'SAR ';
-  const activeFormat: PaperWidth = settings.paperWidth || '80mm';
+  const activeFormat: PaperWidth = getPrintDocumentFormat(
+    settings,
+    'sales-return',
+    settings.paperWidth || '80mm'
+  );
   const invoiceMarginsMm = resolveInvoiceMarginsMm(activeFormat);
   const hasActions = true;
+
+  const buildEffectiveSettings = (override?: OneTimeDocumentOverride): StoreSettings => {
+    const resolved = override ?? oneTimeOverrides['sales-return'];
+    if (!resolved) return settings;
+    return {
+      ...settings,
+      printDocumentFormats: {
+        ...settings.printDocumentFormats,
+        'sales-return': resolved.format,
+      },
+      printDocumentProfiles: {
+        ...settings.printDocumentProfiles,
+        'sales-return': {
+          ...settings.printDocumentProfiles?.['sales-return'],
+          [resolved.format]: resolved.profile,
+        },
+      },
+    };
+  };
+
+  const getReturnPrintSummary = () => {
+    const effective = buildEffectiveSettings();
+    const format = getPrintDocumentFormat(effective, 'sales-return', effective.paperWidth || '80mm');
+    const profile = effective.printDocumentProfiles?.['sales-return']?.[format];
+    const template = resolvePrintTemplate('sales-return', format, profile?.templateId);
+    const enableEn = profile?.enableEnglish !== false;
+    const enableAr = profile?.enableArabic !== false;
+    const langLabel = enableEn && enableAr ? 'EN / AR' : enableAr ? 'AR' : 'EN';
+    return `${template.label} · ${langLabel}`;
+  };
+
+  const createReturnPrintJob = async (
+    voucher: SalesReturnVoucher,
+    override?: OneTimeDocumentOverride
+  ) => {
+    const effective = buildEffectiveSettings(override);
+    const format = getPrintDocumentFormat(effective, 'sales-return', effective.paperWidth || '80mm');
+    const templateId = effective.printDocumentProfiles?.['sales-return']?.[format]?.templateId;
+    return createVoucherTemplateJob('sales-return', voucher.id, effective, format, isRtl, undefined, templateId);
+  };
 
   const handleConfirmDelete = async () => {
     if (!deletingVoucher || !onDeleteVoucher) return;
@@ -61,26 +121,71 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
     }
   };
 
-  const handlePrintVoucher = async (voucher: SalesReturnVoucher) => {
+  const handlePrintVoucher = (voucher: SalesReturnVoucher) => {
     setPrintError(null);
-    setPrintingVoucher(voucher);
-    setIsPrinting(true);
+    setPrintNotice(null);
+    setOneTimeOverrides({});
+    setPrintModalVoucher(voucher);
+  };
 
+  const executePrintReturn = async () => {
+    if (!printModalVoucher) return;
+    setPrintError(null);
+    setPrintNotice(null);
+    setPrintingVoucher(printModalVoucher);
+    setIsPrinting(true);
     try {
-      const job = await createVoucherTemplateJob(
-        'sales-return',
-        voucher.id,
-        settings,
-        activeFormat,
-        isRtl
+      const job = await createReturnPrintJob(printModalVoucher);
+      const printed = await printTemplateJob({ ...job, silent: false });
+      setPrintNotice(
+        printed
+          ? (isRtl ? 'تم فتح نافذة الطباعة.' : 'Print dialog opened.')
+          : (isRtl ? 'تم إلغاء الطباعة.' : 'Printing was cancelled.')
       );
-      await printTemplateJob(job);
     } catch (error) {
       console.error('Failed to print sales return voucher:', error);
       setPrintError(error instanceof Error ? error.message : 'Return voucher could not be printed.');
     } finally {
       setIsPrinting(false);
       setPrintingVoucher(null);
+    }
+  };
+
+  const handleSaveReturnPdf = async () => {
+    if (!printModalVoucher) return;
+    setPrintError(null);
+    setPrintNotice(null);
+    setIsPrinting(true);
+    try {
+      const job = await createReturnPrintJob(printModalVoucher);
+      const now = new Date();
+      const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      const baseName = `${printModalVoucher.voucherNumber}_${dateStr}`;
+      const fileName = `${baseName}.pdf`;
+      const titledHtml = job.html.replace(/<title>[\s\S]*?<\/title>/i, `<title>${baseName}</title>`);
+      if (window.electronAPI?.isElectron) {
+        const result = await window.electronAPI.exportDesignPdf({
+          fileName,
+          html: titledHtml,
+          pageSize: job.pageSize,
+        });
+        setPrintNotice(
+          result.canceled
+            ? (isRtl ? 'تم إلغاء حفظ ملف PDF.' : 'PDF saving was cancelled.')
+            : (isRtl ? `تم حفظ ملف PDF باسم ${fileName}.` : `PDF saved as ${fileName}.`)
+        );
+      } else {
+        const printed = await printTemplateJob({ ...job, html: titledHtml, silent: false });
+        setPrintNotice(
+          printed
+            ? (isRtl ? `اختر حفظ كملف PDF. اسم الملف: ${fileName}` : `Choose Save as PDF. File name: ${fileName}`)
+            : (isRtl ? 'تم إلغاء حفظ ملف PDF.' : 'PDF saving was cancelled.')
+        );
+      }
+    } catch (error) {
+      setPrintError(error instanceof Error ? error.message : 'Could not save return voucher as PDF.');
+    } finally {
+      setIsPrinting(false);
     }
   };
 
@@ -326,7 +431,7 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
                                   >
                                     <Printer className="h-3 w-3" />
                                   </button>
-                                  {onEditVoucher && (
+                                  {onEditVoucher && settings.enableZatcaEinvoice !== true && (
                                     <button
                                       type="button"
                                       onClick={() => onEditVoucher(voucher)}
@@ -337,7 +442,7 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
                                       <Pencil className="h-3 w-3" />
                                     </button>
                                   )}
-                                  {onDeleteVoucher && (
+                                  {onDeleteVoucher && settings.enableZatcaEinvoice !== true && (
                                     <button
                                       type="button"
                                       onClick={() => {
@@ -456,7 +561,7 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
                                 >
                                   <Printer className="h-3.5 w-3.5" />
                                 </button>
-                                {onEditVoucher && (
+                                {onEditVoucher && settings.enableZatcaEinvoice !== true && (
                                   <button
                                     type="button"
                                     onClick={() => onEditVoucher(voucher)}
@@ -466,7 +571,7 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
                                     <Pencil className="h-3.5 w-3.5" />
                                   </button>
                                 )}
-                                {onDeleteVoucher && (
+                                {onDeleteVoucher && settings.enableZatcaEinvoice !== true && (
                                   <button
                                     type="button"
                                     onClick={() => {
@@ -586,6 +691,165 @@ export const SalesReturnHistoryView: React.FC<SalesReturnHistoryViewProps> = ({
           </article>
         </div>
       )}
+      {printModalVoucher && (
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/60 p-3 backdrop-blur-xs sm:p-5"
+          role="dialog"
+          aria-modal="true"
+          onClick={(event) => {
+            if (event.target === event.currentTarget && !isPrinting && !showTemplateModal) {
+              setPrintModalVoucher(null);
+            }
+          }}
+        >
+          <div
+            dir={isRtl ? 'rtl' : 'ltr'}
+            className="flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+          >
+            <header className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-emerald-50/50 px-5 py-3.5">
+              <div className="min-w-0">
+                <h2 className="truncate text-base font-bold text-slate-900">
+                  {isRtl ? 'ملخص وطباعة مرتجع المبيعات' : 'Sales Return Summary & Print'}
+                </h2>
+                <p className="mt-0.5 font-mono text-xs text-slate-500">
+                  {printModalVoucher.voucherNumber} · {formatDate(printModalVoucher.createdAt)}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={isPrinting}
+                onClick={() => setPrintModalVoucher(null)}
+                aria-label={isRtl ? 'إغلاق' : 'Close'}
+                className="rounded-lg p-2 text-slate-500 hover:bg-white hover:text-slate-800 disabled:opacity-50"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </header>
+
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+              <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                <div className="flex items-center justify-between gap-4 border-b border-slate-200 bg-emerald-50/40 px-4 py-3">
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      {isRtl ? 'الفاتورة الأصلية' : 'Source Invoice(s)'}
+                    </p>
+                    <p className="mt-0.5 truncate font-mono text-xs font-bold text-slate-900">
+                      {printModalVoucher.sourceInvoices.join(', ') || '—'}
+                    </p>
+                  </div>
+                  <div className="shrink-0 text-end">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      {isRtl ? 'إجمالي المرتجع' : 'Total Refund'}
+                    </p>
+                    <p className="mt-0.5 font-mono text-xl font-bold tabular-nums text-emerald-700">
+                      {currency}{printModalVoucher.refundAmount.toFixed(2)}
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 divide-x divide-slate-200 bg-white text-xs">
+                  <div className="px-3 py-2.5">
+                    <span className="block text-[10px] text-slate-500">{isRtl ? 'الدفع' : 'Payment'}</span>
+                    <span className="mt-0.5 block font-semibold text-slate-900">{printModalVoucher.paymentMethod}</span>
+                  </div>
+                  <div className="px-3 py-2.5">
+                    <span className="block text-[10px] text-slate-500">{isRtl ? 'الضريبة المستردة' : 'VAT Refunded'}</span>
+                    <span className="mt-0.5 block font-mono font-semibold text-slate-900">
+                      {currency}{printModalVoucher.taxRefundAmount.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="px-3 py-2.5">
+                    <span className="block text-[10px] text-slate-500">{isRtl ? 'الأصناف' : 'Items'}</span>
+                    <span className="mt-0.5 block font-mono font-semibold text-slate-900">
+                      {printModalVoucher.items.length}
+                    </span>
+                  </div>
+                </div>
+              </section>
+
+              <button
+                type="button"
+                disabled={isPrinting}
+                onClick={() => void executePrintReturn()}
+                className="group flex w-full items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-start transition-colors hover:border-emerald-400 hover:bg-emerald-50/50 disabled:opacity-60"
+              >
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700">
+                  {isPrinting ? <Loader2 className="h-4.5 w-4.5 animate-spin" /> : <Printer className="h-4.5 w-4.5" />}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold text-slate-900">
+                    {isRtl ? 'طباعة سند مرتجع المبيعات' : 'Print Sales Return'}
+                  </span>
+                  <span className="mt-0.5 block truncate text-[10px] font-medium text-slate-400">
+                    {getReturnPrintSummary()}
+                  </span>
+                </span>
+              </button>
+
+              {printError && (
+                <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                  {printError}
+                </p>
+              )}
+              {printNotice && (
+                <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+                  {printNotice}
+                </p>
+              )}
+            </div>
+
+            <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-slate-200 bg-slate-50/70 px-5 py-3">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  disabled={isPrinting}
+                  onClick={() => setShowTemplateModal(true)}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 underline-offset-4 hover:text-emerald-800 hover:underline disabled:opacity-50"
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  <span>{isRtl ? 'اختيار القوالب' : 'Choose Templates'}</span>
+                  {oneTimeOverrides['sales-return'] && (
+                    <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800 no-underline">
+                      {isRtl ? 'مخصص' : 'Custom'}
+                    </span>
+                  )}
+                </button>
+                <span className="text-slate-300" aria-hidden="true">|</span>
+                <button
+                  type="button"
+                  disabled={isPrinting}
+                  onClick={() => void handleSaveReturnPdf()}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 underline-offset-4 hover:text-emerald-800 hover:underline disabled:opacity-50"
+                >
+                  {isPrinting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                  <span>{isRtl ? 'حفظ كـ PDF' : 'Save as PDF'}</span>
+                </button>
+              </div>
+              <button
+                type="button"
+                disabled={isPrinting}
+                onClick={() => setPrintModalVoucher(null)}
+                className="rounded-lg bg-emerald-700 px-5 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50"
+              >
+                {isRtl ? 'تم' : 'Done'}
+              </button>
+            </footer>
+          </div>
+
+          {showTemplateModal && (
+            <OneTimeTemplateModal
+              settings={settings}
+              defaultFormatFallback={activeFormat}
+              documents={[{ id: 'sales-return', label: isRtl ? 'مرتجع المبيعات' : 'Sales Return' }]}
+              initialDocument="sales-return"
+              overrides={oneTimeOverrides}
+              onBuildPreviewJob={(_docType, override) => createReturnPrintJob(printModalVoucher, override)}
+              onApply={(next) => setOneTimeOverrides({ 'sales-return': next['sales-return'] })}
+              onClose={() => setShowTemplateModal(false)}
+            />
+          )}
+        </div>
+      )}
+
       {deletingVoucher && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
           <div className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">

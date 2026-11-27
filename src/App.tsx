@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { TopBar, type NavTab } from './components/TopBar';
+import { FlyErpSideNav } from './components/FlyErpSideNav';
 import { RegisterView } from './components/RegisterView';
 import { ErpSalesView } from './components/ErpSalesView';
 import { FlyErpSalesView } from './components/FlyErpSalesView';
@@ -275,6 +276,9 @@ export function App() {
   const [showSettingsComponent, setShowSettingsComponent] = useState(false);
   const [accountsSubtab, setAccountsSubtab] = useState<'ledger' | 'customers' | 'vendors' | 'payments'>('ledger');
   const [openLauncherAfterLogin, setOpenLauncherAfterLogin] = useState(false);
+  const [flyErpSideNavOpen, setFlyErpSideNavOpen] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth >= 1920
+  );
   const [loginDemoRegistration, setLoginDemoRegistration] = useState<{
     user: UserSession;
     status: DemoAccessStatus;
@@ -838,22 +842,16 @@ export function App() {
     if (flyErpInvoiceToEdit?.id === sale.id) {
       setFlyErpInvoiceToEdit(null);
     }
-    if (sale.appScreenMode === 'flyerp') {
+    if (sale.status !== 'DRAFT') {
+      setActiveReceipt(null);
       setFlyErpCompletion({ sale, queuedOffline });
-    } else {
-      setActiveReceipt({ sale, queuedOffline });
     }
     await fetchAll();
   };
 
   const handleReprintSale = (sale: Sale) => {
-    if (sale.appScreenMode === 'flyerp') {
-      setActiveReceipt(null);
-      setFlyErpCompletion({ sale, isReprint: true });
-    } else {
-      setFlyErpCompletion(null);
-      setActiveReceipt({ sale });
-    }
+    setActiveReceipt(null);
+    setFlyErpCompletion({ sale, isReprint: true });
   };
 
   const handleDeleteSale = async (saleId: number) => {
@@ -948,7 +946,11 @@ export function App() {
     ) {
       return;
     }
-    if (sale.appScreenMode === 'flyerp') {
+    const currentScreenMode: AppScreenMode =
+      runtimeScreenMode ||
+      launchScreenMode ||
+      (settings.posScreenLayout === 'rpos' ? 'rpos' : 'pos');
+    if (currentScreenMode === 'flyerp') {
       setFlyErpInvoiceToEdit(sale);
       setRestoredSale(null);
       setActiveTab('sales-entry');
@@ -1333,6 +1335,7 @@ export function App() {
         ) : (
           <div
             data-theme={theme}
+            data-screen-mode={effectiveScreenMode}
             className={`pos-app-shell${activeReceipt || flyErpCompletion ? ' invoice-print-open' : ''} h-[100dvh] max-h-[100dvh] w-screen flex flex-col bg-slate-50 text-slate-900 overflow-hidden`}
           >
           {!loading && (
@@ -1356,6 +1359,8 @@ export function App() {
             launcherBackgroundDataUrl={settings.launcherBackgroundDataUrl}
             openLauncherOnMount={openLauncherAfterLogin}
             onLauncherOpened={handleLauncherOpened}
+            sideNavOpen={flyErpSideNavOpen}
+            onToggleSideNav={() => setFlyErpSideNavOpen((open) => !open)}
             demoExpiresAt={currentUser.demoMode ? currentUser.demoExpiresAt : undefined}
             registeredSystem={settings.registeredSystem === true}
             amcStartDate={settings.registrationDetails?.amcStartDate}
@@ -1371,6 +1376,27 @@ export function App() {
             </main>
           ) : (
             <main className="win11-app-content flex-1 flex min-h-0 overflow-hidden">
+          {isFlyErpMode && (
+            <FlyErpSideNav
+              isOpen={flyErpSideNavOpen}
+              activeTab={effectiveTab}
+              accountsSubtab={accountsSubtab}
+              hasPermission={hasPermission}
+              onSelectTab={(tab) => {
+                setShowSettingsWorkspace(false);
+                setShowSettingsComponent(false);
+                setActiveTab(tab);
+              }}
+              onSelectAccountsSubtab={setAccountsSubtab}
+              onOpenCashbook={() => setCashbookModalOpen(true)}
+              onCloseMobile={() => {
+                if (typeof window !== 'undefined' && window.innerWidth < 768) {
+                  setFlyErpSideNavOpen(false);
+                }
+              }}
+            />
+          )}
+          <div className="flex-1 min-w-0 min-h-0 flex overflow-hidden">
           {effectiveTab === 'sales-entry' && (
             isFlyErpMode || flyErpInvoiceToEdit ? (
               <FlyErpSalesView
@@ -1380,9 +1406,21 @@ export function App() {
                 settings={settings}
                 editingSale={flyErpInvoiceToEdit}
                 onSaleCompleted={handleSaleCompleted}
+                onLoadDraft={(draft) => {
+                  setFlyErpInvoiceToEdit(draft);
+                }}
+                onDeleteDraft={canDeleteSales ? async (saleId) => {
+                  await handleDeleteSale(saleId);
+                  if (flyErpInvoiceToEdit?.id === saleId) {
+                    setFlyErpInvoiceToEdit(null);
+                  }
+                } : undefined}
                 onCancelEdit={() => {
+                  const wasDraft = flyErpInvoiceToEdit?.status === 'DRAFT';
                   setFlyErpInvoiceToEdit(null);
-                  setActiveTab('sales');
+                  if (!wasDraft) {
+                    setActiveTab('sales');
+                  }
                 }}
                 onCustomerCreated={(customer) => {
                   setCustomers((current) => [
@@ -1429,6 +1467,7 @@ export function App() {
                 <RegisterView
                   products={products}
                   customers={customers}
+                  sales={sales}
                   settings={{ ...settings, posScreenLayout: isRposMode ? 'rpos' : 'pos' }}
                   rposTicketWidth={rposTicketWidth}
                   onRposTicketWidthChange={setRposTicketWidth}
@@ -1817,6 +1856,7 @@ export function App() {
               No app components are enabled for your account. Contact aptadmin.
             </div>
           )}
+          </div>
           </main>
           )}
 

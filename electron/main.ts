@@ -1079,7 +1079,10 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
     await win.webContents
       .executeJavaScript(`
         Promise.all([
-          document.fonts ? document.fonts.ready : Promise.resolve(),
+          Promise.race([
+            document.fonts ? document.fonts.ready : Promise.resolve(),
+            new Promise((res) => setTimeout(res, 800)),
+          ]),
           ...Array.from(document.images).map((img) =>
             img.complete
               ? Promise.resolve()
@@ -1122,10 +1125,15 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
       );
       await writeFile(tempPdfPath, pdfBuffer);
 
+      const normalizedPrinterName =
+        printerName && !/^(system default|default)\b/i.test(printerName.trim())
+          ? printerName.trim()
+          : undefined;
+
       if (isSilent) {
         // Send silently via SumatraPDF
         await pdfPrint(tempPdfPath, {
-          ...(printerName ? { printer: printerName } : {}),
+          ...(normalizedPrinterName ? { printer: normalizedPrinterName } : {}),
           scale: scaling === 'fit-to-page' ? 'shrink' : 'noscale',
           copies,
           silent: true,
@@ -1135,7 +1143,7 @@ ipcMain.handle('pos:print-receipt', async (event, rawOptions: unknown) => {
       } else {
         // Non-silent: open SumatraPDF print dialog
         await pdfPrint(tempPdfPath, {
-          ...(printerName ? { printer: printerName } : {}),
+          ...(normalizedPrinterName ? { printer: normalizedPrinterName } : {}),
           scale: scaling === 'fit-to-page' ? 'shrink' : 'noscale',
           copies,
           silent: false,

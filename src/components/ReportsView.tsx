@@ -32,7 +32,7 @@ import {
 import { getPaymentMethods } from '../utils/paymentMethods';
 import { getSaleAppliedPayment } from '../utils/saleBalances';
 import { createPrintTemplateJob, printTemplateJob } from '../printTemplates/render';
-import { resolvePrintTemplate } from '../printTemplates/catalog';
+import { getPrintDocumentFormat, resolvePrintTemplate } from '../printTemplates/catalog';
 import type { PrintDocumentData } from '../printTemplates/types';
 
 type ReportTab = 'DAILY_SUMMARY' | 'DETAILED_SALES' | 'DATEWISE_SUMMARY' | 'TAX' | 'SALES_TAX' | 'CASHBOOK';
@@ -888,8 +888,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     if (activeReport === 'TAX') {
       setExportingPdf(true);
       try {
-        const format: PaperWidth = 'A4';
-        const template = resolvePrintTemplate('saudi-vat-report', format);
+        const format: PaperWidth = getPrintDocumentFormat(settings, 'saudi-vat-report', 'A4');
+        const template = resolvePrintTemplate('saudi-vat-report', format, settings.printDocumentProfiles?.['saudi-vat-report']?.[format]?.templateId);
         const data: PrintDocumentData = {
           documentType: 'saudi-vat-report',
           title: isRtl ? 'ملخص ضريبة القيمة المضافة' : 'Saudi VAT Summary',

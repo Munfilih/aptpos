@@ -1,7 +1,10 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Check,
+  ChevronDown,
+  ChevronRight,
   Copy,
+  Save,
   Store,
   Percent,
   Database,
@@ -15,6 +18,7 @@ import {
   Shield,
   Trash2,
   Edit2,
+  Eye,
   X,
   Plus,
   Lock,
@@ -49,6 +53,11 @@ import {
   getPrintTemplates,
 } from '../printTemplates/catalog';
 import { resolveInvoiceMarginsMm } from '../utils/thermalPrinting';
+import { translateEnglishToArabic } from '../utils/arabicTranslate';
+import { PrintPreviewFrame } from './PrintPreviewFrame';
+import { createPrintTemplateJob, printTemplateJob } from '../printTemplates/render';
+import type { PrintDocumentData, PrintTemplateJob } from '../printTemplates/types';
+import QRCode from 'qrcode';
 import type { UpdateStatus } from '../../electron/updateStatus';
 
 interface SettingsViewProps {
@@ -117,6 +126,138 @@ const MAX_STORE_LOGO_FILE_SIZE = 1_000_000;
 const STORE_LOGO_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const MAX_LAUNCHER_BACKGROUND_FILE_SIZE = 5_000_000;
 
+async function buildSamplePrintDocumentData(
+  currentForm: StoreSettings,
+  docType: PrintDocumentType,
+  label: string,
+  isRtl: boolean
+): Promise<PrintDocumentData> {
+  const currency = currentForm.currencySymbol || 'SAR';
+  const nowStr = new Date().toLocaleString(isRtl ? 'ar-SA' : 'en-GB');
+  let qrDataUrl: string | undefined;
+  if (
+    currentForm.invoiceShowQrCode !== false &&
+    (docType === 'sales-invoice' || docType === 'sales-return')
+  ) {
+    qrDataUrl = await QRCode.toDataURL('aptPOS-Sample-ZATCA-QR-Preview', {
+      width: 220,
+      margin: 1,
+    });
+  }
+
+  const isKot = docType === 'kot';
+  const enFooter = (currentForm.receiptFooter ?? '').trim() || 'Thank you for your business!';
+  const arFooter = (currentForm.receiptFooterAr ?? '').trim();
+  const resolvedFooter =
+    currentForm.multiLanguageInvoices && arFooter
+      ? `${enFooter}\n${arFooter}`
+      : isRtl && arFooter
+        ? arFooter
+        : enFooter;
+
+  return {
+    documentType: docType,
+    title:
+      docType === 'sales-invoice'
+        ? currentForm.multiLanguageInvoices
+          ? 'Simplified Tax Invoice / فاتورة ضريبية مبسطة'
+          : 'Simplified Tax Invoice'
+        : docType === 'cash-receipt'
+          ? 'Cash Receipt / إيصال نقدي'
+          : docType === 'bank-receipt'
+            ? 'Bank Receipt / إيصال بنكي'
+            : docType === 'sales-return'
+              ? currentForm.multiLanguageInvoices
+                ? 'Sales Return / مرتجع مبيعات'
+                : 'Sales Return'
+              : docType === 'kot'
+                ? 'KOT'
+                : label,
+    number:
+      docType === 'sales-return'
+        ? 'SR-2026-1001'
+        : docType === 'kot'
+          ? 'KOT-1001'
+          : 'RCP-2026-1001',
+    date: nowStr,
+    companyName: currentForm.storeName || 'aptPOS Retail',
+    companyNameAr: currentForm.storeNameAr,
+    companyAddress: currentForm.address,
+    companyPhone: currentForm.phone,
+    companyTaxId: currentForm.taxId,
+    companyCrNumber: currentForm.crNumber,
+    companyLogo: currentForm.invoiceShowStoreLogo !== false ? currentForm.storeLogoDataUrl : undefined,
+    logoSizeMm: currentForm.invoiceLogoSizeMm,
+    qrDataUrl,
+    qrSizeMm: currentForm.invoiceQrCodeSizeMm,
+    multiLanguage: Boolean(currentForm.multiLanguageInvoices),
+    direction: isRtl ? 'rtl' : 'ltr',
+    fields: isKot
+      ? [
+          { label: 'Order', value: 'Dine-In · Table 4' },
+          { label: 'Cashier', value: currentForm.cashierName || 'Cashier' },
+        ]
+      : [
+          {
+            label: currentForm.multiLanguageInvoices ? 'Customer / العميل' : 'Customer',
+            value: currentForm.defaultCustomer || 'Walk-in Customer',
+          },
+          {
+            label: currentForm.multiLanguageInvoices ? 'Payment / الدفع' : 'Payment',
+            value: 'Cash',
+          },
+        ],
+    columns: isKot ? ['Item', 'Qty'] : ['#', 'Item', 'Qty', 'Total'],
+    numericColumns: isKot ? [1] : [2, 3],
+    rows: isKot
+      ? [
+          { values: ['Chicken Shawarma Wrap\nشاورما دجاج\nNo garlic · Extra spicy', '2'] },
+          { values: ['Fresh Orange Juice\nعصير برتقال طازج', '1'] },
+        ]
+      : [
+          {
+            values: [
+              '1',
+              currentForm.multiLanguageInvoices
+                ? 'Premium Basmati Rice 10Kg\nأرز بسمتي فاخر 10 كجم'
+                : 'Premium Basmati Rice 10Kg',
+              '2',
+              `${currency} 40.00`,
+            ],
+          },
+          {
+            values: [
+              '2',
+              currentForm.multiLanguageInvoices
+                ? 'Extra Virgin Olive Oil 1L\nزيت زيتون بكر ممتاز 1 لتر'
+                : 'Extra Virgin Olive Oil 1L',
+              '1',
+              `${currency} 17.50`,
+            ],
+          },
+        ],
+    totals: isKot
+      ? []
+      : [
+          {
+            label: currentForm.multiLanguageInvoices ? 'Subtotal / المجموع الفرعي' : 'Subtotal',
+            value: `${currency} 50.00`,
+          },
+          {
+            label: currentForm.multiLanguageInvoices
+              ? `VAT (${currentForm.taxRate}%) / الضريبة`
+              : `VAT (${currentForm.taxRate}%)`,
+            value: `${currency} 7.50`,
+          },
+          {
+            label: currentForm.multiLanguageInvoices ? 'Total / الإجمالي' : 'Total',
+            value: `${currency} 57.50`,
+          },
+        ],
+    footer: currentForm.invoiceShowFooter !== false ? resolvedFooter : undefined,
+  };
+}
+
 function readImageDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -173,6 +314,7 @@ export const SettingsSectionTabs: React.FC<SettingsSectionTabsProps> = ({
     { id: 'general', label: isRtl ? 'عام' : 'General' },
     { id: 'business', label: isRtl ? 'الأعمال' : 'Business' },
     { id: 'billing', label: isRtl ? 'الفوترة' : 'Billing' },
+    { id: 'zatca', label: isRtl ? 'الفوترة الإلكترونية' : 'E-Invoicing' },
     { id: 'print', label: isRtl ? 'الطباعة' : 'Print' },
     { id: 'customers', label: isRtl ? 'العملاء' : 'Customers' },
     { id: 'payment', label: isRtl ? 'الدفع' : 'Payment' },
@@ -286,6 +428,137 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [googleDriveClientId, setGoogleDriveClientId] = useState('');
   const [availablePrinters, setAvailablePrinters] = useState<Array<{ name: string; displayName: string }>>([]);
   const [loadingPrinters, setLoadingPrinters] = useState(false);
+  const [voucherPreview, setVoucherPreview] = useState<{
+    title: string;
+    format: PaperWidth;
+    job: PrintTemplateJob;
+  } | null>(null);
+  const [voucherPreviewLoading, setVoucherPreviewLoading] = useState<PrintDocumentType | null>(null);
+  const [voucherPreviewPrinting, setVoucherPreviewPrinting] = useState(false);
+  const [voucherPreviewError, setVoucherPreviewError] = useState<string | null>(null);
+  const [expandedVoucher, setExpandedVoucher] = useState<PrintDocumentType | null>(null);
+  const [marginDrafts, setMarginDrafts] = useState<Record<string, string>>({});
+  const [translatingStoreNameAr, setTranslatingStoreNameAr] = useState(false);
+  const [livePreviewDocType, setLivePreviewDocType] = useState<PrintDocumentType>('sales-invoice');
+  const [livePreviewState, setLivePreviewState] = useState<{
+    format: PaperWidth;
+    job: PrintTemplateJob | null;
+    loading: boolean;
+    error: string | null;
+  }>({ format: '80mm', job: null, loading: false, error: null });
+  const [livePreviewPrinting, setLivePreviewPrinting] = useState(false);
+
+  const handlePreviewVoucher = async (
+    docType: PrintDocumentType,
+    label: string,
+    format: PaperWidth,
+    templateId: string
+  ) => {
+    setLivePreviewDocType(docType);
+    setVoucherPreviewLoading(docType);
+    setVoucherPreviewError(null);
+    try {
+      const sampleData = await buildSamplePrintDocumentData(form, docType, label, isRtl);
+      const job = await createPrintTemplateJob(sampleData, form, format, templateId);
+      setVoucherPreview({ title: `${label} (${format})`, format, job });
+    } catch (err) {
+      setVoucherPreviewError(err instanceof Error ? err.message : 'Failed to generate preview.');
+    } finally {
+      setVoucherPreviewLoading(null);
+    }
+  };
+
+  useEffect(() => {
+    if (activeSettingsSection !== 'print') return;
+    let cancelled = false;
+    const option =
+      PRINT_DOCUMENT_OPTIONS.find((item) => item.id === livePreviewDocType) ??
+      PRINT_DOCUMENT_OPTIONS[0];
+    const activeFormat = getPrintDocumentFormat(
+      form,
+      option.id,
+      appScreenMode === 'flyerp' && option.id === 'sales-invoice'
+        ? 'A4'
+        : form.paperWidth || '80mm'
+    );
+    const templates = getPrintTemplates(option.id, activeFormat);
+    const configuredTemplateId = form.printDocumentProfiles?.[option.id]?.[activeFormat]?.templateId;
+    const selectedTemplateId = templates.some((t) => t.id === configuredTemplateId)
+      ? configuredTemplateId
+      : templates[0]?.id;
+
+    setLivePreviewState((prev) => ({
+      ...prev,
+      format: activeFormat,
+      loading: true,
+      error: null,
+    }));
+
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const sampleData = await buildSamplePrintDocumentData(
+            form,
+            option.id,
+            option.label,
+            isRtl
+          );
+          const job = await createPrintTemplateJob(
+            sampleData,
+            form,
+            activeFormat,
+            selectedTemplateId
+          );
+          if (cancelled) return;
+          setLivePreviewState({
+            format: activeFormat,
+            job,
+            loading: false,
+            error: null,
+          });
+        } catch (err) {
+          if (cancelled) return;
+          setLivePreviewState((prev) => ({
+            ...prev,
+            loading: false,
+            error: err instanceof Error ? err.message : 'Failed to update live preview.',
+          }));
+        }
+      })();
+    }, 150);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    activeSettingsSection,
+    livePreviewDocType,
+    isRtl,
+    form.paperWidth,
+    form.printDocumentFormats,
+    form.printDocumentProfiles,
+    form.invoiceShowFooter,
+    form.receiptFooter,
+    form.receiptFooterAr,
+    form.invoiceShowStoreLogo,
+    form.invoiceLogoSizeMm,
+    form.invoiceShowQrCode,
+    form.invoiceQrCodeSizeMm,
+    form.invoiceMarginsMm,
+    form.multiLanguageInvoices,
+    form.storeName,
+    form.storeNameAr,
+    form.address,
+    form.phone,
+    form.taxId,
+    form.crNumber,
+    form.storeLogoDataUrl,
+    form.currencySymbol,
+    form.taxRate,
+    form.defaultCustomer,
+    form.cashierName,
+  ]);
 
   const loadPrinters = async () => {
     if (!window.electronAPI?.listPrinters) return;
@@ -1851,6 +2124,190 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     />
                   </div>
                   )}
+                  {activeSettingsSection === 'billing' && (
+                  <div className="settings-item-row settings-input-row">
+                    <label htmlFor="pos-default-search-field" className="settings-item-copy">
+                      <span className="block text-sm font-semibold text-slate-700">
+                        {isRtl ? 'حقل البحث الافتراضي (نقطة البيع)' : 'Default Search Field (POS)'}
+                      </span>
+                      <span className="mt-0.5 block text-xs text-slate-500">
+                        {isRtl
+                          ? 'اختر كيفية بحث شريط المسح في شاشة POS (الباركود افتراضياً، أو الاسم، أو رمز الصنف، أو الكل شاملاً نسبة الضريبة).'
+                          : 'Choose how the main POS search bar matches products (Barcode scanning by default, Name, SKU, or All product fields including tax %).'}
+                      </span>
+                    </label>
+                    <select
+                      id="pos-default-search-field"
+                      value={form.posDefaultSearchField || 'barcode'}
+                      onChange={(e) =>
+                        setForm((current) => ({
+                          ...current,
+                          posDefaultSearchField: e.target.value as 'barcode' | 'name' | 'sku' | 'all',
+                        }))
+                      }
+                      className="settings-item-control rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-700 focus:outline-none"
+                    >
+                      <option value="barcode">
+                        {isRtl ? 'مسح الباركود (افتراضي)' : 'Barcode Scanning (Default)'}
+                      </option>
+                      <option value="name">
+                        {isRtl ? 'الاسم' : 'Name'}
+                      </option>
+                      <option value="sku">
+                        {isRtl ? 'رمز الصنف (SKU)' : 'SKU'}
+                      </option>
+                      <option value="all">
+                        {isRtl ? 'الكل (أي حقل للمنتج بما في ذلك الضريبة %)' : 'All (Any product field incl. tax %)'}
+                      </option>
+                    </select>
+                  </div>
+                  )}
+                  {activeSettingsSection === 'billing' && (
+                  <>
+                    <label className="settings-item-row cursor-pointer">
+                      <span className="settings-item-copy">
+                        <span className="block text-sm font-semibold text-slate-700">
+                          {isRtl ? 'تفعيل وردية الصندوق' : 'Enable Counter Shift'}
+                        </span>
+                        <span className="mt-0.5 block text-xs text-slate-500">
+                          {isRtl
+                            ? 'يتطلب فتح وردية الصندوق قبل إنشاء أي سند (بما في ذلك المبيعات، المرتجعات، المشتريات، والمدفوعات النقدية).'
+                            : 'Require opening a counter shift before creating any vouchers (including sales, returns, purchases, and cash payments).'}
+                        </span>
+                      </span>
+                      <input
+                        type="checkbox"
+                        role="switch"
+                        aria-label={isRtl ? 'تفعيل وردية الصندوق' : 'Enable Counter Shift'}
+                        checked={form.enableCounterShift === true}
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            enableCounterShift: event.target.checked,
+                            ...(!event.target.checked ? { enableDailyCounterShift: false } : {}),
+                          }))
+                        }
+                        className="peer sr-only"
+                      />
+                      <span className="relative h-5 w-9 shrink-0 rounded-full bg-slate-300 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-blue-600 peer-checked:after:translate-x-4 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-blue-600 rtl:peer-checked:after:-translate-x-4" />
+                    </label>
+
+                    {form.enableCounterShift === true && (
+                      <>
+                        <label className="settings-item-row cursor-pointer">
+                          <span className="settings-item-copy">
+                            <span className="block text-sm font-semibold text-slate-700">
+                              {isRtl ? 'وردية الصندوق اليومية' : 'Daily Counter Shift'}
+                            </span>
+                            <span className="mt-0.5 block text-xs text-slate-500">
+                              {isRtl
+                                ? 'حساب جميع المعاملات تلقائياً حسب وقت الفتح والإغلاق اليومي دون الحاجة لفتح أو إغلاق الوردية يدوياً.'
+                                : 'Automatically calculate all daily entries by shift opening and closing time without manual shift opening or closing balance.'}
+                            </span>
+                          </span>
+                          <input
+                            type="checkbox"
+                            role="switch"
+                            aria-label={isRtl ? 'وردية الصندوق اليومية' : 'Daily Counter Shift'}
+                            checked={form.enableDailyCounterShift === true}
+                            onChange={(event) =>
+                              setForm((current) => ({
+                                ...current,
+                                enableDailyCounterShift: event.target.checked,
+                              }))
+                            }
+                            className="peer sr-only"
+                          />
+                          <span className="relative h-5 w-9 shrink-0 rounded-full bg-slate-300 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-blue-600 peer-checked:after:translate-x-4 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-blue-600 rtl:peer-checked:after:-translate-x-4" />
+                        </label>
+
+                        {form.enableDailyCounterShift === true && (() => {
+                          const openStr = form.dailyShiftOpenTime || '00:00';
+                          const closeStr = form.dailyShiftCloseTime || '23:59';
+                          const nextDay = form.dailyShiftCloseNextDay === true;
+                          const [oH, oM] = openStr.split(':').map(Number);
+                          const [cH, cM] = closeStr.split(':').map(Number);
+                          const startMin = (oH || 0) * 60 + (oM || 0);
+                          const endMin = (cH || 0) * 60 + (cM || 0) + (nextDay ? 1440 : 0);
+                          const durationMin = endMin - startMin;
+                          const validDuration = durationMin > 0;
+                          const hours = validDuration ? Math.floor(durationMin / 60) : 0;
+                          const mins = validDuration ? durationMin % 60 : 0;
+                          return (
+                            <div className="settings-item-row">
+                              <div className="settings-item-copy">
+                                <span className="block text-sm font-semibold text-slate-700">
+                                  {isRtl ? 'وقت فتح وإغلاق الوردية اليومية' : 'Daily Shift Opening & Closing Time'}
+                                </span>
+                                <span className="mt-0.5 block text-xs text-slate-500">
+                                  {isRtl
+                                    ? 'يمكن للمستخدم إنشاء السندات فقط ضمن فترة الوردية المحددة.'
+                                    : 'Users can only create vouchers within this shift time window.'}
+                                </span>
+                                <div className="mt-1.5 inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800">
+                                  <span>{isRtl ? 'مدة الوردية:' : 'Shift Duration:'}</span>
+                                  {validDuration ? (
+                                    <span className="font-mono">
+                                      {hours}h {mins}m
+                                    </span>
+                                  ) : (
+                                    <span className="text-red-600">
+                                      {isRtl ? 'وقت الإغلاق قبل الفتح (فعّل اليوم التالي)' : 'Closing is before opening (enable Next Day)'}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap items-end gap-3">
+                                <label className="text-xs font-semibold text-slate-600">
+                                  <span className="mb-1 block">{isRtl ? 'وقت الفتح' : 'Opening Time'}</span>
+                                  <input
+                                    type="time"
+                                    value={openStr}
+                                    onChange={(e) =>
+                                      setForm((cur) => ({
+                                        ...cur,
+                                        dailyShiftOpenTime: e.target.value || '00:00',
+                                      }))
+                                    }
+                                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-900 focus:border-blue-700 focus:outline-none"
+                                  />
+                                </label>
+                                <label className="text-xs font-semibold text-slate-600">
+                                  <span className="mb-1 block">{isRtl ? 'وقت الإغلاق' : 'Closing Time'}</span>
+                                  <input
+                                    type="time"
+                                    value={closeStr}
+                                    onChange={(e) =>
+                                      setForm((cur) => ({
+                                        ...cur,
+                                        dailyShiftCloseTime: e.target.value || '23:59',
+                                      }))
+                                    }
+                                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-900 focus:border-blue-700 focus:outline-none"
+                                  />
+                                </label>
+                                <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100">
+                                  <input
+                                    type="checkbox"
+                                    checked={nextDay}
+                                    onChange={(e) =>
+                                      setForm((cur) => ({
+                                        ...cur,
+                                        dailyShiftCloseNextDay: e.target.checked,
+                                      }))
+                                    }
+                                    className="h-3.5 w-3.5 accent-emerald-700"
+                                  />
+                                  <span>{isRtl ? 'اليوم التالي' : 'Next Day'}</span>
+                                </label>
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </>
+                    )}
+                  </>
+                  )}
                   {activeSettingsSection === 'customers' && (
                   <div className="settings-item-row settings-input-row">
                     <label className="settings-item-copy text-sm font-semibold text-slate-700">
@@ -2137,13 +2594,107 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
                 {activeSettingsSection === 'print' && (
                   <div className="space-y-4">
-                    {/* General Print & KOT Settings */}
-                    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs space-y-4">
+                    {/* Enable KOT & KOT Printer Selection */}
+                    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between gap-4">
+                        <label htmlFor="enable-kot-toggle" className="cursor-pointer">
+                          <span className="block text-sm font-semibold text-slate-900">
+                            {isRtl ? 'تفعيل طلب المطبخ (KOT)' : 'Enable KOT'}
+                          </span>
+                        </label>
+                        <input
+                          id="enable-kot-toggle"
+                          type="checkbox"
+                          checked={Boolean(form.enableKot)}
+                          onChange={(e) => setForm((cur) => ({ ...cur, enableKot: e.target.checked }))}
+                          className="h-4 w-4 rounded border-slate-300 accent-emerald-700"
+                        />
+                      </div>
+
+                      {form.enableKot && (
+                        <div className="flex flex-col gap-2 border-t border-slate-100 pt-3 sm:flex-row sm:items-center sm:justify-between">
+                          <label htmlFor="kot-printer-select" className="text-xs font-semibold text-slate-700">
+                            {isRtl ? 'طابعة KOT' : 'KOT Printer'}
+                          </label>
+                          <div className="flex items-center gap-2 sm:w-80">
+                            <select
+                              id="kot-printer-select"
+                              value={form.kotPrinter || ''}
+                              onChange={(e) => {
+                                const printerName = e.target.value;
+                                setForm((cur) => {
+                                  const kotFormat = getPrintDocumentFormat(cur, 'kot', cur.paperWidth || '80mm');
+                                  const existingKotProfile = cur.printDocumentProfiles?.kot?.[kotFormat];
+                                  const kotTemplates = getPrintTemplates('kot', kotFormat);
+                                  return {
+                                    ...cur,
+                                    kotPrinter: printerName || undefined,
+                                    printDocumentProfiles: {
+                                      ...cur.printDocumentProfiles,
+                                      kot: {
+                                        ...cur.printDocumentProfiles?.kot,
+                                        [kotFormat]: {
+                                          templateId: existingKotProfile?.templateId || kotTemplates[0]?.id || '',
+                                          printerName: printerName || undefined,
+                                          printerMode: printerName ? 'saved-printer' : 'system-default',
+                                        },
+                                      },
+                                    },
+                                  };
+                                });
+                              }}
+                              className="flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-900 outline-none focus:border-emerald-600"
+                            >
+                              <option value="">
+                                {isRtl ? 'الطابعة الافتراضية للنظام' : 'System Default Printer'}
+                              </option>
+                              {availablePrinters.map((printer) => (
+                                <option key={printer.name} value={printer.name}>
+                                  {printer.displayName || printer.name}
+                                </option>
+                              ))}
+                              {form.kotPrinter && !availablePrinters.some((p) => p.name === form.kotPrinter) && (
+                                <option value={form.kotPrinter}>{form.kotPrinter}</option>
+                              )}
+                            </select>
+                            {window.electronAPI?.listPrinters && (
+                              <button
+                                type="button"
+                                onClick={() => void loadPrinters()}
+                                disabled={loadingPrinters}
+                                title={isRtl ? 'تحديث الطابعات' : 'Refresh printers'}
+                                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+                              >
+                                <RefreshCw className={`h-3.5 w-3.5 ${loadingPrinters ? 'animate-spin' : ''}`} />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-between gap-4 border-t border-slate-100 pt-3">
+                        <label htmlFor="enable-cash-receipt-toggle" className="cursor-pointer">
+                          <span className="block text-sm font-semibold text-slate-900">
+                            {isRtl ? 'تفعيل الإيصال النقدي / البنكي' : 'Enable Cash / Bank Receipt'}
+                          </span>
+                        </label>
+                        <input
+                          id="enable-cash-receipt-toggle"
+                          type="checkbox"
+                          checked={Boolean(form.enableCashReceipt)}
+                          onChange={(e) => setForm((cur) => ({ ...cur, enableCashReceipt: e.target.checked }))}
+                          className="h-4 w-4 rounded border-slate-300 accent-emerald-700"
+                        />
+                      </div>
+                    </section>
+
+                    {/* Voucher-wise Template, Printer & Preview */}
+                    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs space-y-3">
                       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
                         <div className="flex items-center gap-2">
-                          <Printer className="h-4 w-4 text-blue-700" />
+                          <Printer className="h-4 w-4 text-emerald-700" />
                           <h3 className="text-sm font-semibold text-slate-900">
-                            {isRtl ? 'إعدادات الطباعة العامة و KOT' : 'General Print & KOT Settings'}
+                            {isRtl ? 'قوالب وطابعات السندات' : 'Voucher Templates & Printers'}
                           </h3>
                         </div>
                         {window.electronAPI?.listPrinters && (
@@ -2159,386 +2710,725 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         )}
                       </div>
 
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <label className="block text-xs font-medium text-slate-700">
-                          {isRtl ? 'مقاس الورق الافتراضي' : 'Default Paper Size'}
-                          <select
-                            value={form.paperWidth || '80mm'}
-                            onChange={(e) => setForm((cur) => ({ ...cur, paperWidth: e.target.value as PaperWidth }))}
-                            className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus:border-blue-700 focus:outline-none"
-                          >
-                            <option value="80mm">80mm Thermal</option>
-                            <option value="58mm">58mm Thermal</option>
-                            <option value="A4">A4 Document</option>
-                          </select>
-                        </label>
+                      {voucherPreviewError && (
+                        <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                          {voucherPreviewError}
+                        </p>
+                      )}
 
-                        <label className="block text-xs font-medium text-slate-700">
-                          {isRtl ? 'الطابعة الافتراضية' : 'Default Printer'}
-                          {availablePrinters.length > 0 ? (
-                            <select
-                              value={form.defaultPrinter || ''}
-                              onChange={(e) => setForm((cur) => ({ ...cur, defaultPrinter: e.target.value }))}
-                              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus:border-blue-700 focus:outline-none"
-                            >
-                              <option value="">{isRtl ? 'طابعة النظام الافتراضية' : 'System Default Printer'}</option>
-                              {availablePrinters.map((p) => (
-                                <option key={p.name} value={p.name}>{p.displayName || p.name}</option>
-                              ))}
-                            </select>
-                          ) : (
-                            <input
-                              type="text"
-                              value={form.defaultPrinter || ''}
-                              onChange={(e) => setForm((cur) => ({ ...cur, defaultPrinter: e.target.value }))}
-                              placeholder={isRtl ? 'اسم الطابعة (اتركه فارغاً للافتراضي)' : 'Printer name (leave empty for system default)'}
-                              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus:border-blue-700 focus:outline-none"
-                            />
-                          )}
-                        </label>
-                      </div>
+                      <div className="divide-y divide-slate-100">
+                        {PRINT_DOCUMENT_OPTIONS.filter(
+                          (option) =>
+                            (option.id !== 'kot' || Boolean(form.enableKot)) &&
+                            ((option.id !== 'cash-receipt' && option.id !== 'bank-receipt') || Boolean(form.enableCashReceipt))
+                        ).map((option) => {
+                          const supportedFormats = getPrintFormats(option.id);
+                          const defaultFallbackFormat: PaperWidth =
+                            appScreenMode === 'flyerp' &&
+                            (option.id === 'sales-invoice' || option.id === 'cash-receipt' || option.id === 'bank-receipt')
+                              ? 'A4'
+                              : form.paperWidth || '80mm';
+                          const activeFormat = getPrintDocumentFormat(
+                            form,
+                            option.id,
+                            defaultFallbackFormat
+                          );
+                          const templates = getPrintTemplates(option.id, activeFormat);
+                          const currentProfile = form.printDocumentProfiles?.[option.id]?.[activeFormat];
+                          const selectedTemplateId = templates.some((t) => t.id === currentProfile?.templateId)
+                            ? currentProfile!.templateId
+                            : (templates[0]?.id || '');
+                          const selectedPrinter = currentProfile?.printerName || '';
+                          const label = option.label;
+                          const isPreviewLoading = voucherPreviewLoading === option.id;
+                          const isExpanded = expandedVoucher === option.id;
+                          const resolvedMargins = resolveInvoiceMarginsMm(
+                            activeFormat,
+                            currentProfile?.marginsMm ?? form.invoiceMarginsMm
+                          );
+                          const logoEnabled = currentProfile?.enableLogo !== undefined
+                            ? currentProfile.enableLogo
+                            : form.invoiceShowStoreLogo !== false;
+                          const logoPreviewUrl = currentProfile?.logoDataUrl || form.storeLogoDataUrl;
+                          const englishEnabled = currentProfile?.enableEnglish !== false;
+                          const arabicEnabled = currentProfile?.enableArabic !== false;
+                          const footerEn = currentProfile?.footer ?? '';
+                          const footerAr = currentProfile?.footerAr ?? '';
 
-                      <div className="settings-item-list">
-                        <div className="settings-item-row settings-toggle-row">
-                          <div className="settings-item-copy">
-                            <span className="font-semibold text-slate-900 block">
-                              {isRtl ? 'تفعيل تذكرة المطبخ (KOT)' : 'Enable Kitchen Order Ticket (KOT)'}
-                            </span>
-                            <span className="text-[11px] text-slate-500">
-                              {isRtl ? 'إظهار أزرار معاينة وطباعة KOT في نقطة البيع.' : 'Show KOT preview and print controls in the POS/RPOS register.'}
-                            </span>
-                          </div>
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={Boolean(form.enableKot)}
-                            onClick={() => setForm((cur) => ({ ...cur, enableKot: !cur.enableKot }))}
-                            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${form.enableKot ? 'bg-blue-600' : 'bg-slate-300'}`}
-                          >
-                            <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${isRtl ? 'right-0.5' : 'left-0.5'} ${form.enableKot ? (isRtl ? '-translate-x-4' : 'translate-x-4') : 'translate-x-0'}`} />
-                          </button>
-                        </div>
+                          const updateProfile = (patch: Partial<NonNullable<typeof currentProfile>>) => {
+                            setForm((cur) => ({
+                              ...cur,
+                              printDocumentProfiles: {
+                                ...cur.printDocumentProfiles,
+                                [option.id]: {
+                                  ...cur.printDocumentProfiles?.[option.id],
+                                  [activeFormat]: {
+                                    ...cur.printDocumentProfiles?.[option.id]?.[activeFormat],
+                                    templateId:
+                                      patch.templateId ??
+                                      cur.printDocumentProfiles?.[option.id]?.[activeFormat]?.templateId ??
+                                      selectedTemplateId,
+                                    ...patch,
+                                  },
+                                },
+                              },
+                            }));
+                          };
 
-                        {form.enableKot && (
-                          <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/50">
-                            <label className="block text-xs font-medium text-slate-700 max-w-md">
-                              {isRtl ? 'طابعة المطبخ (KOT)' : 'KOT Printer'}
-                              {availablePrinters.length > 0 ? (
-                                <select
-                                  value={form.kotPrinter || ''}
-                                  onChange={(e) => setForm((cur) => ({ ...cur, kotPrinter: e.target.value }))}
-                                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus:border-blue-700 focus:outline-none"
+                          const handleProfileLogoPick = async (
+                            event: React.ChangeEvent<HTMLInputElement>
+                          ) => {
+                            const input = event.currentTarget;
+                            const file = input.files?.[0];
+                            input.value = '';
+                            if (!file) return;
+                            if (!STORE_LOGO_MIME_TYPES.has(file.type)) {
+                              setVoucherPreviewError(isRtl
+                                ? 'اختر صورة بصيغة PNG أو JPEG أو WebP.'
+                                : 'Choose a PNG, JPEG, or WebP image.');
+                              return;
+                            }
+                            if (file.size > MAX_STORE_LOGO_FILE_SIZE) {
+                              setVoucherPreviewError(isRtl
+                                ? 'يجب ألا يتجاوز حجم الصورة 1 ميجابايت.'
+                                : 'The image must be 1 MB or smaller.');
+                              return;
+                            }
+                            try {
+                              const dataUrl = await readImageDataUrl(file);
+                              setVoucherPreviewError(null);
+                              updateProfile({
+                                logoDataUrl: dataUrl,
+                                enableLogo: true,
+                              });
+                            } catch (err) {
+                              setVoucherPreviewError(err instanceof Error ? err.message : 'Could not load image.');
+                            }
+                          };
+
+                          return (
+                            <div key={option.id} className="py-2.5 first:pt-1 last:pb-1">
+                              <div className="grid grid-cols-1 items-center gap-2.5 lg:grid-cols-[minmax(160px,1.1fr)_minmax(160px,1.2fr)_minmax(160px,1.2fr)_auto]">
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedVoucher(isExpanded ? null : option.id)}
+                                  aria-expanded={isExpanded}
+                                  className="flex min-w-0 items-center gap-2 rounded-lg px-1.5 py-1.5 text-start transition-colors hover:bg-emerald-50/70"
                                 >
-                                  <option value="">{isRtl ? 'نفس الطابعة الافتراضية' : 'Same as Default Printer'}</option>
-                                  {availablePrinters.map((p) => (
-                                    <option key={p.name} value={p.name}>{p.displayName || p.name}</option>
+                                  {isExpanded ? (
+                                    <ChevronDown className="h-4 w-4 shrink-0 text-emerald-700" />
+                                  ) : (
+                                    <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 ${isRtl ? 'rotate-180' : ''}`} />
+                                  )}
+                                  <span className="truncate text-xs font-semibold text-slate-900">
+                                    {label}
+                                  </span>
+                                  <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-600">
+                                    {activeFormat}
+                                  </span>
+                                </button>
+
+                                <select
+                                  aria-label={`${label} template`}
+                                  value={selectedTemplateId}
+                                  onChange={(e) => updateProfile({ templateId: e.target.value })}
+                                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-900 outline-none focus:border-emerald-600"
+                                >
+                                  {templates.map((template) => (
+                                    <option key={template.id} value={template.id}>
+                                      {template.label}
+                                    </option>
                                   ))}
                                 </select>
-                              ) : (
-                                <input
-                                  type="text"
-                                  value={form.kotPrinter || ''}
-                                  onChange={(e) => setForm((cur) => ({ ...cur, kotPrinter: e.target.value }))}
-                                  placeholder={isRtl ? 'اسم طابعة KOT' : 'KOT printer name'}
-                                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus:border-blue-700 focus:outline-none"
-                                />
-                              )}
-                            </label>
-                          </div>
-                        )}
 
-                        <div className="settings-item-row settings-toggle-row">
-                          <div className="settings-item-copy">
-                            <span className="font-semibold text-slate-900 block">
-                              {isRtl ? 'فواتير متعددة اللغات (عربي / إنجليزي)' : 'Multi-Lingual Invoices (English & Arabic)'}
-                            </span>
-                            <span className="text-[11px] text-slate-500">
-                              {isRtl ? 'طباعة العناوين والحقول باللغتين العربية والإنجليزية معاً.' : 'Print headings and field labels in both English and Arabic.'}
-                            </span>
-                          </div>
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={Boolean(form.multiLanguageInvoices)}
-                            onClick={() => setForm((cur) => ({ ...cur, multiLanguageInvoices: !cur.multiLanguageInvoices }))}
-                            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${form.multiLanguageInvoices ? 'bg-blue-600' : 'bg-slate-300'}`}
-                          >
-                            <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${isRtl ? 'right-0.5' : 'left-0.5'} ${form.multiLanguageInvoices ? (isRtl ? '-translate-x-4' : 'translate-x-4') : 'translate-x-0'}`} />
-                          </button>
-                        </div>
-
-                        <div className="settings-item-row settings-toggle-row">
-                          <div className="settings-item-copy">
-                            <span className="font-semibold text-slate-900 block">
-                              {isRtl ? 'طباعة الإيصال تلقائياً عند البيع' : 'Auto-Print Receipt on Sale'}
-                            </span>
-                            <span className="text-[11px] text-slate-500">
-                              {isRtl ? 'تعيين الطباعة كإجراء افتراضي بعد إتمام البيع.' : 'Default to printing immediately when completing a sale.'}
-                            </span>
-                          </div>
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={Boolean(form.autoPrintReceiptOnSale)}
-                            onClick={() => setForm((cur) => ({ ...cur, autoPrintReceiptOnSale: !cur.autoPrintReceiptOnSale }))}
-                            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${form.autoPrintReceiptOnSale ? 'bg-blue-600' : 'bg-slate-300'}`}
-                          >
-                            <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${isRtl ? 'right-0.5' : 'left-0.5'} ${form.autoPrintReceiptOnSale ? (isRtl ? '-translate-x-4' : 'translate-x-4') : 'translate-x-0'}`} />
-                          </button>
-                        </div>
-                      </div>
-                    </section>
-
-                    {/* Voucher-Wise Printer & Template Selection */}
-                    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs space-y-3">
-                      <div>
-                        <h3 className="text-sm font-semibold text-slate-900">
-                          {isRtl ? 'تخصيص الطابعة والقالب لكل مستند' : 'Voucher-Wise Printer & Template'}
-                        </h3>
-                        <p className="mt-0.5 text-xs text-slate-500">
-                          {isRtl ? 'اختر مقاس الورق، القالب، والطابعة لكل نوع مستند.' : 'Choose paper format, template style, and printer per document type.'}
-                        </p>
-                      </div>
-                      <div className="overflow-x-auto rounded-lg border border-slate-200">
-                        <table className={`w-full min-w-[600px] border-collapse text-xs ${isRtl ? 'text-right' : 'text-left'}`}>
-                          <thead className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-600">
-                            <tr>
-                              <th className="px-3 py-2">{isRtl ? 'نوع المستند' : 'Document'}</th>
-                              <th className="px-3 py-2">{isRtl ? 'المقاس' : 'Paper Size'}</th>
-                              <th className="px-3 py-2">{isRtl ? 'القالب' : 'Template'}</th>
-                              <th className="px-3 py-2">{isRtl ? 'الطابعة' : 'Printer'}</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-200">
-                            {PRINT_DOCUMENT_OPTIONS.map((doc) => {
-                              const formats = getPrintFormats(doc.id);
-                              const activeFormat = getPrintDocumentFormat(form, doc.id);
-                              const templates = getPrintTemplates(doc.id, activeFormat);
-                              const profile = form.printDocumentProfiles?.[doc.id]?.[activeFormat];
-                              const selectedTemplateId = profile?.templateId || templates[0]?.id || '';
-                              const selectedPrinter = profile?.printerName || '';
-
-                              const updateDocProfile = (patch: { templateId?: string; printerName?: string }) => {
-                                setForm((cur) => ({
-                                  ...cur,
-                                  printDocumentProfiles: {
-                                    ...cur.printDocumentProfiles,
-                                    [doc.id]: {
-                                      ...cur.printDocumentProfiles?.[doc.id],
-                                      [activeFormat]: {
-                                        templateId: patch.templateId ?? selectedTemplateId,
-                                        printerName: patch.printerName ?? selectedPrinter,
-                                      },
-                                    },
-                                  },
-                                }));
-                              };
-
-                              return (
-                                <tr key={doc.id} className="hover:bg-slate-50/70">
-                                  <td className="px-3 py-2 font-medium text-slate-900">{doc.label}</td>
-                                  <td className="px-3 py-2">
-                                    <select
-                                      value={activeFormat}
-                                      onChange={(e) => {
-                                        const nextFormat = e.target.value as PaperWidth;
-                                        setForm((cur) => ({
-                                          ...cur,
-                                          printDocumentFormats: {
-                                            ...cur.printDocumentFormats,
-                                            [doc.id]: nextFormat,
+                                <select
+                                  aria-label={`${label} printer`}
+                                  value={selectedPrinter}
+                                  onChange={(e) => {
+                                    const nextPrinter = e.target.value;
+                                    setForm((cur) => ({
+                                      ...cur,
+                                      ...(option.id === 'kot' ? { kotPrinter: nextPrinter || undefined } : {}),
+                                      printDocumentProfiles: {
+                                        ...cur.printDocumentProfiles,
+                                        [option.id]: {
+                                          ...cur.printDocumentProfiles?.[option.id],
+                                          [activeFormat]: {
+                                            ...cur.printDocumentProfiles?.[option.id]?.[activeFormat],
+                                            templateId: selectedTemplateId,
+                                            printerName: nextPrinter || undefined,
+                                            printerMode: nextPrinter ? 'saved-printer' : 'system-default',
                                           },
-                                        }));
-                                      }}
-                                      className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-xs focus:border-blue-700 focus:outline-none"
-                                    >
-                                      {formats.map((f) => (
-                                        <option key={f} value={f}>{f}</option>
-                                      ))}
-                                    </select>
-                                  </td>
-                                  <td className="px-3 py-2">
-                                    <select
-                                      value={selectedTemplateId}
-                                      onChange={(e) => updateDocProfile({ templateId: e.target.value })}
-                                      className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-xs focus:border-blue-700 focus:outline-none"
-                                    >
-                                      {templates.map((tpl) => (
-                                        <option key={tpl.id} value={tpl.id}>{tpl.label}</option>
-                                      ))}
-                                    </select>
-                                  </td>
-                                  <td className="px-3 py-2">
-                                    {availablePrinters.length > 0 ? (
+                                        },
+                                      },
+                                    }));
+                                  }}
+                                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-900 outline-none focus:border-emerald-600"
+                                >
+                                  <option value="">
+                                    {isRtl ? 'الطابعة الافتراضية' : 'System Default'}
+                                  </option>
+                                  {availablePrinters.map((printer) => (
+                                    <option key={printer.name} value={printer.name}>
+                                      {printer.displayName || printer.name}
+                                    </option>
+                                  ))}
+                                  {selectedPrinter && !availablePrinters.some((p) => p.name === selectedPrinter) && (
+                                    <option value={selectedPrinter}>{selectedPrinter}</option>
+                                  )}
+                                </select>
+
+                                <button
+                                  type="button"
+                                  disabled={isPreviewLoading || !selectedTemplateId}
+                                  onClick={() => void handlePreviewVoucher(option.id, label, activeFormat, selectedTemplateId)}
+                                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+                                >
+                                  {isPreviewLoading ? (
+                                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                                  ) : (
+                                    <Eye className="h-3.5 w-3.5" />
+                                  )}
+                                  <span>{isRtl ? 'معاينة' : 'Preview'}</span>
+                                </button>
+                              </div>
+
+                              {isExpanded && (
+                                <div className="mt-3 rounded-xl border border-emerald-200/80 bg-emerald-50/30 p-3.5 space-y-4">
+                                  {/* Paper Type & Margins */}
+                                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                                    <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2.5">
+                                      <label className="block text-xs font-semibold text-slate-900">
+                                        {isRtl ? 'نوع الورق' : 'Paper Type'}
+                                      </label>
                                       <select
-                                        value={selectedPrinter}
-                                        onChange={(e) => updateDocProfile({ printerName: e.target.value })}
-                                        className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-xs focus:border-blue-700 focus:outline-none"
+                                        aria-label={`${label} paper type`}
+                                        value={activeFormat}
+                                        onChange={(e) => {
+                                          const nextFormat = e.target.value as PaperWidth;
+                                          setForm((cur) => ({
+                                            ...cur,
+                                            printDocumentFormats: {
+                                              ...cur.printDocumentFormats,
+                                              [option.id]: nextFormat,
+                                            },
+                                          }));
+                                        }}
+                                        className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-900 outline-none focus:border-emerald-600"
                                       >
-                                        <option value="">{isRtl ? 'الافتراضي' : 'Default'}</option>
-                                        {availablePrinters.map((p) => (
-                                          <option key={p.name} value={p.name}>{p.displayName || p.name}</option>
+                                        {supportedFormats.map((fmt) => (
+                                          <option key={fmt} value={fmt}>{fmt}</option>
                                         ))}
                                       </select>
-                                    ) : (
+                                      {activeFormat === 'Custom' && (
+                                        <div className="grid grid-cols-2 gap-2 pt-1">
+                                          <label className="block text-[11px] font-medium text-slate-600">
+                                            {isRtl ? 'العرض (مم)' : 'Width (mm)'}
+                                            <input
+                                              type="number"
+                                              min={48}
+                                              max={420}
+                                              value={currentProfile?.customWidthMm ?? 210}
+                                              onChange={(e) => updateProfile({
+                                                customWidthMm: Math.min(420, Math.max(48, Number(e.target.value) || 210)),
+                                              })}
+                                              className="mt-1 w-full rounded border border-slate-200 bg-white px-2 py-1.5 font-mono text-xs text-slate-900 outline-none focus:border-emerald-600"
+                                            />
+                                          </label>
+                                          <label className="block text-[11px] font-medium text-slate-600">
+                                            {isRtl ? 'الارتفاع (مم)' : 'Height (mm)'}
+                                            <input
+                                              type="number"
+                                              min={60}
+                                              max={594}
+                                              value={currentProfile?.customHeightMm ?? 297}
+                                              onChange={(e) => updateProfile({
+                                                customHeightMm: Math.min(594, Math.max(60, Number(e.target.value) || 297)),
+                                              })}
+                                              className="mt-1 w-full rounded border border-slate-200 bg-white px-2 py-1.5 font-mono text-xs text-slate-900 outline-none focus:border-emerald-600"
+                                            />
+                                          </label>
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2.5">
+                                      <span className="block text-xs font-semibold text-slate-900">
+                                        {isRtl ? 'الهوامش (مم)' : 'Margins (mm)'}
+                                      </span>
+                                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                        {([
+                                          { key: 'top' as const, label: isRtl ? 'أعلى' : 'Top' },
+                                          { key: 'right' as const, label: isRtl ? 'يمين' : 'Right' },
+                                          { key: 'bottom' as const, label: isRtl ? 'أسفل' : 'Bottom' },
+                                          { key: 'left' as const, label: isRtl ? 'يسار' : 'Left' },
+                                        ]).map((side) => {
+                                          const draftKey = `${option.id}:${activeFormat}:${side.key}`;
+                                          const inputValue = marginDrafts[draftKey] ?? String(resolvedMargins[side.key]);
+                                          return (
+                                            <label key={side.key} className="block text-[11px] font-medium text-slate-600">
+                                              {side.label}
+                                              <input
+                                                type="text"
+                                                inputMode="decimal"
+                                                value={inputValue}
+                                                onChange={(e) => {
+                                                  const raw = e.target.value;
+                                                  if (!/^\d*\.?\d*$/.test(raw)) return;
+                                                  setMarginDrafts((prev) => ({ ...prev, [draftKey]: raw }));
+                                                  if (raw === '' || raw === '.') return;
+                                                  const parsed = Number(raw);
+                                                  if (!Number.isFinite(parsed)) return;
+                                                  updateProfile({
+                                                    marginsMm: {
+                                                      ...resolvedMargins,
+                                                      [side.key]: Math.min(100, Math.max(0, parsed)),
+                                                    },
+                                                  });
+                                                }}
+                                                onBlur={() => {
+                                                  const raw = marginDrafts[draftKey];
+                                                  if (raw !== undefined) {
+                                                    const parsed = Number(raw);
+                                                    const normalized = raw.trim() === '' || !Number.isFinite(parsed)
+                                                      ? 0
+                                                      : Math.min(100, Math.max(0, parsed));
+                                                    updateProfile({
+                                                      marginsMm: {
+                                                        ...resolvedMargins,
+                                                        [side.key]: normalized,
+                                                      },
+                                                    });
+                                                    setMarginDrafts((prev) => {
+                                                      const next = { ...prev };
+                                                      delete next[draftKey];
+                                                      return next;
+                                                    });
+                                                  }
+                                                }}
+                                                className="mt-1 w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-right font-mono text-xs text-slate-900 outline-none focus:border-emerald-600"
+                                              />
+                                            </label>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Enable Logo & Choose Logo / Print Languages */}
+                                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                                    <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2.5">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <label
+                                          htmlFor={`enable-logo-${option.id}`}
+                                          className="cursor-pointer text-xs font-semibold text-slate-900"
+                                        >
+                                          {isRtl ? 'تفعيل الشعار' : 'Enable Logo'}
+                                        </label>
+                                        <input
+                                          id={`enable-logo-${option.id}`}
+                                          type="checkbox"
+                                          checked={logoEnabled}
+                                          onChange={(e) => updateProfile({ enableLogo: e.target.checked })}
+                                          className="h-4 w-4 rounded border-slate-300 accent-emerald-700"
+                                        />
+                                      </div>
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100">
+                                          <Upload className="h-3.5 w-3.5" />
+                                          <span>{isRtl ? 'اختيار الشعار' : 'Choose Logo'}</span>
+                                          <input
+                                            type="file"
+                                            accept="image/png,image/jpeg,image/webp"
+                                            className="sr-only"
+                                            onChange={(e) => void handleProfileLogoPick(e)}
+                                          />
+                                        </label>
+                                        {currentProfile?.logoDataUrl && (
+                                          <button
+                                            type="button"
+                                            onClick={() => updateProfile({ logoDataUrl: undefined })}
+                                            className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+                                          >
+                                            {isRtl ? 'إزالة' : 'Remove'}
+                                          </button>
+                                        )}
+                                        {logoEnabled && logoPreviewUrl && (
+                                          <img
+                                            src={logoPreviewUrl}
+                                            alt=""
+                                            className="h-9 max-w-[110px] rounded border border-slate-200 bg-white object-contain p-0.5"
+                                          />
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2.5">
+                                      <span className="block text-xs font-semibold text-slate-900">
+                                        {isRtl ? 'لغة الطباعة' : 'Print Languages'}
+                                      </span>
+                                      <div className="space-y-2">
+                                        <label
+                                          htmlFor={`enable-english-${option.id}`}
+                                          className="flex cursor-pointer items-center justify-between gap-2 text-xs font-medium text-slate-700"
+                                        >
+                                          <span>{isRtl ? 'تفعيل الإنجليزية' : 'Enable English'}</span>
+                                          <input
+                                            id={`enable-english-${option.id}`}
+                                            type="checkbox"
+                                            checked={englishEnabled}
+                                            onChange={(e) => {
+                                              const nextEnglish = e.target.checked;
+                                              updateProfile({
+                                                enableEnglish: nextEnglish,
+                                                ...(!nextEnglish && !arabicEnabled ? { enableArabic: true } : {}),
+                                              });
+                                            }}
+                                            className="h-4 w-4 rounded border-slate-300 accent-emerald-700"
+                                          />
+                                        </label>
+                                        <label
+                                          htmlFor={`enable-arabic-${option.id}`}
+                                          className="flex cursor-pointer items-center justify-between gap-2 text-xs font-medium text-slate-700"
+                                        >
+                                          <span>{isRtl ? 'تفعيل العربية' : 'Enable Arabic'}</span>
+                                          <input
+                                            id={`enable-arabic-${option.id}`}
+                                            type="checkbox"
+                                            checked={arabicEnabled}
+                                            onChange={(e) => {
+                                              const nextArabic = e.target.checked;
+                                              updateProfile({
+                                                enableArabic: nextArabic,
+                                                ...(!nextArabic && !englishEnabled ? { enableEnglish: true } : {}),
+                                              });
+                                            }}
+                                            className="h-4 w-4 rounded border-slate-300 accent-emerald-700"
+                                          />
+                                        </label>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Invoice Footer */}
+                                  <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2.5">
+                                    <span className="block text-xs font-semibold text-slate-900">
+                                      {isRtl ? 'تذييل الفاتورة' : 'Invoice Footer'}
+                                    </span>
+                                    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                                       <input
                                         type="text"
-                                        value={selectedPrinter}
-                                        onChange={(e) => updateDocProfile({ printerName: e.target.value })}
-                                        placeholder={isRtl ? 'الافتراضي' : 'Default'}
-                                        className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-xs focus:border-blue-700 focus:outline-none"
+                                        value={footerEn}
+                                        onChange={(e) => updateProfile({ footer: e.target.value })}
+                                        placeholder={isRtl ? 'تذييل بالإنجليزية...' : 'Footer text (English)...'}
+                                        className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-900 outline-none focus:border-emerald-600"
                                       />
-                                    )}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </section>
+                                      <input
+                                        type="text"
+                                        dir="rtl"
+                                        value={footerAr}
+                                        onChange={(e) => updateProfile({ footerAr: e.target.value })}
+                                        placeholder={isRtl ? 'تذييل بالعربية...' : 'Footer text (Arabic)...'}
+                                        className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-900 outline-none focus:border-emerald-600"
+                                      />
+                                    </div>
+                                  </div>
 
-                    {/* Print Margin Settings */}
-                    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs space-y-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <div>
-                          <h3 className="text-sm font-semibold text-slate-900">
-                            {isRtl ? 'هوامش الطباعة (مم)' : 'Print Margins (mm)'}
-                          </h3>
-                          <p className="mt-0.5 text-xs text-slate-500">
-                            {isRtl ? 'تحديد الهوامش العليا والسفلى والجانبية للمطبوعات.' : 'Set top, right, bottom, and left page margins in millimeters.'}
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const defaults = resolveInvoiceMarginsMm(form.paperWidth || '80mm');
-                            setForm((cur) => ({ ...cur, invoiceMarginsMm: defaults }));
-                          }}
-                          className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
-                        >
-                          {isRtl ? 'استعادة الافتراضي' : 'Reset defaults'}
-                        </button>
-                      </div>
-                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                        {(['top', 'right', 'bottom', 'left'] as const).map((side) => {
-                          const resolved = resolveInvoiceMarginsMm(form.paperWidth || '80mm', form.invoiceMarginsMm);
-                          return (
-                            <label key={side} className="block text-xs font-medium text-slate-700 capitalize">
-                              {side} (mm)
-                              <input
-                                type="number"
-                                min={0}
-                                max={20}
-                                step="0.5"
-                                value={form.invoiceMarginsMm?.[side] ?? resolved[side]}
-                                onChange={(e) => {
-                                  const val = Math.max(0, Math.min(20, Number(e.target.value) || 0));
-                                  setForm((cur) => ({
-                                    ...cur,
-                                    invoiceMarginsMm: {
-                                      ...resolveInvoiceMarginsMm(cur.paperWidth || '80mm', cur.invoiceMarginsMm),
-                                      [side]: val,
-                                    },
-                                  }));
-                                }}
-                                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-mono text-xs text-slate-900 focus:border-blue-700 focus:outline-none"
-                              />
-                            </label>
+                                  {/* Save Button */}
+                                  <div className="flex items-center justify-end gap-2">
+                                    {savedNotice && (
+                                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700">
+                                        <Check className="h-3.5 w-3.5" />
+                                        {isRtl ? 'تم الحفظ' : 'Saved'}
+                                      </span>
+                                    )}
+                                    <button
+                                      type="submit"
+                                      disabled={saving}
+                                      className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-semibold text-white shadow-xs hover:bg-emerald-800 disabled:opacity-60"
+                                    >
+                                      <Save className="h-3.5 w-3.5" />
+                                      {saving
+                                        ? (isRtl ? 'جارٍ الحفظ…' : 'Saving…')
+                                        : (isRtl ? 'حفظ' : 'Save')}
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
                           );
                         })}
                       </div>
                     </section>
 
-                    {/* Logo & QR Code Resize Settings */}
-                    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs space-y-4">
-                      <h3 className="text-sm font-semibold text-slate-900">
-                        {isRtl ? 'حجم الشعار ورمز الاستجابة السريعة (QR)' : 'Logo & QR Code Resize Settings'}
-                      </h3>
-                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                        <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3 space-y-2.5">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-semibold text-slate-900">
-                              {isRtl ? 'عرض الشعار (مم)' : 'Store Logo Width (mm)'}
-                            </span>
-                            <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={form.invoiceShowStoreLogo !== false}
-                                onChange={(e) => setForm((cur) => ({ ...cur, invoiceShowStoreLogo: e.target.checked }))}
-                                className="rounded border-slate-300 text-blue-700"
+                    {voucherPreview && (
+                      <div
+                        className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/60 p-3 sm:p-6"
+                        role="dialog"
+                        aria-modal="true"
+                        onClick={(event) => {
+                          if (event.target === event.currentTarget) setVoucherPreview(null);
+                        }}
+                      >
+                        <div className="flex max-h-[90dvh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+                          <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+                            <h3 className="text-sm font-bold text-slate-900">
+                              {voucherPreview.title}
+                            </h3>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={voucherPreviewPrinting}
+                                onClick={async () => {
+                                  setVoucherPreviewPrinting(true);
+                                  try {
+                                    await printTemplateJob({ ...voucherPreview.job, silent: false });
+                                  } finally {
+                                    setVoucherPreviewPrinting(false);
+                                  }
+                                }}
+                                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50"
+                              >
+                                <Printer className="h-3.5 w-3.5" />
+                                {isRtl ? 'طباعة' : 'Print'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setVoucherPreview(null)}
+                                className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                                aria-label={isRtl ? 'إغلاق' : 'Close'}
+                              >
+                                <X className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </div>
+                          <div className="min-h-0 flex-1 overflow-auto bg-slate-200/80 p-5">
+                            <div className="mx-auto flex justify-center">
+                              <PrintPreviewFrame
+                                job={voucherPreview.job}
+                                title={voucherPreview.title}
                               />
-                              {isRtl ? 'إظهار' : 'Show'}
-                            </label>
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <input
-                              type="range"
-                              min={12}
-                              max={60}
-                              step={1}
-                              disabled={form.invoiceShowStoreLogo === false}
-                              value={form.invoiceLogoSizeMm ?? 34}
-                              onChange={(e) => setForm((cur) => ({ ...cur, invoiceLogoSizeMm: Number(e.target.value) }))}
-                              className="flex-1 accent-blue-700"
-                            />
-                            <input
-                              type="number"
-                              min={12}
-                              max={60}
-                              disabled={form.invoiceShowStoreLogo === false}
-                              value={form.invoiceLogoSizeMm ?? 34}
-                              onChange={(e) => setForm((cur) => ({ ...cur, invoiceLogoSizeMm: Math.min(60, Math.max(12, Number(e.target.value) || 34)) }))}
-                              className="w-16 rounded border border-slate-200 bg-white px-2 py-1 text-right font-mono text-xs"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3 space-y-2.5">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-semibold text-slate-900">
-                              {isRtl ? 'حجم رمز QR (مم)' : 'QR Code Size (mm)'}
-                            </span>
-                            <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={form.invoiceShowQrCode !== false}
-                                onChange={(e) => setForm((cur) => ({ ...cur, invoiceShowQrCode: e.target.checked }))}
-                                className="rounded border-slate-300 text-blue-700"
-                              />
-                              {isRtl ? 'إظهار' : 'Show'}
-                            </label>
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <input
-                              type="range"
-                              min={15}
-                              max={50}
-                              step={1}
-                              disabled={form.invoiceShowQrCode === false}
-                              value={form.invoiceQrCodeSizeMm ?? 25}
-                              onChange={(e) => setForm((cur) => ({ ...cur, invoiceQrCodeSizeMm: Number(e.target.value) }))}
-                              className="flex-1 accent-blue-700"
-                            />
-                            <input
-                              type="number"
-                              min={15}
-                              max={50}
-                              disabled={form.invoiceShowQrCode === false}
-                              value={form.invoiceQrCodeSizeMm ?? 25}
-                              onChange={(e) => setForm((cur) => ({ ...cur, invoiceQrCodeSizeMm: Math.min(50, Math.max(15, Number(e.target.value) || 25)) }))}
-                              className="w-16 rounded border border-slate-200 bg-white px-2 py-1 text-right font-mono text-xs"
-                            />
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </section>
+                    )}
                   </div>
                 )}
               </div>
             )}
 
             {/* SECTION 2: STORE & RECEIPT INFO */}
+            {activeSettingsSection === 'zatca' && (
+              <div className="space-y-4">
+                {/* Current Business Details */}
+                <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900">
+                        {isRtl ? 'بيانات المنشأة الحالية' : 'Current Business Details'}
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        {isRtl
+                          ? 'تُستخدم هذه البيانات في الفاتورة الإلكترونية ورمز QR الخاص بهيئة الزكاة والضريبة والجمارك.'
+                          : 'These business details are embedded in your ZATCA e-invoices and QR code.'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onActiveSectionChange('business')}
+                      className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                    >
+                      {isRtl ? 'تعديل بيانات المنشأة' : 'Edit Business Profile'}
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3 text-xs">
+                    {[
+                      { label: isRtl ? 'اسم المنشأة' : 'Business Name', value: form.storeName },
+                      { label: isRtl ? 'اسم المنشأة بالعربية' : 'Arabic Name', value: form.storeNameAr },
+                      { label: isRtl ? 'الرقم الضريبي (VAT)' : 'VAT Number', value: form.taxId, mono: true },
+                      { label: isRtl ? 'السجل التجاري (CR)' : 'CR Number', value: form.crNumber, mono: true },
+                      { label: isRtl ? 'الهاتف' : 'Phone', value: form.phone, mono: true },
+                      {
+                        label: isRtl ? 'العنوان' : 'Address',
+                        value:
+                          [
+                            form.buildingNo,
+                            form.streetName,
+                            form.district,
+                            form.city,
+                            form.postalCode,
+                            form.country,
+                          ]
+                            .filter((part) => Boolean(part?.trim()))
+                            .join(', ') || form.address,
+                      },
+                    ].map((item) => (
+                      <div key={item.label} className="rounded-lg border border-slate-100 bg-slate-50/70 px-3 py-2">
+                        <span className="block text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                          {item.label}
+                        </span>
+                        <span className={`mt-0.5 block truncate text-xs font-semibold text-slate-900 ${item.mono ? 'font-mono' : ''}`}>
+                          {item.value?.trim() || '—'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                {/* ZATCA E-Invoice Phase */}
+                <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs space-y-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">
+                      {isRtl ? 'مرحلة الفوترة الإلكترونية (ZATCA)' : 'ZATCA E-Invoice Phase'}
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      {isRtl
+                        ? 'اختر مرحلة الامتثال المطبقة على منشأتك.'
+                        : 'Select the ZATCA e-invoicing compliance phase for your store.'}
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={() => setForm((cur) => ({ ...cur, zatcaPhase: '1' }))}
+                      className="flex flex-col items-start rounded-xl border border-emerald-600 bg-emerald-50/70 p-3.5 text-start ring-1 ring-emerald-500 transition-colors"
+                    >
+                      <div className="flex w-full items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-emerald-900">
+                          {isRtl ? 'المرحلة 1 — الإصدار' : 'Phase 1 — Generation'}
+                        </span>
+                        <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-[10px] font-bold text-white">
+                          {isRtl ? 'نشط' : 'Active'}
+                        </span>
+                      </div>
+                      <span className="mt-1 text-[11px] text-slate-600">
+                        {isRtl
+                          ? 'إصدار الفواتير الإلكترونية وحفظها مع رمز QR (TLV).'
+                          : 'Generate and store compliant e-invoices with TLV QR code.'}
+                      </span>
+                    </button>
+
+                    <div
+                      aria-disabled="true"
+                      className="flex cursor-not-allowed flex-col items-start rounded-xl border border-slate-200 bg-slate-50/90 p-3.5 text-start opacity-75"
+                    >
+                      <div className="flex w-full items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-slate-600">
+                          {isRtl ? 'المرحلة 2 — الربط والتكامل' : 'Phase 2 — Integration'}
+                        </span>
+                        <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-bold text-slate-600">
+                          {isRtl ? 'غير نشط' : 'Inactive'}
+                        </span>
+                      </div>
+                      <span className="mt-1 text-[11px] font-medium text-amber-800">
+                        {isRtl
+                          ? 'أنت غير مرتبط بالمرحلة 2. يرجى التواصل مع فريق aptPOS وسيرشدونك.'
+                          : 'You are not integrated with Phase 2. Please contact team aptPOS and they will guide you.'}
+                      </span>
+                    </div>
+                  </div>
+                </section>
+
+                {/* ZATCA Settings */}
+                <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs space-y-4">
+                  <h3 className="border-b border-slate-100 pb-2 text-sm font-bold text-slate-900">
+                    {isRtl ? 'إعدادات الفوترة الإلكترونية' : 'E-Invoice Settings'}
+                  </h3>
+
+                  <label className="flex cursor-pointer items-center justify-between gap-4">
+                    <span>
+                      <span className="block text-sm font-semibold text-slate-800">
+                        {isRtl ? 'تفعيل الفوترة الإلكترونية' : 'Enable E-Invoice'}
+                      </span>
+                      <span className="mt-0.5 block text-xs text-slate-500">
+                        {isRtl
+                          ? 'عند التفعيل، لا يمكن لأي مستخدم (حتى مدير الشركة) حذف فواتير المبيعات أو مرتجعات المبيعات.'
+                          : 'When enabled, Sales and Sales Return vouchers cannot be deleted by any user (including company admin).'}
+                      </span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      aria-label={isRtl ? 'تفعيل الفوترة الإلكترونية' : 'Enable E-Invoice'}
+                      checked={form.enableZatcaEinvoice === true}
+                      onChange={(event) =>
+                        setForm((cur) => ({ ...cur, enableZatcaEinvoice: event.target.checked }))
+                      }
+                      className="peer sr-only"
+                    />
+                    <span className="relative h-5 w-9 shrink-0 rounded-full bg-slate-300 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-emerald-600 peer-checked:after:translate-x-4 rtl:peer-checked:after:-translate-x-4" />
+                  </label>
+
+                  <label className="flex cursor-pointer items-center justify-between gap-4 border-t border-slate-100 pt-3">
+                    <span>
+                      <span className="block text-sm font-semibold text-slate-800">
+                        {isRtl ? 'تفعيل رمز QR في الفواتير' : 'Enable QR Code in Invoices'}
+                      </span>
+                      <span className="mt-0.5 block text-xs text-slate-500">
+                        {isRtl
+                          ? 'عرض رمز الاستجابة السريعة ZATCA QR على الفواتير المطبوعة.'
+                          : 'Show the ZATCA QR code on printed sales invoices.'}
+                      </span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      aria-label={isRtl ? 'تفعيل رمز QR في الفواتير' : 'Enable QR Code in Invoices'}
+                      checked={form.invoiceShowQrCode !== false}
+                      onChange={(event) =>
+                        setForm((cur) => ({ ...cur, invoiceShowQrCode: event.target.checked }))
+                      }
+                      className="peer sr-only"
+                    />
+                    <span className="relative h-5 w-9 shrink-0 rounded-full bg-slate-300 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-emerald-600 peer-checked:after:translate-x-4 rtl:peer-checked:after:-translate-x-4" />
+                  </label>
+
+                  <div className="border-t border-slate-100 pt-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-semibold text-slate-800">
+                        {isRtl ? 'حجم رمز QR (مم)' : 'QR Code Size (mm)'}
+                      </span>
+                      <span className="font-mono text-xs font-bold text-emerald-700">
+                        {form.invoiceQrCodeSizeMm ?? 25} mm
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min={15}
+                        max={50}
+                        step={1}
+                        value={form.invoiceQrCodeSizeMm ?? 25}
+                        onChange={(e) =>
+                          setForm((cur) => ({ ...cur, invoiceQrCodeSizeMm: Number(e.target.value) }))
+                        }
+                        className="flex-1 accent-emerald-700"
+                      />
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={String(form.invoiceQrCodeSizeMm ?? 25)}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          if (!/^\d*$/.test(raw)) return;
+                          if (raw === '') return;
+                          const parsed = Number(raw);
+                          if (Number.isFinite(parsed)) {
+                            setForm((cur) => ({
+                              ...cur,
+                              invoiceQrCodeSizeMm: Math.min(50, Math.max(15, parsed)),
+                            }));
+                          }
+                        }}
+                        className="w-16 rounded-lg border border-slate-200 px-2 py-1 text-right font-mono text-xs text-slate-900 focus:border-emerald-600 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                </section>
+              </div>
+            )}
+
             {activeSettingsSection === 'business' && (
               <div className="space-y-4">
                 <div className="px-1">
@@ -2612,6 +3502,48 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     </div>
                   </div>
 
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="font-medium text-slate-700">
+                        {isRtl ? 'حجم الشعار في الطباعة (مم)' : 'Logo Size on Prints (mm)'}
+                      </label>
+                      <span className="font-mono text-xs font-bold text-emerald-700">
+                        {form.invoiceLogoSizeMm ?? 34} mm
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min={12}
+                        max={60}
+                        step={1}
+                        value={form.invoiceLogoSizeMm ?? 34}
+                        onChange={(e) =>
+                          setForm((cur) => ({ ...cur, invoiceLogoSizeMm: Number(e.target.value) }))
+                        }
+                        className="flex-1 accent-emerald-700"
+                      />
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={String(form.invoiceLogoSizeMm ?? 34)}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          if (!/^\d*$/.test(raw)) return;
+                          if (raw === '') return;
+                          const parsed = Number(raw);
+                          if (Number.isFinite(parsed)) {
+                            setForm((cur) => ({
+                              ...cur,
+                              invoiceLogoSizeMm: Math.min(60, Math.max(12, parsed)),
+                            }));
+                          }
+                        }}
+                        className="w-16 rounded-lg border border-slate-200 bg-white px-2 py-1 text-right font-mono text-xs text-slate-900 focus:border-blue-700 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
                   <div>
                     <label className="block font-medium text-slate-700 mb-1">Store Name (English) *</label>
                     <input
@@ -2625,9 +3557,30 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </div>
 
                   <div>
-                    <label className="block font-medium text-slate-700 mb-1">
-                      Store Name (Arabic) / اسم المتجر بالعربية *
-                    </label>
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <label className="block font-medium text-slate-700">
+                        Store Name (Arabic) / اسم المتجر بالعربية *
+                      </label>
+                      <button
+                        type="button"
+                        disabled={translatingStoreNameAr || !form.storeName.trim()}
+                        onClick={async () => {
+                          setTranslatingStoreNameAr(true);
+                          try {
+                            const translated = await translateEnglishToArabic(form.storeName);
+                            setForm((cur) => ({ ...cur, storeNameAr: translated }));
+                          } catch {
+                            // Ignore transient translation error
+                          } finally {
+                            setTranslatingStoreNameAr(false);
+                          }
+                        }}
+                        className="inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-45"
+                      >
+                        <Globe className={`h-3 w-3 ${translatingStoreNameAr ? 'animate-spin' : ''}`} />
+                        <span>{isRtl ? 'ترجمة للعربية' : 'Translate to Arabic'}</span>
+                      </button>
+                    </div>
                     <input
                       type="text"
                       dir="rtl"

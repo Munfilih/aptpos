@@ -7,6 +7,8 @@ import type {
 
 export const PRINT_DOCUMENT_OPTIONS: Array<{ id: PrintDocumentType; label: string }> = [
   { id: 'sales-invoice', label: 'Sales Invoice' },
+  { id: 'cash-receipt', label: 'Cash Receipt' },
+  { id: 'bank-receipt', label: 'Bank Receipt' },
   { id: 'sales-return', label: 'Sales Return' },
   { id: 'purchase-invoice', label: 'Purchase Invoice' },
   { id: 'purchase-return', label: 'Purchase Return' },
@@ -16,66 +18,67 @@ export const PRINT_DOCUMENT_OPTIONS: Array<{ id: PrintDocumentType; label: strin
   { id: 'saudi-vat-report', label: 'Saudi Tax Report' },
 ];
 
-const PAPER_FORMATS: PaperWidth[] = ['80mm', '58mm', 'A4'];
-const SALES_VARIANTS: Array<{ variant: PrintTemplateVariant; label: string }> = [
-  { variant: 'classic', label: 'Classic' },
-  { variant: 'minimal', label: 'Minimal' },
-  { variant: 'bold', label: 'Bold' },
-  { variant: 'bilingual', label: 'Bilingual' },
-];
-const STANDARD_VARIANTS: Array<{ variant: PrintTemplateVariant; label: string }> = [
-  { variant: 'classic', label: 'Classic' },
-  { variant: 'minimal', label: 'Minimal' },
-];
-const KOT_VARIANTS: Array<{ variant: PrintTemplateVariant; label: string }> = [
-  { variant: 'kitchen', label: 'Kitchen Standard' },
-  { variant: 'kitchen-compact', label: 'Kitchen Compact' },
-  { variant: 'kitchen-station', label: 'Kitchen Station' },
-];
+const PAPER_FORMATS: PaperWidth[] = ['80mm', '58mm', 'A4', 'A5', 'Custom'];
 
-function createEntries(
+function createDesignEntries(
   documentType: PrintDocumentType,
-  format: PaperWidth,
-  variants: Array<{ variant: PrintTemplateVariant; label: string }>
+  formats: PaperWidth[],
+  extraVariants: Array<{ format: PaperWidth; variant: PrintTemplateVariant; label: string }> = []
 ): PrintTemplateDefinition[] {
-  return variants.map(({ variant, label }) => ({
-    id: `${documentType}-${format.toLowerCase()}-${variant}`,
-    documentType,
-    format,
-    label: `${label} · ${format}`,
-    variant,
-  }));
+  const entries: PrintTemplateDefinition[] = [];
+  for (const extra of extraVariants) {
+    entries.push({
+      id: `${documentType}-${extra.format.toLowerCase()}-${extra.variant}`,
+      documentType,
+      format: extra.format,
+      label: `${extra.label} · ${extra.format}`,
+      variant: extra.variant,
+    });
+  }
+  for (const format of formats) {
+    entries.push(
+      {
+        id: `${documentType}-${format.toLowerCase()}-modern`,
+        documentType,
+        format,
+        label: `Modern · ${format}`,
+        variant: 'classic',
+      },
+      {
+        id: `${documentType}-${format.toLowerCase()}-compact`,
+        documentType,
+        format,
+        label: `Compact · ${format}`,
+        variant: 'minimal',
+      }
+    );
+  }
+  return entries;
 }
 
-const voucherTypes: PrintDocumentType[] = [
-  'sales-return',
-  'purchase-invoice',
-  'purchase-return',
-];
-
 export const PRINT_TEMPLATE_CATALOG: PrintTemplateDefinition[] = [
-  ...PAPER_FORMATS.flatMap((format) => createEntries('sales-invoice', format, SALES_VARIANTS)),
-  ...createEntries('sales-invoice', 'A4', [{ variant: 'flyerp', label: 'aptFlyERP Travel' }]),
-  ...voucherTypes.flatMap((documentType) =>
-    PAPER_FORMATS.flatMap((format) => createEntries(documentType, format, STANDARD_VARIANTS))
-  ),
-  ...PAPER_FORMATS.flatMap((format) => createEntries('kot', format, KOT_VARIANTS)),
-  ...(['80mm', 'A4'] as PaperWidth[]).flatMap((format) =>
-    createEntries('ledger-statement', format, [
-      { variant: 'ledger-summary', label: 'Summary' },
-      { variant: 'ledger-detailed', label: 'Detailed' },
-    ])
-  ),
-  ...(['80mm', '58mm', 'A4'] as PaperWidth[]).flatMap((format) =>
-    createEntries('shift-report', format, [
-      { variant: 'shift-summary', label: 'Summary' },
-      { variant: 'shift-detailed', label: 'Detailed' },
-    ])
-  ),
-  ...createEntries('saudi-vat-report', 'A4', [
-    { variant: 'tax-standard', label: 'VAT Summary' },
-    { variant: 'tax-compact', label: 'VAT Detail' },
+  ...createDesignEntries('sales-invoice', PAPER_FORMATS, [
+    { format: 'A4', variant: 'flyerp', label: 'aptFlyERP Travel' },
+    { format: 'A5', variant: 'flyerp', label: 'aptFlyERP Travel' },
+    { format: 'Custom', variant: 'flyerp', label: 'aptFlyERP Travel' },
   ]),
+  ...createDesignEntries('cash-receipt', PAPER_FORMATS, [
+    { format: 'A4', variant: 'flyerp', label: 'aptFlyERP Travel' },
+    { format: 'A5', variant: 'flyerp', label: 'aptFlyERP Travel' },
+    { format: 'Custom', variant: 'flyerp', label: 'aptFlyERP Travel' },
+  ]),
+  ...createDesignEntries('bank-receipt', PAPER_FORMATS, [
+    { format: 'A4', variant: 'flyerp', label: 'aptFlyERP Travel' },
+    { format: 'A5', variant: 'flyerp', label: 'aptFlyERP Travel' },
+    { format: 'Custom', variant: 'flyerp', label: 'aptFlyERP Travel' },
+  ]),
+  ...createDesignEntries('sales-return', PAPER_FORMATS),
+  ...createDesignEntries('purchase-invoice', PAPER_FORMATS),
+  ...createDesignEntries('purchase-return', PAPER_FORMATS),
+  ...createDesignEntries('kot', PAPER_FORMATS),
+  ...createDesignEntries('ledger-statement', ['80mm', '58mm', 'A4', 'A5', 'Custom']),
+  ...createDesignEntries('shift-report', PAPER_FORMATS),
+  ...createDesignEntries('saudi-vat-report', ['A4', 'A5', 'Custom']),
 ];
 
 export function getPrintTemplates(

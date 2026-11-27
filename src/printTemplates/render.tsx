@@ -21,6 +21,94 @@ import type {
 } from './types';
 
 const A4_PAGE_SIZE = { width: 210_000, height: 297_000 };
+const A5_PAGE_SIZE = { width: 148_000, height: 210_000 };
+const THERMAL_ROLL_HEIGHT_MICRONS = 3_276_000; // 3276mm standard thermal roll height
+
+function isSheetFormat(format: PaperWidth): boolean {
+  return format === 'A4' || format === 'A5' || format === 'Custom';
+}
+
+function resolveSheetDimensionsMm(
+  format: PaperWidth,
+  customWidthMm?: number,
+  customHeightMm?: number
+): { widthMm: number; heightMm: number } {
+  if (format === 'A5') return { widthMm: 148, heightMm: 210 };
+  if (format === 'Custom') {
+    const widthMm = typeof customWidthMm === 'number' && Number.isFinite(customWidthMm)
+      ? Math.min(420, Math.max(48, customWidthMm))
+      : 210;
+    const heightMm = typeof customHeightMm === 'number' && Number.isFinite(customHeightMm)
+      ? Math.min(594, Math.max(60, customHeightMm))
+      : 297;
+    return { widthMm, heightMm };
+  }
+  return { widthMm: 210, heightMm: 297 };
+}
+
+const ARABIC_CHAR_REGEX = /[\u0600-\u06FF]/;
+
+function filterBilingualSegment(segment: string, enableEnglish: boolean, enableArabic: boolean): string {
+  if (enableEnglish && enableArabic) return segment;
+  if (!segment.includes(' / ')) return segment;
+  const parts = segment.split(' / ').map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2) return segment;
+  const hasArabic = parts.some((part) => ARABIC_CHAR_REGEX.test(part));
+  const hasNonArabic = parts.some((part) => !ARABIC_CHAR_REGEX.test(part));
+  if (!hasArabic || !hasNonArabic) return segment;
+  if (enableArabic && !enableEnglish) {
+    return parts.filter((part) => ARABIC_CHAR_REGEX.test(part)).join(' / ');
+  }
+  return parts.filter((part) => !ARABIC_CHAR_REGEX.test(part)).join(' / ');
+}
+
+function filterBilingualLine(line: string, enableEnglish: boolean, enableArabic: boolean): string {
+  if (enableEnglish && enableArabic) return line;
+  if (!line.includes(' / ')) return line;
+  const colonIndex = line.indexOf(':');
+  if (colonIndex > 0 && colonIndex < line.length - 1) {
+    const rawLabel = line.slice(0, colonIndex).trim();
+    const rawValue = line.slice(colonIndex + 1).trim();
+    if (rawLabel && rawValue) {
+      const filteredLabel = filterBilingualSegment(rawLabel, enableEnglish, enableArabic);
+      const filteredValue = filterBilingualSegment(rawValue, enableEnglish, enableArabic);
+      return `${filteredLabel}: ${filteredValue}`;
+    }
+  }
+  return filterBilingualSegment(line, enableEnglish, enableArabic);
+}
+
+function filterBilingualText(value: string, enableEnglish: boolean, enableArabic: boolean): string {
+  if (!value || (enableEnglish && enableArabic)) return value;
+  const lines = value.split('\n');
+  if (lines.length === 1) {
+    return filterBilingualLine(value, enableEnglish, enableArabic);
+  }
+  const filteredLines = lines.map((line) => filterBilingualLine(line, enableEnglish, enableArabic));
+  const hasArabicLine = filteredLines.some((line) => ARABIC_CHAR_REGEX.test(line));
+  const hasNonArabicLine = filteredLines.some((line) => line.trim() && !ARABIC_CHAR_REGEX.test(line));
+  if (hasArabicLine && hasNonArabicLine && lines.every((line) => !line.includes(' / '))) {
+    const picked = enableArabic && !enableEnglish
+      ? filteredLines.filter((line) => ARABIC_CHAR_REGEX.test(line))
+      : filteredLines.filter((line) => !ARABIC_CHAR_REGEX.test(line));
+    if (picked.length > 0) return picked.join('\n');
+  }
+  return filteredLines.join('\n');
+}
+
+function resolveProfileLanguages(profile?: { enableEnglish?: boolean; enableArabic?: boolean }) {
+  let enableEnglish = profile?.enableEnglish !== false;
+  let enableArabic = profile?.enableArabic !== false;
+  if (!enableEnglish && !enableArabic) {
+    enableEnglish = true;
+  }
+  return {
+    enableEnglish,
+    enableArabic,
+    multiLanguage: enableEnglish && enableArabic,
+    direction: (enableArabic && !enableEnglish ? 'rtl' : 'ltr') as 'ltr' | 'rtl',
+  };
+}
 
 function escapeHtml(value: string): string {
   return value
@@ -31,95 +119,33 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function invoiceSummaryFooterSvg(data: PrintDocumentData): { dataUrl: string; heightMm: number } | undefined {
-  if (data.totals.length === 0) return undefined;
-
-  const width = 480;
-  const height = 22 + data.totals.length * 18;
-  const title = data.multiLanguage
-    ? 'Invoice Summary / ملخص الفاتورة'
-    : data.direction === 'rtl'
-      ? 'ملخص الفاتورة'
-      : 'Invoice Summary';
-  const svg = renderToStaticMarkup(
-    <svg xmlns="http://www.w3.org/2000/svg" width="120mm" height={`${height / 4}mm`} viewBox={`0 0 ${width} ${height}`}>
-      <rect x="1" y="1" width={width - 2} height={height - 2} rx="8" fill="#ffffff" stroke="#cbd5e1" />
-      <text x={width - 14} y="15" textAnchor="end" fontFamily="Arial, sans-serif" fontSize="10" fontWeight="700" fill="#475569">
-        {title}
-      </text>
-      {data.totals.map((total, index) => {
-        const isLast = index === data.totals.length - 1;
-        const y = 30 + index * 18;
-        return (
-          <g key={`summary-${index}`}>
-            {isLast && <rect x="2" y={y - 13} width={width - 4} height="17" fill="#1e3a8a" />}
-            <text
-              x={width - 164}
-              y={y}
-              textAnchor="end"
-              fontFamily="Arial, sans-serif"
-              fontSize="10"
-              fontWeight={isLast ? '700' : '400'}
-              fill={isLast ? '#ffffff' : '#0f172a'}
-            >
-              {total.label}
-            </text>
-            <text
-              x={width - 14}
-              y={y}
-              textAnchor="end"
-              direction="ltr"
-              fontFamily="Arial, sans-serif"
-              fontSize="10"
-              fontWeight={isLast ? '700' : '400'}
-              fill={isLast ? '#ffffff' : '#0f172a'}
-            >
-              {total.value}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
-  );
-  return {
-    dataUrl: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
-    heightMm: height / 4,
-  };
-}
-
 function documentHtml(
   data: PrintDocumentData,
   template: PrintTemplateDefinition,
   pageHeightMm: number,
-  margins: InvoiceMarginsMm
+  margins: InvoiceMarginsMm,
+  pageWidthMmOverride?: number
 ): string {
-  const widthMm = template.format === 'A4' ? 210 : Number.parseInt(template.format, 10);
+  const sheet = isSheetFormat(template.format);
+  const widthMm = sheet
+    ? (pageWidthMmOverride ?? (template.format === 'A5' ? 148 : 210))
+    : Number.parseInt(template.format, 10);
   const pageSize = template.format === 'A4'
     ? 'A4 portrait'
-    : `${widthMm}mm ${pageHeightMm}mm`;
-  const hasFlyErpQrFooter =
-    template.variant === 'flyerp' &&
-    template.format === 'A4' &&
-    Boolean(data.qrDataUrl);
-  const qrSizeMm = Math.min(24, resolveInvoiceQrCodeSizeMm(data.qrSizeMm));
-  const qrFooterImageUrl = hasFlyErpQrFooter && data.qrDataUrl
-    ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
-        `<svg xmlns="http://www.w3.org/2000/svg" width="${qrSizeMm}mm" height="${qrSizeMm}mm" viewBox="0 0 512 512"><image href="${data.qrDataUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}" width="512" height="512"/></svg>`
-      )}`
-    : undefined;
-  const invoiceSummary = hasFlyErpQrFooter ? invoiceSummaryFooterSvg(data) : undefined;
-  const pageBottomMarginMm = hasFlyErpQrFooter
-    ? Math.max(margins.bottom, Math.max(qrSizeMm, invoiceSummary?.heightMm || 0) + 4)
-    : margins.bottom;
-  const pageFooterRules =
-    template.variant === 'flyerp' && template.format === 'A4'
-      ? `${hasFlyErpQrFooter
-          ? `@bottom-left { content: url("${qrFooterImageUrl}"); width: ${qrSizeMm}mm; height: ${qrSizeMm}mm; text-align: left; vertical-align: bottom; }`
-          : ''}
-        ${invoiceSummary
-          ? `@bottom-right { content: url("${invoiceSummary.dataUrl}"); width: 150mm; text-align: right; vertical-align: bottom; }`
-          : ''}`
-      : '';
+    : template.format === 'A5'
+      ? 'A5 portrait'
+      : `${widthMm}mm ${pageHeightMm}mm`;
+  const isFlyErpSheet = template.variant === 'flyerp' && sheet;
+  const pageTopMarginMm = margins.top;
+  const pageBottomMarginMm = margins.bottom;
+  const pageNumberLabel = data.multiLanguage
+    ? '"Page " counter(page) " / " counter(pages)'
+    : data.direction === 'rtl'
+      ? '"صفحة " counter(page) " من " counter(pages)'
+      : '"Page " counter(page) " of " counter(pages)';
+  const pageFooterRules = isFlyErpSheet
+    ? `@bottom-center { content: ${pageNumberLabel}; font-family: "Cairo", "Plus Jakarta Sans", "Segoe UI", Arial, sans-serif; font-size: 8.5pt; font-weight: 700; color: #64748b; text-align: center; vertical-align: bottom; padding-bottom: 3mm; }`
+    : '';
   const markup = renderToStaticMarkup(
     template.variant === 'flyerp'
       ? <FlyErpInvoiceTemplate data={data} />
@@ -132,21 +158,30 @@ function documentHtml(
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${escapeHtml(documentTitle)}</title>
-    ${template.format === 'A4' ? `<link rel="preconnect" href="https://fonts.googleapis.com">
+    ${sheet ? `<link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700&display=swap" rel="stylesheet">` : ''}
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@500;600;700;800&family=JetBrains+Mono:wght@500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">` : ''}
     <style>
-      @page { size: ${pageSize}; margin: ${margins.top}mm ${margins.right}mm ${pageBottomMarginMm}mm ${margins.left}mm; ${pageFooterRules} }
+      @page { size: ${pageSize}; margin: ${pageTopMarginMm}mm ${margins.right}mm ${pageBottomMarginMm}mm ${margins.left}mm; ${pageFooterRules} }
       *, *::before, *::after { box-sizing: border-box; }
-      html, body { margin: 0; padding: 0; width: ${widthMm}mm; min-height: 0; background: #fff; color: ${template.format === 'A4' ? '#111827' : '#000000'}; }
-      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      html { margin: 0; padding: 0; width: ${widthMm}mm; min-height: ${sheet ? `${pageHeightMm}mm` : '0'}; background: #fff; overflow-x: hidden; }
+      body {
+        margin: 0;
+        padding: ${pageTopMarginMm}mm ${margins.right}mm ${pageBottomMarginMm}mm ${margins.left}mm;
+        width: ${widthMm}mm;
+        min-height: ${sheet ? `${pageHeightMm}mm` : '0'};
+        background: #fff;
+        color: ${sheet ? '#111827' : '#000000'};
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
       [data-print-document] {
-        width: calc(${widthMm}mm - ${margins.left + margins.right}mm) !important;
-        max-width: calc(${widthMm}mm - ${margins.left + margins.right}mm) !important;
-        margin: ${margins.top}mm ${margins.right}mm ${margins.bottom}mm ${margins.left}mm !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        margin: 0 !important;
       }
       @media print {
-        html, body { width: auto; }
+        html, body { width: auto; min-height: 0; padding: 0 !important; overflow: visible; }
         [data-print-document] {
           width: 100% !important;
           max-width: 100% !important;
@@ -211,28 +246,88 @@ export async function createPrintTemplateJob(
   const configuredProfile = settings.printDocumentProfiles?.[data.documentType]?.[format];
   const resolvedTemplateId = requestedTemplateId || configuredProfile?.templateId;
   const template = resolvePrintTemplate(data.documentType, format, resolvedTemplateId);
+  const lang = resolveProfileLanguages(configuredProfile);
+  const logoEnabled = configuredProfile?.enableLogo !== undefined
+    ? configuredProfile.enableLogo
+    : settings.invoiceShowStoreLogo !== false;
+  const resolvedLogo = logoEnabled
+    ? (configuredProfile?.logoDataUrl || data.companyLogo || settings.storeLogoDataUrl)
+    : undefined;
+  const profileFooterParts = [
+    lang.enableEnglish ? configuredProfile?.footer : undefined,
+    lang.enableArabic ? configuredProfile?.footerAr : undefined,
+  ].filter((part): part is string => Boolean(part?.trim()));
+  const rawFooter = profileFooterParts.length > 0
+    ? profileFooterParts.join('\n')
+    : settings.invoiceShowFooter === false
+      ? undefined
+      : data.footer;
+  const resolvedFooter = rawFooter
+    ? filterBilingualText(rawFooter, lang.enableEnglish, lang.enableArabic)
+    : undefined;
   const resolvedData: PrintDocumentData = {
     ...data,
-    multiLanguage: data.multiLanguage ?? settings.multiLanguageInvoices,
+    title: filterBilingualText(data.title, lang.enableEnglish, lang.enableArabic),
+    multiLanguage: lang.multiLanguage,
+    enableEnglish: lang.enableEnglish,
+    enableArabic: lang.enableArabic,
+    direction: lang.direction,
+    companyNameAr: lang.enableArabic ? data.companyNameAr : undefined,
     logoSizeMm: data.logoSizeMm ?? settings.invoiceLogoSizeMm,
     qrSizeMm: data.qrSizeMm ?? settings.invoiceQrCodeSizeMm,
-    companyLogo: settings.invoiceShowStoreLogo === false ? undefined : data.companyLogo,
+    companyLogo: resolvedLogo,
     qrDataUrl: settings.invoiceShowQrCode === false ? undefined : data.qrDataUrl,
+    columns: data.columns.map((column) =>
+      filterBilingualText(column, lang.enableEnglish, lang.enableArabic)
+    ),
+    fields: data.fields.map((field) => ({
+      label: filterBilingualText(field.label, lang.enableEnglish, lang.enableArabic),
+      value: filterBilingualText(field.value, lang.enableEnglish, lang.enableArabic),
+    })),
+    rows: data.rows.map((row) => ({
+      ...row,
+      values: row.values.map((cell) =>
+        filterBilingualText(cell, lang.enableEnglish, lang.enableArabic)
+      ),
+    })),
+    totals: data.totals.map((total) => ({
+      label: filterBilingualText(total.label, lang.enableEnglish, lang.enableArabic),
+      value: total.value,
+    })),
+    footer: resolvedFooter,
   };
-  const margins = resolveInvoiceMarginsMm(template.format, settings.invoiceMarginsMm);
-  const initialHtml = documentHtml(resolvedData, template, template.format === 'A4' ? 297 : 1200, margins);
+  const fallbackProfileFormat = getPrintDocumentFormat(settings, data.documentType, format);
+  const fallbackProfile = fallbackProfileFormat !== format
+    ? settings.printDocumentProfiles?.[data.documentType]?.[fallbackProfileFormat]
+    : undefined;
+  const margins = resolveInvoiceMarginsMm(
+    template.format,
+    configuredProfile?.marginsMm ?? fallbackProfile?.marginsMm ?? settings.invoiceMarginsMm
+  );
+  const sheet = isSheetFormat(template.format);
+  const sheetDims = sheet
+    ? resolveSheetDimensionsMm(template.format, configuredProfile?.customWidthMm, configuredProfile?.customHeightMm)
+    : undefined;
   const pageSize = template.format === 'A4'
     ? A4_PAGE_SIZE
-    : {
-        width: Number.parseInt(template.format, 10) * 1000,
-        height: await measureThermalHeight(initialHtml, margins.top + margins.bottom),
-      };
+    : template.format === 'A5'
+      ? A5_PAGE_SIZE
+      : sheetDims
+        ? { width: Math.round(sheetDims.widthMm * 1000), height: Math.round(sheetDims.heightMm * 1000) }
+        : {
+            width: Number.parseInt(template.format, 10) * 1000,
+            height: THERMAL_ROLL_HEIGHT_MICRONS,
+          };
   const pageHeightMm = pageSize.height / 1000;
-  const html = documentHtml(resolvedData, template, pageHeightMm, margins);
-  const printerName =
+  const html = documentHtml(resolvedData, template, pageHeightMm, margins, sheetDims?.widthMm);
+  const rawPrinterName =
     configuredProfile?.printerName ||
     (data.documentType === 'kot' ? settings.kotPrinter : settings.defaultPrinter) ||
-    undefined;
+    '';
+  const printerName =
+    rawPrinterName.trim() && !/^(system default|default)\b/i.test(rawPrinterName.trim())
+      ? rawPrinterName.trim()
+      : undefined;
   return {
     template,
     html,
@@ -279,9 +374,8 @@ export async function createVoucherTemplateJob(
   if (payload.voucherType !== documentType || !payload.context || !Array.isArray(payload.context.items)) {
     throw new Error('The voucher print data response was invalid.');
   }
-  const template = requestedTemplateId
-    ? resolvePrintTemplate(documentType, printFormat, requestedTemplateId)
-    : getDefaultPrintTemplate(documentType, printFormat);
+  const configuredTemplateId = settings.printDocumentProfiles?.[documentType]?.[printFormat]?.templateId;
+  const template = resolvePrintTemplate(documentType, printFormat, requestedTemplateId || configuredTemplateId);
   const printContext = template.variant === 'flyerp' && documentType === 'sales-invoice'
     ? {
         ...payload.context,
@@ -302,10 +396,12 @@ export async function createVoucherTemplateJob(
           currencySymbol: settings.currencySymbol,
           decimalPoints: settings.decimalPoints ?? 2,
           logo: settings.storeLogoDataUrl,
+          receiptFooter: settings.receiptFooter,
+          receiptFooterAr: settings.receiptFooterAr,
         },
       }
     : payload.context;
-  const showQr = documentType === 'sales-invoice';
+  const showQr = documentType === 'sales-invoice' && settings.invoiceShowQrCode !== false;
   const qrPayload = payload.context.voucher.eInvoiceQrCodePhase1;
   const resolvedQrDataUrl = showQr
     ? qrDataUrl || (
@@ -319,19 +415,23 @@ export async function createVoucherTemplateJob(
           : undefined
       )
     : undefined;
+  const configuredProfile = settings.printDocumentProfiles?.[documentType]?.[printFormat];
+  const lang = resolveProfileLanguages(configuredProfile);
   const data = toVoucherDocumentData(
     documentType,
     printContext,
-    isRtl,
+    lang.direction === 'rtl',
     resolvedQrDataUrl,
-    template.variant === 'flyerp',
+    lang.multiLanguage,
     {
-      includeArabicCompanyName: template.variant === 'flyerp',
-      includePartyDetails: template.variant === 'flyerp',
+      includeArabicCompanyName: lang.enableArabic,
+      includePartyDetails: template.variant === 'flyerp' || printFormat === '80mm' || printFormat === 'A4' || printFormat === 'A5' || printFormat === 'Custom',
+      isFlyErp: template.variant === 'flyerp',
       pendingBalance: template.variant === 'flyerp' ? customerAccount?.balance : undefined,
     }
   );
-  data.qrSizeMm = resolveInvoiceQrCodeSizeMm(undefined);
+  data.qrSizeMm = resolveInvoiceQrCodeSizeMm(settings.invoiceQrCodeSizeMm);
+  data.logoSizeMm = settings.invoiceLogoSizeMm;
   return createPrintTemplateJob(data, settings, printFormat, template.id);
 }
 

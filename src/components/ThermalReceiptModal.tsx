@@ -1,23 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Printer, X, Check, FileText, QrCode, Banknote, CreditCard, Receipt } from 'lucide-react';
+import { Printer, X, Check, Banknote, CreditCard, Receipt, Eye } from 'lucide-react';
 import QRCode from 'qrcode';
 import type { PaperWidth, Sale, SalesReturnVoucher, StoreSettings } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
 import { generateZatcaTlvBase64 } from '../utils/zatcaQr';
-import {
-  calculateSalesTax,
-  getPrintedSalesTaxBreakdown,
-  getSalesTaxCategorySummaries,
-} from '../utils/salesTax';
-import {
-  resolveInvoiceMarginsMm,
-} from '../utils/thermalPrinting';
+import { getPrintedSalesTaxBreakdown } from '../utils/salesTax';
 import { getInvoiceDateTime } from '../utils/dateFilters';
 import type { ThermalPageSize } from '../utils/thermalPrinting';
 import { createVoucherTemplateJob, printTemplateJob } from '../printTemplates/render';
 import { getPrintDocumentFormat } from '../printTemplates/catalog';
-
-const A4_ITEMS_PER_PAGE = 13;
 
 interface ThermalReceiptModalProps {
   sale: Sale;
@@ -35,44 +26,15 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   onClose,
 }) => {
   const { language } = useLanguage();
+  const isAr = language === 'ar';
   const activeFormat: PaperWidth = getPrintDocumentFormat(
     settings,
     'sales-invoice',
     settings.paperWidth || '80mm'
   );
-  const saleTaxType = sale.taxType || settings.taxType;
   const printedTaxBreakdown = useMemo(
     () => getPrintedSalesTaxBreakdown(sale, settings.taxType),
     [sale, settings.taxType]
-  );
-  const taxableLines = useMemo(
-    () => sale.items.map((item) => ({
-      amount: item.lineTotal,
-      taxRate: item.taxRate ?? sale.taxRate,
-    })),
-    [sale.items, sale.taxRate]
-  );
-  const invoiceLineBreakdown = useMemo(
-    () => calculateSalesTax(taxableLines, 0, saleTaxType),
-    [taxableLines, saleTaxType]
-  );
-  const discountedLineBreakdown = useMemo(
-    () => calculateSalesTax(taxableLines, sale.discountAmount, saleTaxType),
-    [taxableLines, sale.discountAmount, saleTaxType]
-  );
-  const unitPricesWithoutTax = useMemo(
-    () => sale.items.map((item) =>
-      calculateSalesTax(
-        [{ amount: item.unitPrice, taxRate: item.taxRate ?? sale.taxRate }],
-        0,
-        saleTaxType
-      ).subtotal
-    ),
-    [sale.items, sale.taxRate, saleTaxType]
-  );
-  const taxCategories = useMemo(
-    () => getSalesTaxCategorySummaries(taxableLines, discountedLineBreakdown),
-    [taxableLines, discountedLineBreakdown]
   );
 
   const [zatcaQrDataUrl, setZatcaQrDataUrl] = useState<string>('');
@@ -82,9 +44,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const [isPrintingReceipt, setIsPrintingReceipt] = useState(false);
   const [previewHtml, setPreviewHtml] = useState('');
   const [previewPageSize, setPreviewPageSize] = useState<ThermalPageSize | null>(null);
-  const thermalPrintAreaRef = useRef<HTMLDivElement>(null);
 
-  // Generate the electronic invoice QR code payload.
   useEffect(() => {
     let isMounted = true;
     const seller = settings.storeNameAr || settings.storeName || 'aptPOS Retail';
@@ -111,9 +71,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
           light: '#ffffff',
         },
       }).then((url) => {
-        if (isMounted) {
-          setZatcaQrDataUrl(url);
-        }
+        if (isMounted) setZatcaQrDataUrl(url);
       }).catch(console.error);
     } catch (e) {
       console.error('Failed to generate invoice QR code:', e);
@@ -127,6 +85,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const primaryActionBtnRef = useRef<HTMLButtonElement>(null);
 
   const c = settings.currencySymbol || 'SAR';
+  const decimals = settings.decimalPoints ?? 2;
   const formattedDate = getInvoiceDateTime(sale.invoiceDate, sale.createdAt).toLocaleString('en-GB', {
     year: 'numeric',
     month: '2-digit',
@@ -144,7 +103,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
         sale.id,
         settings,
         activeFormat,
-        language === 'ar',
+        isAr,
         zatcaQrDataUrl
       );
       const printJob = showPrintPreview && previewHtml && previewPageSize
@@ -155,6 +114,29 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
       console.error('Failed to print receipt:', error);
       setPrintError((error as Error).message || 'Receipt could not be printed.');
       return false;
+    } finally {
+      setIsPrintingReceipt(false);
+    }
+  };
+
+  const openPrintPreview = async () => {
+    setPrintError(null);
+    setIsPrintingReceipt(true);
+    try {
+      const job = await createVoucherTemplateJob(
+        'sales-invoice',
+        sale.id,
+        settings,
+        activeFormat,
+        isAr,
+        zatcaQrDataUrl
+      );
+      setPreviewHtml(job.html);
+      setPreviewPageSize(job.pageSize);
+      setShowPrintPreview(true);
+    } catch (error) {
+      console.error('Failed to prepare receipt preview:', error);
+      setPrintError((error as Error).message || 'Receipt preview could not be opened.');
     } finally {
       setIsPrintingReceipt(false);
     }
@@ -209,27 +191,6 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, [onClose, handlePrintAndClose, showPrintPreview]);
 
-  // Visibility settings helpers with defaults
-  const showNameEn = true;
-  const showNameAr = true;
-  const showBarcode = false;
-  const showCustomer = true;
-  const showCashier = true;
-  const showTax = true;
-  const showAddress = true;
-  const showStoreLogo = true;
-  const showQr = true;
-  const invoiceMarginsMm = resolveInvoiceMarginsMm(activeFormat);
-  const a4ItemPages = Array.from(
-    { length: Math.max(1, Math.ceil(sale.items.length / A4_ITEMS_PER_PAGE)) },
-    (_, pageIndex) => sale.items.slice(
-      pageIndex * A4_ITEMS_PER_PAGE,
-      (pageIndex + 1) * A4_ITEMS_PER_PAGE
-    )
-  );
-
-  const subtotalExcl = printedTaxBreakdown.subtotal;
-
   const returnDetails = returnVouchers
     .map((voucher) => {
       const items = voucher.items.filter((item) => item.saleId === sale.id);
@@ -241,13 +202,13 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
     })
     .filter((detail) => detail.items.length > 0)
     .sort((a, b) => a.voucher.createdAt.localeCompare(b.voucher.createdAt));
+
   const linkedRefundTotal = returnDetails.reduce((sum, detail) => sum + detail.refundAmount, 0);
   const totalRefunded = sale.returnedTotal ?? linkedRefundTotal;
   const taxRefunded = sale.returnedTaxAmount ?? 0;
   const netAfterReturns = Math.max(0, sale.total - totalRefunded);
-  const netTaxAfterReturns = Math.max(0, printedTaxBreakdown.taxAmount - taxRefunded);
   const formatReturnDate = (date: string) =>
-    new Date(date).toLocaleString(language === 'ar' ? 'ar-SA' : 'en-GB', {
+    new Date(date).toLocaleString(isAr ? 'ar-SA' : 'en-GB', {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
@@ -255,28 +216,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
       minute: '2-digit',
     });
 
-  const openPrintPreview = async () => {
-    setPrintError(null);
-    setIsPrintingReceipt(true);
-    try {
-      const job = await createVoucherTemplateJob(
-        'sales-invoice',
-        sale.id,
-        settings,
-        activeFormat,
-        language === 'ar',
-        zatcaQrDataUrl
-      );
-      setPreviewHtml(job.html);
-      setPreviewPageSize(job.pageSize);
-      setShowPrintPreview(true);
-    } catch (error) {
-      console.error('Failed to prepare receipt preview:', error);
-      setPrintError((error as Error).message || 'Receipt preview could not be opened.');
-    } finally {
-      setIsPrintingReceipt(false);
-    }
-  };
+  const autoPrint = Boolean(settings.autoPrintReceiptOnSale);
 
   return (
     <div
@@ -287,16 +227,16 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
     >
       <div className="invoice-print-dialog bg-white border border-slate-200 rounded-2xl w-full max-w-lg max-h-[92vh] overflow-hidden shadow-2xl flex flex-col">
         <div className="no-print px-5 py-4 border-b border-slate-200 flex items-start justify-between gap-3 shrink-0 bg-white">
-          <div className="flex items-center gap-2 min-w-0">
+          <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
               <Check className="w-5 h-5" />
             </div>
             <div className="min-w-0">
               <h2 id="tender-modal-title" className="text-base font-bold text-slate-900">
-                {language === 'ar' ? 'تم إتمام البيع' : 'Sale Complete'}
+                {isAr ? 'تم إتمام البيع' : 'Sale Complete'}
               </h2>
               <p className="text-xs text-slate-500">
-                {language === 'ar' ? 'تم تسجيل عملية الدفع بنجاح' : 'Payment has been recorded successfully'}
+                {isAr ? 'تم تسجيل عملية الدفع بنجاح' : 'Payment has been recorded successfully'}
               </p>
             </div>
           </div>
@@ -304,7 +244,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
             type="button"
             onClick={onClose}
             className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition-colors"
-            aria-label={language === 'ar' ? 'إغلاق' : 'Close'}
+            aria-label={isAr ? 'إغلاق' : 'Close'}
           >
             <X className="w-4 h-4" />
           </button>
@@ -312,19 +252,21 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
 
         {queuedOffline && (
           <div className="no-print px-5 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-900 font-medium">
-            Receipt saved to the offline print queue. You can print it later from Settings.
+            {isAr
+              ? 'تم حفظ الإيصال في قائمة الطباعة دون اتصال.'
+              : 'Receipt saved to the offline print queue. You can print it later.'}
           </div>
         )}
 
         <div className="no-print flex-1 overflow-y-auto p-5 space-y-4">
           <div className="rounded-xl bg-slate-950 text-white p-5 text-center">
             <div className="text-xs font-medium text-slate-300">
-              {language === 'ar' ? 'المبلغ الإجمالي' : 'TOTAL DUE'}
+              {isAr ? 'المبلغ الإجمالي' : 'TOTAL DUE'}
             </div>
-            <div className="mt-1 text-3xl font-bold tabular-nums">
-              {c} {sale.total.toFixed(settings.decimalPoints ?? 2)}
+            <div className="mt-1 font-mono text-3xl font-bold tabular-nums">
+              {c} {sale.total.toFixed(decimals)}
             </div>
-            <div className="mt-2 text-xs text-slate-300">
+            <div className="mt-2 font-mono text-xs text-slate-300">
               {sale.receiptNumber} · {formattedDate}
             </div>
           </div>
@@ -335,30 +277,30 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                 {sale.paymentMethod === 'Cash'
                   ? <Banknote className="h-4 w-4 text-slate-400" />
                   : <CreditCard className="h-4 w-4 text-slate-400" />}
-                {language === 'ar' ? 'طريقة الدفع' : 'Payment method'}
+                {isAr ? 'طريقة الدفع' : 'Payment method'}
               </span>
               <span className="font-semibold text-slate-900">{sale.paymentMethod}</span>
             </div>
             <div className="flex items-center justify-between gap-4 px-4 py-3 text-sm">
-              <span className="text-slate-600">{language === 'ar' ? 'المبلغ المستلم' : 'Amount received'}</span>
+              <span className="text-slate-600">{isAr ? 'المبلغ المستلم' : 'Amount received'}</span>
               <span className="font-semibold font-mono tabular-nums text-slate-900">
-                {c} {sale.amountTendered.toFixed(settings.decimalPoints ?? 2)}
+                {c} {sale.amountTendered.toFixed(decimals)}
               </span>
             </div>
             <div className="flex items-center justify-between gap-4 px-4 py-3 text-sm">
-              <span className="font-semibold text-slate-900">{language === 'ar' ? 'الباقي' : 'Change due'}</span>
+              <span className="font-semibold text-slate-900">{isAr ? 'الباقي' : 'Change due'}</span>
               <span className="font-bold font-mono tabular-nums text-emerald-700">
-                {c} {sale.changeDue.toFixed(settings.decimalPoints ?? 2)}
+                {c} {sale.changeDue.toFixed(decimals)}
               </span>
             </div>
             <div className="flex items-center justify-between gap-4 px-4 py-3 text-xs">
-              <span className="text-slate-500">{language === 'ar' ? 'العميل' : 'Customer'}</span>
+              <span className="text-slate-500">{isAr ? 'العميل' : 'Customer'}</span>
               <span className="font-medium text-slate-700 text-right">{sale.customerName}</span>
             </div>
             <div className="flex items-center justify-between gap-4 px-4 py-3 text-xs">
               <span className="flex items-center gap-2 text-slate-500">
                 <Receipt className="h-4 w-4 text-slate-400" />
-                {language === 'ar' ? 'الأصناف' : 'Items'}
+                {isAr ? 'الأصناف' : 'Items'}
               </span>
               <span className="font-medium text-slate-700">
                 {sale.items.reduce((count, item) => count + item.quantity, 0)}
@@ -369,7 +311,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
           {returnDetails.length > 0 && (
             <section className="rounded-xl border border-violet-200 bg-violet-50/60 p-4 space-y-3">
               <h3 className="text-sm font-bold text-violet-950">
-                {language === 'ar' ? 'مرتجعات مرتبطة بهذه الفاتورة' : 'Returns linked to this invoice'}
+                {isAr ? 'مرتجعات مرتبطة بهذه الفاتورة' : 'Returns linked to this invoice'}
               </h3>
               {returnDetails.map(({ voucher, items, refundAmount }) => (
                 <div key={voucher.id} className="border-t border-violet-200 pt-2 text-xs">
@@ -382,34 +324,32 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                       <span className="min-w-0 truncate">
                         {item.productName} × {item.quantity}{item.unitName ? ` ${item.unitName}` : ''}
                       </span>
-                      <span className="shrink-0 font-mono">{c} {item.refundAmount.toFixed(settings.decimalPoints ?? 2)}</span>
+                      <span className="shrink-0 font-mono">{c} {item.refundAmount.toFixed(decimals)}</span>
                     </div>
                   ))}
                   <div className="mt-1 flex justify-between font-semibold text-slate-800">
-                    <span>{language === 'ar' ? 'إجمالي المرتجع' : 'Voucher refund'}</span>
-                    <span className="font-mono">{c} {refundAmount.toFixed(settings.decimalPoints ?? 2)}</span>
+                    <span>{isAr ? 'إجمالي المرتجع' : 'Voucher refund'}</span>
+                    <span className="font-mono">{c} {refundAmount.toFixed(decimals)}</span>
                   </div>
                 </div>
               ))}
               <div className="border-t border-violet-200 pt-2 space-y-1 text-xs">
                 <div className="flex justify-between text-slate-700">
-                  <span>{language === 'ar' ? 'إجمالي الفاتورة الأصلية' : 'Original sale total'}</span>
-                  <span className="font-mono">{c} {sale.total.toFixed(settings.decimalPoints ?? 2)}</span>
+                  <span>{isAr ? 'إجمالي الفاتورة الأصلية' : 'Original sale total'}</span>
+                  <span className="font-mono">{c} {sale.total.toFixed(decimals)}</span>
                 </div>
                 <div className="flex justify-between text-violet-800">
-                  <span>{language === 'ar' ? 'إجمالي المبالغ المستردة' : 'Total refunded'}</span>
-                  <span className="font-mono">−{c} {totalRefunded.toFixed(settings.decimalPoints ?? 2)}</span>
+                  <span>{isAr ? 'إجمالي المبالغ المستردة' : 'Total refunded'}</span>
+                  <span className="font-mono">−{c} {totalRefunded.toFixed(decimals)}</span>
                 </div>
                 <div className="flex justify-between font-bold text-slate-950">
-                  <span>{language === 'ar' ? 'الصافي بعد المرتجعات' : 'Net after returns'}</span>
-                  <span className="font-mono">{c} {netAfterReturns.toFixed(settings.decimalPoints ?? 2)}</span>
+                  <span>{isAr ? 'الصافي بعد المرتجعات' : 'Net after returns'}</span>
+                  <span className="font-mono">{c} {netAfterReturns.toFixed(decimals)}</span>
                 </div>
-                {showTax && (
-                  <div className="flex justify-between text-[10px] text-slate-500">
-                    <span>{language === 'ar' ? 'ضريبة مستردة (ضمن المبلغ أعلاه)' : 'VAT refunded (included above)'}</span>
-                    <span className="font-mono">{c} {taxRefunded.toFixed(settings.decimalPoints ?? 2)}</span>
-                  </div>
-                )}
+                <div className="flex justify-between text-[10px] text-slate-500">
+                  <span>{isAr ? 'ضريبة مستردة (ضمن المبلغ أعلاه)' : 'VAT refunded (included above)'}</span>
+                  <span className="font-mono">{c} {taxRefunded.toFixed(decimals)}</span>
+                </div>
               </div>
             </section>
           )}
@@ -419,632 +359,17 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               {printError}
             </div>
           )}
-
         </div>
 
-        <div className="receipt-print-source">
-          {activeFormat === 'A4' ? (
-            /* ======================================================== */
-            /* A4 FORMAT TAX INVOICE                                    */
-            /* ======================================================== */
-            <div
-              className="thermal-receipt-print-area paper-a4 font-sans"
-              style={{
-                '--invoice-margin-top': `${invoiceMarginsMm.top}mm`,
-                '--invoice-margin-right': `${invoiceMarginsMm.right}mm`,
-                '--invoice-margin-bottom': `${invoiceMarginsMm.bottom}mm`,
-                '--invoice-margin-left': `${invoiceMarginsMm.left}mm`,
-              } as React.CSSProperties}
-            >
-              {a4ItemPages.map((pageItems, pageIndex) => (
-                <section className="a4-invoice-page" key={`invoice-page-${pageIndex + 1}`}>
-                  <header className="grid grid-cols-2 items-start gap-4 border-b-2 border-slate-900 pb-3">
-                    <div className="flex min-w-0 items-start gap-3">
-                      {showStoreLogo && settings.storeLogoDataUrl && (
-                        <img
-                          src={settings.storeLogoDataUrl}
-                          alt="Store logo"
-                          className="h-14 w-14 shrink-0 object-contain"
-                        />
-                      )}
-                      <div className="min-w-0 space-y-0.5">
-                        <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
-                          Store Details / بيانات المتجر
-                        </div>
-                        <div className="text-lg font-black tracking-tight text-slate-950">
-                          {settings.storeName}
-                        </div>
-                        {settings.storeNameAr && (
-                          <div className="text-sm font-bold text-slate-800 font-arabic" dir="rtl">
-                            {settings.storeNameAr}
-                          </div>
-                        )}
-                        {showAddress && (
-                          <div className="max-w-sm pt-0.5 text-[10px] leading-snug text-slate-600">
-                            {settings.address}
-                            {settings.phone && <span> · Tel: {settings.phone}</span>}
-                          </div>
-                        )}
-                        <div className="flex flex-wrap gap-x-3 gap-y-0.5 pt-0.5 text-[10px] text-slate-700">
-                          {settings.taxId && <span><strong>VAT ID / الرقم الضريبي:</strong> {settings.taxId}</span>}
-                          {settings.crNumber && <span><strong>CR / السجل:</strong> {settings.crNumber}</span>}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="space-y-0.5 text-right">
-                      <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
-                        Invoice Details / بيانات الفاتورة
-                      </div>
-                      <div className="inline-block rounded bg-slate-900 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wider text-white">
-                        Tax Invoice / فاتورة ضريبية
-                      </div>
-                      <div className="pt-0.5 text-xs font-bold text-slate-900">
-                        #{sale.receiptNumber}
-                      </div>
-                      <div className="text-[10px] text-slate-500">
-                        Date / التاريخ: {formattedDate}
-                      </div>
-                      {showCashier && (
-                        <div className="text-[10px] text-slate-500">
-                          Cashier / الكاشير: <span className="font-medium text-slate-800">{sale.cashierName}</span>
-                        </div>
-                      )}
-                    </div>
-                  </header>
-
-              {/* Customer & Transaction Ledger Section */}
-              {showCustomer && (
-                <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg grid grid-cols-2 gap-3 text-xs">
-                  <div>
-                    <span className="text-[9px] uppercase font-bold text-slate-400 tracking-wider block">
-                      Customer / بيانات العميل
-                    </span>
-                    <div className="font-bold text-slate-900 text-xs mt-0.5">{sale.customerName}</div>
-                    <div className="text-slate-500 text-[10px]">Client Account / عميل مسجل</div>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-[9px] uppercase font-bold text-slate-400 tracking-wider block">
-                      Payment / طريقة الدفع
-                    </span>
-                    <div className="font-bold text-slate-900 text-xs mt-0.5">{sale.paymentMethod}</div>
-                    <div className="text-slate-500 text-[10px]">
-                      Status: <span className="font-semibold text-emerald-700">PAID / مدفوعة</span>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Line Items Table */}
-              <div className="border border-slate-200 rounded-lg overflow-hidden">
-                <table className="w-full table-fixed text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 text-[10px]">
-                      <th className="w-[4%] py-1.5 px-1 text-center">#</th>
-                      <th className="w-[24%] py-1.5 px-1.5">Item Description / بيان الصنف</th>
-                      <th className="w-[6%] py-1.5 px-1 text-center">Qty</th>
-                      <th className="w-[8%] py-1.5 px-1 text-center">Unit</th>
-                      <th className="w-[15%] py-1.5 px-1 text-right">Unit Price<br />(Excl. Tax)</th>
-                      {showTax && <th className="w-[7%] py-1.5 px-1 text-right">Tax %</th>}
-                      <th className="w-[17%] py-1.5 px-1 text-right">Subtotal<br />(Excl. Tax)</th>
-                      <th className="w-[19%] py-1.5 px-1 text-right">Item Total<br />(Incl. Tax)</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
-                    {pageItems.map((item, pageItemIndex) => (
-                      <tr key={item.id} className="hover:bg-slate-50/70">
-                        <td className="py-1.5 px-1 text-center text-slate-400 text-[10px]">
-                          {pageIndex * A4_ITEMS_PER_PAGE + pageItemIndex + 1}
-                        </td>
-                        <td className="py-1.5 px-1.5 font-sans break-words">
-                          {showNameEn && (
-                            <div className="font-semibold text-slate-900 text-xs leading-tight">
-                              {item.productName}
-                            </div>
-                          )}
-                          {item.description && (
-                            <div className="mt-0.5 whitespace-pre-wrap break-words text-[10px] leading-tight text-slate-600">
-                              {item.description}
-                            </div>
-                          )}
-                          {showNameAr && item.nameAr && (
-                            <div className="text-[10px] text-slate-600 font-arabic font-medium leading-tight mt-0.5" dir="rtl">
-                              {item.nameAr}
-                            </div>
-                          )}
-                          {showBarcode && item.sku && (
-                            <div className="text-[9px] text-slate-400 font-mono mt-0.5">
-                              SKU: {item.sku}
-                            </div>
-                          )}
-                        </td>
-                        <td className="py-1.5 px-1 text-center font-bold text-slate-900">
-                          {item.quantity}
-                        </td>
-                        <td className="py-1.5 px-1 text-center text-slate-700 break-words">
-                          {item.unitName || '—'}
-                        </td>
-                        <td className="py-1.5 px-1 text-right text-slate-700 break-all">
-                          {c} {unitPricesWithoutTax[pageIndex * A4_ITEMS_PER_PAGE + pageItemIndex].toFixed(2)}
-                        </td>
-                        {showTax && (
-                          <td className="py-1.5 px-1 text-right text-slate-500 text-[10px]">
-                            {item.taxRate ?? sale.taxRate}%
-                          </td>
-                        )}
-                        <td className="py-1.5 px-1 text-right text-slate-700 break-all">
-                          {c} {invoiceLineBreakdown.lines[pageIndex * A4_ITEMS_PER_PAGE + pageItemIndex].subtotal.toFixed(2)}
-                        </td>
-                        <td className="py-1.5 px-1 text-right font-bold text-slate-900 break-all">
-                          {c} {invoiceLineBreakdown.lines[pageIndex * A4_ITEMS_PER_PAGE + pageItemIndex].total.toFixed(2)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Financial Totals & QR Code Grid */}
-              <div className="a4-invoice-bottom">
-              {pageIndex === a4ItemPages.length - 1 && <div className="a4-invoice-summary grid grid-cols-2 gap-4 items-start">
-                {/* Left: Invoice QR Code */}
-                <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
-                  <div className="flex items-center gap-2.5">
-                    {showQr && (
-                      <div className="w-28 h-28 bg-white border border-slate-200 p-1 rounded-md flex items-center justify-center shrink-0">
-                        {zatcaQrDataUrl ? (
-                          <img
-                            src={zatcaQrDataUrl}
-                            alt="Invoice QR Code"
-                            className="w-26 h-26 object-contain"
-                          />
-                        ) : (
-                          <QrCode className="w-20 h-20 text-slate-900" />
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Right: Financial Breakdown Box */}
-                <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg space-y-1 text-[11px] font-mono">
-                  {showTax && (
-                    <div className="flex justify-between text-slate-600">
-                      <span>Subtotal (Without Tax / غير شامل):</span>
-                      <span className="font-semibold text-slate-900">
-                        {c} {subtotalExcl.toFixed(settings.decimalPoints ?? 2)}
-                      </span>
-                    </div>
-                  )}
-                  {sale.discountAmount > 0 && (
-                    <div className="flex justify-between text-amber-700">
-                      <span>Discount / الخصم:</span>
-                      <span className="font-semibold">
-                        -{c} {sale.discountAmount.toFixed(settings.decimalPoints ?? 2)}
-                      </span>
-                    </div>
-                  )}
-                  {showTax && taxCategories.map(({ rate, taxableAmount, taxAmount }) => (
-                    <React.Fragment key={rate}>
-                      <div className="flex justify-between text-slate-600">
-                        <span>{rate}% Taxable / القيمة الخاضعة للضريبة:</span>
-                        <span className="font-semibold text-slate-900">
-                          {c} {taxableAmount.toFixed(settings.decimalPoints ?? 2)}
-                        </span>
-                      </div>
-                      {rate > 0 && (
-                        <div className="flex justify-between text-slate-600">
-                          <span>{rate}% VAT / الضريبة:</span>
-                          <span className="font-semibold text-slate-900">
-                            {c} {taxAmount.toFixed(settings.decimalPoints ?? 2)}
-                          </span>
-                        </div>
-                      )}
-                    </React.Fragment>
-                  ))}
-                  <div className="flex justify-between text-sm font-black text-slate-950 pt-1.5 border-t-2 border-slate-300">
-                    <span className="font-sans">Total / الإجمالي:</span>
-                    <span>
-                      {c} {sale.total.toFixed(settings.decimalPoints ?? 2)}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-slate-600 pt-0.5 text-[10px]">
-                    <span>Paid / المدفوع ({sale.paymentMethod}):</span>
-                    <span>{c} {sale.amountTendered.toFixed(2)}</span>
-                  </div>
-                  <div className="flex justify-between text-slate-600 text-[10px]">
-                    <span>Change Due / المتبقي:</span>
-                    <span>{c} {sale.changeDue.toFixed(2)}</span>
-                  </div>
-                </div>
-              </div>}
-
-              {pageIndex === a4ItemPages.length - 1 && returnDetails.length > 0 && (
-                <section className="rounded-lg border border-violet-200 overflow-hidden">
-                  <div className="bg-violet-50 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wide text-violet-950">
-                    Return Vouchers / سندات المرتجع
-                  </div>
-                  <div className="divide-y divide-violet-100 px-2.5">
-                    {returnDetails.map(({ voucher, items, refundAmount }) => (
-                      <div key={voucher.id} className="py-2 text-[10px]">
-                        <div className="flex justify-between gap-2 font-semibold text-slate-800">
-                          <span>{voucher.voucherNumber}</span>
-                          <span className="text-right text-slate-500">{formatReturnDate(voucher.createdAt)}</span>
-                        </div>
-                        {items.map((item) => (
-                          <div key={`${voucher.id}-${item.saleItemId}`} className="mt-1 flex justify-between gap-2 text-slate-600">
-                            <span className="min-w-0">
-                              {item.productName} × {item.quantity}{item.unitName ? ` ${item.unitName}` : ''}
-                            </span>
-                            <span className="shrink-0 font-mono">{c} {item.refundAmount.toFixed(settings.decimalPoints ?? 2)}</span>
-                          </div>
-                        ))}
-                        <div className="mt-1 flex justify-between font-semibold text-slate-800">
-                          <span>Voucher refund / إجمالي المرتجع</span>
-                          <span className="font-mono">{c} {refundAmount.toFixed(settings.decimalPoints ?? 2)}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="border-t border-violet-200 bg-violet-50/50 px-2.5 py-2 space-y-1 text-[10px]">
-                    <div className="flex justify-between">
-                      <span>Original sale total / إجمالي الفاتورة الأصلية</span>
-                      <span className="font-mono">{c} {sale.total.toFixed(settings.decimalPoints ?? 2)}</span>
-                    </div>
-                    <div className="flex justify-between text-violet-800">
-                      <span>Total refunded / إجمالي المبالغ المستردة</span>
-                      <span className="font-mono">−{c} {totalRefunded.toFixed(settings.decimalPoints ?? 2)}</span>
-                    </div>
-                    {showTax && (
-                      <div className="flex justify-between text-slate-500">
-                        <span>VAT refunded (included above) / الضريبة المستردة (ضمن المبلغ أعلاه)</span>
-                        <span className="font-mono">{c} {taxRefunded.toFixed(settings.decimalPoints ?? 2)}</span>
-                      </div>
-                    )}
-                    <div className="flex justify-between border-t border-violet-200 pt-1 font-bold text-slate-950">
-                      <span>Net after returns / الصافي بعد المرتجعات</span>
-                      <span className="font-mono">{c} {netAfterReturns.toFixed(settings.decimalPoints ?? 2)}</span>
-                    </div>
-                    {showTax && (
-                      <div className="flex justify-between text-slate-500">
-                        <span>Net VAT / صافي الضريبة</span>
-                        <span className="font-mono">{c} {netTaxAfterReturns.toFixed(settings.decimalPoints ?? 2)}</span>
-                      </div>
-                    )}
-                  </div>
-                </section>
-              )}
-
-              {/* Footer Note */}
-              <footer className="a4-invoice-footer">
-                <div className="text-right text-[9px] text-slate-500">
-                  Page {pageIndex + 1} of {a4ItemPages.length}
-                </div>
-              </footer>
-              </div>
-                </section>
-              ))}
-            </div>
-          ) : (
-            /* ======================================================== */
-            /* THERMAL RECEIPT ROLL FORMAT (80mm / 58mm)               */
-            /* ======================================================== */
-            <div
-              ref={thermalPrintAreaRef}
-              className={`thermal-receipt-print-area thermal-receipt bg-white text-slate-950 font-sans border border-slate-200 shadow-sm ${
-                activeFormat === '58mm'
-                  ? 'w-[220px] max-w-[220px] paper-58mm p-2 text-[10px] leading-snug'
-                  : 'w-[310px] max-w-[310px] p-3.5 text-xs leading-relaxed'
-              }`}
-              style={{
-                '--invoice-margin-top': `${invoiceMarginsMm.top}mm`,
-                '--invoice-margin-right': `${invoiceMarginsMm.right}mm`,
-                '--invoice-margin-bottom': `${invoiceMarginsMm.bottom}mm`,
-                '--invoice-margin-left': `${invoiceMarginsMm.left}mm`,
-              } as React.CSSProperties}
-            >
-              {/* Thermal Header */}
-              <div className="thermal-receipt-header text-center border-b-2 border-double border-slate-800 pb-2.5 mb-2.5">
-                <div className="mb-1 text-[8px] font-bold uppercase tracking-wider text-slate-500">
-                  Store Details / بيانات المتجر
-                </div>
-                {showStoreLogo && settings.storeLogoDataUrl && (
-                  <img
-                    src={settings.storeLogoDataUrl}
-                    alt="Store logo"
-                    className={`${activeFormat === '58mm' ? 'h-10 w-10' : 'h-12 w-12'} mx-auto mb-1 object-contain`}
-                  />
-                )}
-                <div className={`${activeFormat === '58mm' ? 'text-sm' : 'text-base'} font-black tracking-wide text-slate-950 break-words`}>
-                  {settings.storeName}
-                </div>
-                {settings.storeNameAr && (
-                  <div className={`${activeFormat === '58mm' ? 'text-[11px]' : 'text-xs'} font-bold text-slate-900 mt-0.5 break-words`} dir="rtl">
-                    {settings.storeNameAr}
-                  </div>
-                )}
-                <div className="inline-block border-y border-slate-700 px-2 py-0.5 text-[8px] font-bold text-slate-800 uppercase tracking-wider mt-1">
-                  Simplified Tax Invoice / فاتورة ضريبية مبسطة
-                </div>
-                {settings.crNumber && (
-                  <div className="text-[9px] text-slate-700 mt-0.5">
-                    CR / س.ت: {settings.crNumber}
-                  </div>
-                )}
-                {settings.taxId && (
-                  <div className="text-[9px] text-slate-700">
-                    VAT / الرقم الضريبي: {settings.taxId}
-                  </div>
-                )}
-                {showAddress && (
-                  <>
-                    <div className="text-[9px] text-slate-600 mt-0.5 break-words">{settings.address}</div>
-                    {settings.phone && (
-                      <div className="text-[9px] text-slate-600">Tel: {settings.phone}</div>
-                    )}
-                  </>
-                )}
-              </div>
-
-              {/* Receipt Metadata */}
-              <div className="thermal-receipt-meta space-y-0.5 text-[10px] sm:text-[11px] border border-slate-300 rounded px-2 py-1.5 mb-2">
-                <div className="mb-1 border-b border-dashed border-slate-300 pb-1 text-[8px] font-bold uppercase tracking-wider text-slate-500">
-                  Invoice Details / بيانات الفاتورة
-                </div>
-                <div className="flex justify-between gap-1">
-                  <span className="text-slate-600 shrink-0 font-semibold">Receipt #</span>
-                  <span className="font-bold font-mono break-all text-right">{sale.receiptNumber}</span>
-                </div>
-                <div className="flex justify-between gap-1">
-                  <span className="text-slate-600 shrink-0">Date:</span>
-                  <span className="text-right">{formattedDate}</span>
-                </div>
-                {showCashier && (
-                  <div className="flex justify-between gap-1">
-                    <span className="text-slate-600 shrink-0">Cashier:</span>
-                    <span className="text-right">{sale.cashierName}</span>
-                  </div>
-                )}
-                {showCustomer && (
-                  <div className="flex justify-between gap-1">
-                    <span className="text-slate-600 shrink-0">Customer:</span>
-                    <span className="text-right">{sale.customerName}</span>
-                  </div>
-                )}
-              </div>
-
-              {sale.status === 'VOIDED' && (
-                <div className="text-center font-bold text-red-700 border border-red-300 py-1 mb-2 text-[10px]">
-                  VOIDED TRANSACTION
-                </div>
-              )}
-
-              {/* Line Items */}
-              <div className="thermal-receipt-items border-b border-dashed border-slate-400 pb-2 mb-2">
-                {activeFormat === '58mm' ? (
-                  /* --- 58mm COMPACT 2-LINE FORMAT (Zero horizontal overflow) --- */
-                  <div className="divide-y divide-dashed divide-slate-200">
-                    <div className="flex justify-between pb-1 text-[8px] font-bold text-slate-600 uppercase tracking-wider">
-                      <span>Item / Qty</span>
-                      <span>Total</span>
-                    </div>
-                    {sale.items.map((item, index) => (
-                      <div key={item.id} className="py-1.5 first:pt-1 last:pb-0">
-                        {showNameEn && (
-                          <div className="font-semibold text-slate-900 break-words leading-tight">{item.productName}</div>
-                        )}
-                        {item.description && (
-                          <div className="mt-0.5 whitespace-pre-wrap break-words text-[9px] leading-tight text-slate-600">
-                            {item.description}
-                          </div>
-                        )}
-                        {showNameAr && item.nameAr && (
-                          <div className="text-[9px] text-slate-600 break-words leading-tight" dir="rtl">
-                            {item.nameAr}
-                          </div>
-                        )}
-                        {showBarcode && item.sku && (
-                          <div className="text-[8px] text-slate-400 font-mono">
-                            SKU: {item.sku}
-                          </div>
-                        )}
-                        <div className="flex justify-between items-baseline pt-0.5 text-[9px] text-slate-700">
-                          <span className="font-mono">
-                            {item.quantity} × {c}{unitPricesWithoutTax[index].toFixed(2)}{item.unitName ? ` ${item.unitName}` : ''}{showTax ? ` (+${item.taxRate ?? sale.taxRate}%)` : ''}
-                          </span>
-                          <span className="font-bold font-mono text-slate-900">
-                            {c}{invoiceLineBreakdown.lines[index].total.toFixed(2)}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  /* --- 80mm ITEMIZED FORMAT --- */
-                  <div>
-                    <div className="flex justify-between border-b border-slate-300 pb-1 text-[8px] font-bold text-slate-600 uppercase tracking-wider">
-                      <span>Item</span>
-                      <span>Total</span>
-                    </div>
-                    {sale.items.map((item, index) => (
-                      <div key={item.id} className="border-b border-dashed border-slate-200 py-1.5 last:border-0">
-                        {showNameEn && (
-                          <div className="font-semibold text-slate-950 break-words">{item.productName}</div>
-                        )}
-                        {item.description && (
-                          <div className="mt-0.5 whitespace-pre-wrap break-words text-[10px] text-slate-600">
-                            {item.description}
-                          </div>
-                        )}
-                        {showNameAr && item.nameAr && (
-                          <div className="text-[10px] text-slate-600 break-words" dir="rtl">
-                            {item.nameAr}
-                          </div>
-                        )}
-                        {showBarcode && item.sku && (
-                          <div className="text-[9px] text-slate-400 font-mono">
-                            SKU: {item.sku}
-                          </div>
-                        )}
-                        <div className="flex justify-between items-baseline gap-2 text-[9px] text-slate-700">
-                          <span className="font-mono">
-                            {item.quantity} × {c}{unitPricesWithoutTax[index].toFixed(2)}{item.unitName ? ` / ${item.unitName}` : ''}
-                          </span>
-                          <span className="shrink-0 font-bold font-mono text-slate-950">
-                            {c}{invoiceLineBreakdown.lines[index].total.toFixed(2)}
-                          </span>
-                        </div>
-                        {showTax && (
-                          <div className="text-[8px] text-slate-500 text-right">
-                            {item.taxRate ?? sale.taxRate}% VAT · Excl. {c}{invoiceLineBreakdown.lines[index].subtotal.toFixed(2)}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Totals Breakdown */}
-              <div className="space-y-1 text-[10px] sm:text-[11px] border-b border-dashed border-slate-300 pb-2 mb-2">
-                {showTax && (
-                  <div className="flex justify-between gap-1">
-                    <span className="text-slate-600">Subtotal (Excl. Tax)</span>
-                    <span className="font-mono tabular-nums">
-                      {c} {subtotalExcl.toFixed(settings.decimalPoints ?? 2)}
-                    </span>
-                  </div>
-                )}
-                {sale.discountAmount > 0 && (
-                  <div className="flex justify-between gap-1 text-slate-700">
-                    <span>
-                      Discount (
-                      {sale.discountType === 'percent'
-                        ? `${sale.discountValue}%`
-                        : `${c}${sale.discountValue.toFixed(settings.decimalPoints ?? 2)}`}
-                      )
-                    </span>
-                    <span className="font-mono tabular-nums">
-                      -{c} {sale.discountAmount.toFixed(settings.decimalPoints ?? 2)}
-                    </span>
-                  </div>
-                )}
-                {showTax && taxCategories.map(({ rate, taxableAmount, taxAmount }) => (
-                  <React.Fragment key={rate}>
-                    <div className="flex justify-between gap-1">
-                      <span className="text-slate-600">{rate}% Taxable</span>
-                      <span className="font-mono tabular-nums">{c} {taxableAmount.toFixed(settings.decimalPoints ?? 2)}</span>
-                    </div>
-                    {rate > 0 && (
-                      <div className="flex justify-between gap-1">
-                        <span className="text-slate-600">{rate}% VAT</span>
-                        <span className="font-mono tabular-nums">{c} {taxAmount.toFixed(settings.decimalPoints ?? 2)}</span>
-                      </div>
-                    )}
-                  </React.Fragment>
-                ))}
-                <div className={`thermal-receipt-total flex justify-between gap-1 ${activeFormat === '58mm' ? 'text-xs' : 'text-sm'} font-black text-slate-950 px-2 py-1.5 border-y-2 border-double border-slate-800 mt-1`}>
-                  <span>TOTAL / الإجمالي</span>
-                  <span className="font-mono tabular-nums">
-                    {c} {sale.total.toFixed(settings.decimalPoints ?? 2)}
-                  </span>
-                </div>
-              </div>
-
-              {returnDetails.length > 0 && (
-                <section className="border-b border-dashed border-slate-300 pb-2 mb-2 text-[10px]">
-                  <div className="font-bold text-slate-950 mb-1">Return Vouchers / سندات المرتجع</div>
-                  {returnDetails.map(({ voucher, items, refundAmount }) => (
-                    <div key={voucher.id} className="py-1.5 border-t border-dashed border-slate-300">
-                      <div className="flex justify-between gap-2 font-bold">
-                        <span>{voucher.voucherNumber}</span>
-                        <span className="text-right">{formatReturnDate(voucher.createdAt)}</span>
-                      </div>
-                      {items.map((item) => (
-                        <div key={`${voucher.id}-${item.saleItemId}`} className="flex justify-between gap-2 text-slate-600">
-                          <span className="min-w-0">
-                            {item.productName} × {item.quantity}{item.unitName ? ` ${item.unitName}` : ''}
-                          </span>
-                          <span className="shrink-0">{c} {item.refundAmount.toFixed(settings.decimalPoints ?? 2)}</span>
-                        </div>
-                      ))}
-                      <div className="flex justify-between font-semibold">
-                        <span>Voucher refund</span>
-                        <span>{c} {refundAmount.toFixed(settings.decimalPoints ?? 2)}</span>
-                      </div>
-                    </div>
-                  ))}
-                  <div className="border-t border-slate-300 pt-1 mt-1 space-y-1">
-                    <div className="flex justify-between">
-                      <span>Original sale total</span>
-                      <span className="font-mono tabular-nums">{c} {sale.total.toFixed(settings.decimalPoints ?? 2)}</span>
-                    </div>
-                    <div className="flex justify-between text-violet-800">
-                      <span>Total refunded</span>
-                      <span className="font-mono tabular-nums">−{c} {totalRefunded.toFixed(settings.decimalPoints ?? 2)}</span>
-                    </div>
-                    {showTax && (
-                      <div className="flex justify-between text-slate-500">
-                        <span>VAT refunded</span>
-                        <span className="font-mono tabular-nums">{c} {taxRefunded.toFixed(settings.decimalPoints ?? 2)}</span>
-                      </div>
-                    )}
-                    <div className="flex justify-between font-bold text-slate-950 border-t border-slate-300 pt-1">
-                      <span>Net after returns</span>
-                      <span className="font-mono tabular-nums">{c} {netAfterReturns.toFixed(settings.decimalPoints ?? 2)}</span>
-                    </div>
-                    {showTax && (
-                      <div className="flex justify-between text-slate-500">
-                        <span>Net VAT</span>
-                        <span className="font-mono tabular-nums">{c} {netTaxAfterReturns.toFixed(settings.decimalPoints ?? 2)}</span>
-                      </div>
-                    )}
-                  </div>
-                </section>
-              )}
-
-              {/* Payment Details */}
-              <div className="space-y-0.5 text-[10px] sm:text-[11px] border-b border-dashed border-slate-300 pb-2 mb-2">
-                <div className="flex justify-between gap-1">
-                  <span className="text-slate-600">Paid ({sale.paymentMethod})</span>
-                  <span className="font-mono tabular-nums">{c} {sale.amountTendered.toFixed(settings.decimalPoints ?? 2)}</span>
-                </div>
-                <div className="flex justify-between gap-1 font-semibold">
-                  <span>Change Due</span>
-                  <span className="font-mono tabular-nums">{c} {sale.changeDue.toFixed(settings.decimalPoints ?? 2)}</span>
-                </div>
-              </div>
-
-              {/* QR Code & Footer */}
-              <div className="text-center space-y-2">
-                {showQr && (
-                  <div className={`${activeFormat === '58mm' ? 'w-24 h-24' : 'w-28 h-28'} mx-auto bg-white border border-slate-200 rounded p-1 flex items-center justify-center`}>
-                    {zatcaQrDataUrl ? (
-                      <img
-                        src={zatcaQrDataUrl}
-                        alt="Invoice QR Code"
-                        className={`${activeFormat === '58mm' ? 'w-22 h-22' : 'w-26 h-26'} object-contain`}
-                      />
-                    ) : (
-                      <QrCode className={`${activeFormat === '58mm' ? 'w-14 h-14' : 'w-16 h-16'} text-slate-900`} />
-                    )}
-                  </div>
-                )}
-
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="no-print px-5 py-4 bg-white border-t border-slate-200 flex items-center justify-between gap-2 shrink-0">
-          <span className="text-[10px] text-slate-400">
-            {language === 'ar' ? 'Enter للإنهاء · F12 للطباعة' : 'Enter to finish · F12 to print'}
-          </span>
-          <div className="flex items-center gap-2">
+        <div className="no-print px-5 py-4 bg-white border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] text-slate-400">
+              {isAr ? 'Enter للإنهاء · F12 للطباعة' : 'Enter to finish · F12 to print'}
+            </span>
             {window.electronAPI?.isElectron && (
               <label
                 className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-[10px] text-slate-600"
-                title="Preview the receipt before printing"
+                title={isAr ? 'معاينة الفاتورة قبل الطباعة' : 'Preview receipt before printing'}
               >
                 <input
                   type="checkbox"
@@ -1052,52 +377,73 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                   onChange={(event) => setPreviewBeforePrint(event.target.checked)}
                   className="accent-blue-700"
                 />
-                <span>{language === 'ar' ? 'معاينة قبل الطباعة' : 'Preview before printing'}</span>
+                <span>{isAr ? 'معاينة قبل الطباعة' : 'Preview first'}</span>
               </label>
             )}
+          </div>
+          <div className="flex items-center gap-2">
             <button
               type="button"
               disabled={isPrintingReceipt}
-              onClick={handlePrintAndClose}
-              title="Print receipt"
-              className="inline-flex items-center gap-2 px-3.5 py-2.5 text-xs font-semibold text-blue-700 bg-white border border-blue-200 hover:bg-blue-50 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap"
+              onClick={() => void openPrintPreview()}
+              className="inline-flex items-center gap-1.5 px-3 py-2.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap"
             >
-              <Printer className="w-3.5 h-3.5" />
-              <span>{isPrintingReceipt ? 'Printing...' : previewBeforePrint ? 'Preview Receipt' : 'Print Receipt'}</span>
+              <Eye className="w-3.5 h-3.5" />
+              <span>{isAr ? 'معاينة' : 'Preview'}</span>
             </button>
             <button
-              ref={primaryActionBtnRef}
+              ref={autoPrint ? primaryActionBtnRef : undefined}
+              type="button"
+              disabled={isPrintingReceipt}
+              onClick={() => void handlePrintAndClose()}
+              className={autoPrint
+                ? 'inline-flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap shadow-sm'
+                : 'inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold text-blue-700 bg-white border border-blue-200 hover:bg-blue-50 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap'}
+            >
+              <Printer className="w-3.5 h-3.5" />
+              <span>
+                {isPrintingReceipt
+                  ? (isAr ? 'جارٍ الطباعة...' : 'Printing...')
+                  : (isAr ? 'طباعة الفاتورة' : 'Print Receipt')}
+              </span>
+            </button>
+            <button
+              ref={autoPrint ? undefined : primaryActionBtnRef}
               type="button"
               onClick={onClose}
-              className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors whitespace-nowrap shadow-sm"
+              className={autoPrint
+                ? 'inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors whitespace-nowrap'
+                : 'inline-flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors whitespace-nowrap shadow-sm'}
             >
               <Check className="w-3.5 h-3.5" />
-              <span>Done</span>
+              <span>{isAr ? 'تم' : 'Done'}</span>
             </button>
           </div>
         </div>
       </div>
+
       {showPrintPreview && previewHtml && previewPageSize && (
-      <div className="receipt-standalone-preview no-print fixed inset-0 z-[60] flex items-start justify-center overflow-auto bg-slate-950/80 px-3 pt-5 pb-24">
-        <iframe
-          title={language === 'ar' ? 'معاينة نسخة الطباعة' : 'Exact receipt print preview'}
-          srcDoc={previewHtml}
-          sandbox=""
-          className="max-w-full shrink-0 bg-white shadow-2xl"
-          style={{
-            width: `${previewPageSize.width / 1000}mm`,
-            height: `${previewPageSize.height / 1000}mm`,
-            maxHeight: 'calc(100vh - 120px)',
-            border: 0,
-          }}
-        />
-      </div>
+        <div className="receipt-standalone-preview no-print fixed inset-0 z-[60] flex items-start justify-center overflow-auto bg-slate-950/80 px-3 pt-5 pb-24">
+          <iframe
+            title={isAr ? 'معاينة نسخة الطباعة' : 'Exact receipt print preview'}
+            srcDoc={previewHtml}
+            sandbox=""
+            className="max-w-full shrink-0 bg-white shadow-2xl"
+            style={{
+              width: `${previewPageSize.width / 1000}mm`,
+              height: `${previewPageSize.height / 1000}mm`,
+              maxHeight: 'calc(100vh - 120px)',
+              border: 0,
+            }}
+          />
+        </div>
       )}
+
       {showPrintPreview && (
         <div className="receipt-preview-controls no-print fixed bottom-4 left-1/2 z-[70] flex w-[min(94vw,480px)] -translate-x-1/2 items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-xl">
           <div className="min-w-0">
             <div className="text-sm font-semibold text-slate-900">
-              {language === 'ar' ? 'معاينة الفاتورة' : 'Receipt preview'}
+              {isAr ? 'معاينة الفاتورة' : 'Receipt preview'}
             </div>
             {printError && (
               <div role="alert" className="mt-1 text-xs text-red-700">{printError}</div>
@@ -1109,16 +455,18 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               onClick={() => setShowPrintPreview(false)}
               className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
             >
-              {language === 'ar' ? 'رجوع' : 'Back'}
+              {isAr ? 'رجوع' : 'Back'}
             </button>
             <button
               type="button"
               disabled={isPrintingReceipt}
-              onClick={handlePrintAndClose}
+              onClick={() => void handlePrintAndClose()}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
             >
               <Printer className="h-3.5 w-3.5" />
-              {isPrintingReceipt ? (language === 'ar' ? 'جارٍ الطباعة...' : 'Printing...') : (language === 'ar' ? 'طباعة' : 'Print')}
+              {isPrintingReceipt
+                ? (isAr ? 'جارٍ الطباعة...' : 'Printing...')
+                : (isAr ? 'طباعة' : 'Print')}
             </button>
           </div>
         </div>
