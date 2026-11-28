@@ -12,18 +12,22 @@ import {
   LogOut,
   RotateCcw,
   BarChart3,
+  Barcode,
   Files,
+  QrCode,
 } from 'lucide-react';
 import { APP_COMPONENTS } from '../types/pos';
 import type { AppComponentId, AppScreenMode, SettingsSectionId, UserSession } from '../types/pos';
 import { useLanguage } from '../i18n/LanguageContext';
 import { SettingsSectionTabs } from './SettingsView';
 import { LauncherAppArt } from './LauncherAppArt';
+import { hasAnyModuleAccess, hasModuleAction } from '../utils/permissions';
 
 export type NavTab =
   | 'register'
   | 'sales-entry'
   | 'inventory'
+  | 'barcode-print'
   | 'purchases'
   | 'purchase-history'
   | 'purchase-return-register'
@@ -37,6 +41,7 @@ export type NavTab =
   | 'reports'
   | 'shift'
   | 'settings'
+  | 'zatca'
   | 'files'
   | 'unavailable';
 
@@ -107,6 +112,7 @@ interface TopBarProps {
   onLauncherOpened?: () => void;
   sideNavOpen?: boolean;
   onToggleSideNav?: () => void;
+  billingInvoiceType?: 'B2B' | 'B2C';
   purchaseVoucherNumber?: string;
   purchaseVendor?: {
     name: string;
@@ -191,6 +197,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   onLauncherOpened,
   sideNavOpen = true,
   onToggleSideNav,
+  billingInvoiceType = 'B2C',
   purchaseVoucherNumber,
   purchaseVendor,
 }) => {
@@ -205,6 +212,7 @@ export const TopBar: React.FC<TopBarProps> = ({
     payment: language === 'ar' ? 'الدفع' : 'Payment',
     users: t.secUsersPerms,
     database: t.secDatabase,
+    network: language === 'ar' ? 'الشبكة والأجهزة' : 'Network & Terminals',
     registration: language === 'ar' ? 'التسجيل' : 'Registration',
     updates: language === 'ar' ? 'التحديثات' : 'Software Updates',
   };
@@ -337,10 +345,17 @@ export const TopBar: React.FC<TopBarProps> = ({
         : t.navInventory,
       icon: Package,
     },
+    {
+      id: 'barcode-print',
+      label: language === 'ar' ? 'طباعة الباركود' : 'Barcode Printing',
+      icon: Barcode,
+      permission: 'inventory',
+    },
     { id: 'shift', label: language === 'ar' ? 'الوردية' : 'Shift', icon: Wallet, permission: 'register' },
     { id: 'accounts', label: t.navAccounts, icon: Wallet, permission: 'accounts' },
     { id: 'reports', label: t.navReports, icon: BarChart3, permission: 'reports' },
     { id: 'settings', label: t.navSettings, icon: SettingsIcon, permission: 'settings' },
+    { id: 'zatca', label: language === 'ar' ? 'الفوترة الإلكترونية' : 'E-Invoicing', icon: QrCode, permission: 'zatca' },
     { id: 'files', label: language === 'ar' ? 'الملفات' : 'Files', icon: Files },
     {
       id: 'parties',
@@ -359,25 +374,48 @@ export const TopBar: React.FC<TopBarProps> = ({
       (!isAppAdmin || currentUser.registeredSystem === true) &&
       disabledAppComponents.some((component) => component === tabId)
     ) return false;
-    if (tabId === 'settings') {
-      return isAppAdmin || currentUser.role === 'admin' || currentUser.permissions?.includes('settings') === true;
+    if (isAppAdmin || currentUser.role === 'admin') return true;
+    switch (tabId) {
+      case 'register':
+      case 'sales-entry':
+        return hasModuleAction(currentUser, 'sales', 'add');
+      case 'sales':
+        return hasAnyModuleAccess(currentUser, 'sales');
+      case 'return-register':
+        return hasModuleAction(currentUser, 'sales-return', 'add');
+      case 'return-history':
+        return hasAnyModuleAccess(currentUser, 'sales-return');
+      case 'purchases':
+        return hasModuleAction(currentUser, 'purchases', 'add') || hasAnyModuleAccess(currentUser, 'purchases');
+      case 'purchase-history':
+        return hasAnyModuleAccess(currentUser, 'purchases');
+      case 'purchase-return-register':
+        return hasModuleAction(currentUser, 'purchase-return', 'add');
+      case 'purchase-return-history':
+        return hasAnyModuleAccess(currentUser, 'purchase-return');
+      case 'inventory':
+        return hasAnyModuleAccess(currentUser, 'inventory');
+      case 'barcode-print':
+        return hasAnyModuleAccess(currentUser, 'barcode-print');
+      case 'customers':
+        return hasAnyModuleAccess(currentUser, 'customers');
+      case 'vendors':
+        return hasAnyModuleAccess(currentUser, 'vendors');
+      case 'accounts':
+        return hasAnyModuleAccess(currentUser, 'accounts');
+      case 'reports':
+        return hasAnyModuleAccess(currentUser, 'reports');
+      case 'shift':
+        return hasAnyModuleAccess(currentUser, 'shift');
+      case 'files':
+        return hasAnyModuleAccess(currentUser, 'files');
+      case 'zatca':
+        return hasAnyModuleAccess(currentUser, 'zatca');
+      case 'settings':
+        return hasAnyModuleAccess(currentUser, 'settings');
+      default:
+        return false;
     }
-    if (APP_COMPONENTS.some((component) => component.id === tabId)) return true;
-    const item = navItems.find(
-      (navItem): navItem is TopNavLink => navItem.id === tabId && !('children' in navItem)
-    );
-    const groupChild = navItems
-      .filter((navItem): navItem is TopNavGroup => 'children' in navItem)
-      .flatMap((group) => group.children)
-      .find((child) => child.id === tabId);
-    const requiredPermission = tabId === 'sales-entry'
-      ? 'register'
-      : item?.permission || groupChild?.permission;
-    if (currentUser.role === 'admin') return true;
-    if (requiredPermission === 'sales-return' && currentUser.permissions?.includes('manage-sales-returns')) {
-      return true;
-    }
-    return currentUser.permissions?.includes(requiredPermission || tabId) ?? false;
   };
 
   const hubModules: HubModule[] = [
@@ -505,6 +543,8 @@ export const TopBar: React.FC<TopBarProps> = ({
     { id: 'salary-process', label: 'Salary Process', labelAr: 'معالجة الرواتب', icon: Wallet, componentId: 'salary-process', comingSoon: true },
     { id: 'organization-shift', label: 'Shift', labelAr: 'الورديات', icon: Wallet, tab: 'shift' },
     { id: 'cashbook', label: 'Cash Book', labelAr: 'دفتر النقدية', icon: Wallet, tab: 'accounts', action: 'open-cashbook' },
+    { id: 'barcode-print', label: 'Barcode Printing', labelAr: 'طباعة الباركود', icon: Barcode, tab: 'barcode-print' },
+    { id: 'zatca', label: 'E-Invoicing', labelAr: 'الفوترة الإلكترونية', icon: QrCode, tab: 'zatca' },
   ];
   const visibleMenuShortcuts = menuShortcuts.filter(
     (item) =>
@@ -786,16 +826,45 @@ export const TopBar: React.FC<TopBarProps> = ({
             { label: isAr ? 'مرتجعات' : 'Returns', value: String(s.salesReturnCount + s.purchaseReturnCount) },
           ],
         };
+      case 'barcode-print':
+        return {
+          subtitle: isAr ? 'مسح وطباعة ملصقات الباركود' : 'Scan & Print Custom Labels',
+          headline: isAr ? `${s.totalProducts} منتج` : `${s.totalProducts} Products`,
+          headlineCaption: isAr ? 'جاهز للطباعة' : 'Ready to Label',
+          badge: { label: isAr ? '9 تصاميم' : '9 Designs', tone: 'blue' },
+          metrics: [
+            { label: isAr ? 'المقاسات' : 'Sizes', value: isAr ? 'مخصص' : 'Custom' },
+            { label: isAr ? 'التنسيقات' : 'Formats', value: 'CODE128/EAN' },
+            { label: isAr ? 'الوضع' : 'Mode', value: isAr ? 'مسح فوري' : 'Instant Scan' },
+          ],
+        };
+      case 'zatca':
+        return {
+          subtitle: isAr ? 'هيئة الزكاة والضريبة والجمارك (فاتورة)' : 'ZATCA Compliance & Fatoora',
+          headline: s.eInvoiceEnabled
+            ? (isAr ? 'مفعّل' : 'Active')
+            : (isAr ? 'غير مفعّل' : 'Not Activated'),
+          headlineCaption: isAr ? 'حالة الفوترة الإلكترونية' : 'E-Invoice Status',
+          badge: {
+            label: s.eInvoiceEnabled ? (isAr ? 'متوافق' : 'Enabled') : (isAr ? 'موقوف' : 'Off'),
+            tone: s.eInvoiceEnabled ? 'emerald' : 'red',
+          },
+          metrics: [
+            { label: isAr ? 'الضريبة' : 'VAT', value: `${s.taxRate}%` },
+            { label: isAr ? 'إجمالي الضريبة' : 'VAT Total', value: formatMoney(s.totalVatCollected) },
+            { label: isAr ? 'الفواتير' : 'Invoices', value: String(s.totalSalesCount) },
+          ],
+        };
       case 'settings':
         return {
-          subtitle: isAr ? 'إعدادات المتجر والطباعة والنظام' : 'Store, Tax, Print & Users',
-          headline: s.eInvoiceEnabled
-            ? (isAr ? 'الفوترة الإلكترونية مفعّلة' : 'E-Invoice Active')
-            : (isAr ? 'إعدادات النظام' : 'System Ready'),
-          headlineCaption: isAr ? 'حالة الامتثال والطباعة' : 'Compliance & Print Config',
+          subtitle: isAr ? 'الأعمال والفوترة والطباعة والمستخدمون' : 'Business, Billing, Print & Users',
+          headline: isAr
+            ? `${s.currencySymbol} · ضريبة ${s.taxRate}%`
+            : `${s.currencySymbol} · VAT ${s.taxRate}%`,
+          headlineCaption: isAr ? `ورق ${s.paperWidth} · المستخدمون والنسخ` : `${s.paperWidth} Print · Users & Backup`,
           badge: {
-            label: s.eInvoiceEnabled ? (isAr ? 'مفعّل' : 'Phase 1') : (isAr ? 'قياسي' : 'Standard'),
-            tone: s.eInvoiceEnabled ? 'emerald' : 'slate',
+            label: isAr ? 'الإعدادات' : 'Config',
+            tone: 'slate',
           },
           metrics: [
             { label: isAr ? 'الضريبة' : 'VAT Rate', value: `${s.taxRate}%` },
@@ -877,6 +946,28 @@ export const TopBar: React.FC<TopBarProps> = ({
           {activePageLabel && (
             <span className="border-l border-slate-200 pl-2 text-xs font-medium text-slate-600 sm:pl-3">
               {activePageLabel}
+            </span>
+          )}
+          {(activeTab === 'register' || activeTab === 'sales-entry' || activeTab === 'return-register') && (
+            <span
+              className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[10px] font-bold tracking-wide ${
+                billingInvoiceType === 'B2B'
+                  ? 'border-violet-200 bg-violet-50 text-violet-800'
+                  : 'border-sky-200 bg-sky-50 text-sky-800'
+              }`}
+              title={
+                billingInvoiceType === 'B2B'
+                  ? (language === 'ar' ? 'فاتورة / إشعار ضريبي قياسي (عميل لديه رقم ضريبي)' : 'Standard Tax Document (VAT-registered customer)')
+                  : (language === 'ar' ? 'فاتورة / إشعار ضريبي مبسط (عميل أفراد / نقدي)' : 'Simplified Tax Document (Walk-in / consumer)')
+              }
+            >
+              {activeTab === 'return-register'
+                ? billingInvoiceType === 'B2B'
+                  ? (language === 'ar' ? 'B2B · إشعار دائن' : 'B2B · Credit Note')
+                  : (language === 'ar' ? 'B2C · إشعار دائن' : 'B2C · Credit Note')
+                : billingInvoiceType === 'B2B'
+                  ? (language === 'ar' ? 'B2B · ضريبية' : 'B2B · Tax Invoice')
+                  : (language === 'ar' ? 'B2C · مبسطة' : 'B2C · Simplified')}
             </span>
           )}
           {purchaseVoucherNumber && activeTab === 'purchases' && (
@@ -971,7 +1062,7 @@ export const TopBar: React.FC<TopBarProps> = ({
 
       {!isFlyErpMode && showLauncher && (
         <div
-          className="app-launcher-backdrop fixed inset-x-0 bottom-0 top-14 z-[60] flex items-start justify-center bg-white p-2 sm:p-4 backdrop-blur-md"
+          className="app-launcher-backdrop fixed inset-x-0 bottom-0 top-14 z-[60] flex items-start justify-center bg-white p-2 sm:p-4"
           onClick={(event) => {
             if (event.target === event.currentTarget) closeLauncher();
           }}
@@ -1037,6 +1128,7 @@ export const TopBar: React.FC<TopBarProps> = ({
                   >
                     <SettingsSectionTabs
                       activeSection={null}
+                      isAdmin={currentUser?.role === 'admin'}
                       isAppAdmin={isAppAdmin}
                       onSelect={(section) => {
                         onSettingsSectionChange(section);
@@ -1096,84 +1188,55 @@ export const TopBar: React.FC<TopBarProps> = ({
                 </nav>
               </>
             ) : (
-              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain pb-[max(1rem,env(safe-area-inset-bottom))]">
+              <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain pb-[max(1rem,env(safe-area-inset-bottom))]">
                 {launcherSummary && (
-                  <div className="flex flex-col gap-3 rounded-2xl border border-slate-200/90 bg-white/95 p-4 shadow-xs lg:flex-row lg:items-center lg:justify-between">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h2 className="truncate text-base font-bold tracking-tight text-slate-900 sm:text-lg">
-                          {launcherSummary.storeName || appName}
-                        </h2>
-                        <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-700">
-                          {appName}
+                  <div className="flex flex-col gap-2.5 rounded-xl border border-slate-200/90 bg-white/95 px-4 py-2.5 shadow-xs lg:flex-row lg:items-center lg:justify-between">
+                    <div className="min-w-0 flex items-center gap-2.5">
+                      <h2 className="truncate text-sm font-bold tracking-tight text-slate-900 sm:text-base">
+                        {launcherSummary.storeName || appName}
+                      </h2>
+                      <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-700">
+                        {appName}
+                      </span>
+                      <span className="hidden text-xs text-slate-400 sm:inline">
+                        · {new Date(currentTime).toLocaleDateString(
+                          language === 'ar' ? 'ar-SA' : 'en-GB',
+                          { weekday: 'short', month: 'short', day: 'numeric' }
+                        )}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-4 text-xs">
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                          {language === 'ar' ? 'اليوم' : 'Today'}
+                        </span>
+                        <span className="font-mono font-bold tabular-nums text-emerald-700">
+                          {formatMoney(launcherSummary.todaySalesTotal)}
                         </span>
                       </div>
-                      <p className="mt-0.5 text-xs text-slate-500">
-                        {new Date(currentTime).toLocaleDateString(
-                          language === 'ar' ? 'ar-SA' : 'en-GB',
-                          { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' }
-                        )}
-                        {' · '}
-                        {new Date(currentTime).toLocaleTimeString(
-                          language === 'ar' ? 'ar-SA' : 'en-US',
-                          { hour: '2-digit', minute: '2-digit' }
-                        )}
-                      </p>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                      <div className="rounded-xl border border-slate-200/80 bg-slate-50/90 px-3 py-2">
-                        <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                          {language === 'ar' ? 'مبيعات اليوم' : "Today's Sales"}
-                        </div>
-                        <div className="mt-0.5 font-mono text-sm font-bold tabular-nums text-emerald-700">
-                          {formatMoney(launcherSummary.todaySalesTotal)}
-                        </div>
-                      </div>
-                      <div className="rounded-xl border border-slate-200/80 bg-slate-50/90 px-3 py-2">
-                        <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                          {language === 'ar' ? 'فواتير اليوم' : "Today's Bills"}
-                        </div>
-                        <div className="mt-0.5 font-mono text-sm font-bold tabular-nums text-slate-900">
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                          {language === 'ar' ? 'الفواتير' : 'Bills'}
+                        </span>
+                        <span className="font-mono font-bold tabular-nums text-slate-900">
                           {launcherSummary.todaySalesCount}
-                          {launcherSummary.draftSalesCount > 0 && (
-                            <span className="ml-1.5 text-[10px] font-semibold text-amber-700">
-                              +{launcherSummary.draftSalesCount} {language === 'ar' ? 'مسودة' : 'draft'}
-                            </span>
-                          )}
-                        </div>
+                        </span>
                       </div>
-                      <div className="rounded-xl border border-slate-200/80 bg-slate-50/90 px-3 py-2">
-                        <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                          {language === 'ar' ? 'تنبيهات المخزون' : 'Stock Alerts'}
-                        </div>
-                        <div className={`mt-0.5 font-mono text-sm font-bold tabular-nums ${
-                          launcherSummary.outOfStockCount > 0
-                            ? 'text-red-600'
-                            : launcherSummary.lowStockCount > 0
-                              ? 'text-amber-700'
-                              : 'text-emerald-700'
-                        }`}>
-                          {launcherSummary.lowStockCount + launcherSummary.outOfStockCount}
-                          <span className="ml-1 text-[10px] font-medium text-slate-500">
-                            / {launcherSummary.totalProducts}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="rounded-xl border border-slate-200/80 bg-slate-50/90 px-3 py-2">
-                        <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                          {language === 'ar' ? 'الرصيد النقدي' : 'Cash Balance'}
-                        </div>
-                        <div className={`mt-0.5 font-mono text-sm font-bold tabular-nums ${
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                          {language === 'ar' ? 'النقد' : 'Cash'}
+                        </span>
+                        <span className={`font-mono font-bold tabular-nums ${
                           launcherSummary.cashbookBalance >= 0 ? 'text-blue-700' : 'text-red-600'
                         }`}>
                           {formatMoney(launcherSummary.cashbookBalance)}
-                        </div>
+                        </span>
                       </div>
                     </div>
                   </div>
                 )}
 
-                <div className="launcher-grid grid w-full grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="launcher-grid grid w-full grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-3">
                   {activeLauncherItems.map((entry) => {
                     const Icon = entry.icon;
                     const label = language === 'ar' ? entry.labelAr : entry.label;
@@ -1205,74 +1268,47 @@ export const TopBar: React.FC<TopBarProps> = ({
                             setOpenNavigationGroup(entry.moduleId);
                           }
                         }}
-                        className="group flex w-full min-w-0 flex-col justify-between gap-3 rounded-2xl border border-slate-200/90 bg-white/95 p-4 text-start shadow-xs transition-all hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                        className="group flex min-h-[116px] w-full min-w-0 items-center justify-between gap-4 rounded-2xl border border-slate-200/90 bg-white/95 px-5 py-4 text-start shadow-xs transition-all hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex min-w-0 items-center gap-3">
-                            <span
-                              data-art={isMenuLanding ? entry.id : undefined}
-                              className="win11-launcher-icon relative flex h-12 w-12 shrink-0 items-center justify-center rounded-xl transition-transform group-hover:scale-105"
-                            >
-                              {isMenuLanding ? (
-                                <LauncherAppArt id={entry.id} />
-                              ) : (
-                                <Icon strokeWidth={1.75} className="relative z-10 h-6 w-6 text-blue-700" />
-                              )}
-                            </span>
-                            <div className="min-w-0">
-                              <div className="truncate text-sm font-bold text-slate-900 group-hover:text-blue-700">
+                        <div className="flex min-w-0 flex-1 items-center gap-4">
+                          <span
+                            data-art={isMenuLanding ? entry.id : undefined}
+                            className="win11-launcher-icon relative flex h-14 w-14 shrink-0 items-center justify-center rounded-xl transition-transform group-hover:scale-105"
+                          >
+                            {isMenuLanding ? (
+                              <LauncherAppArt id={entry.id} />
+                            ) : (
+                              <Icon strokeWidth={1.75} className="relative z-10 h-7 w-7 text-blue-700" />
+                            )}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="truncate text-base font-bold text-slate-900 group-hover:text-blue-700">
                                 {label}
-                              </div>
-                              {summary && (
-                                <div className="mt-0.5 truncate text-[11px] text-slate-500">
-                                  {summary.subtitle}
-                                </div>
+                              </span>
+                              {summary?.badge && (
+                                <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${badgeToneClass(summary.badge.tone)}`}>
+                                  {summary.badge.label}
+                                </span>
                               )}
                             </div>
-                          </div>
-                          <div className="flex shrink-0 items-center gap-1.5">
-                            {summary?.badge && (
-                              <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${badgeToneClass(summary.badge.tone)}`}>
-                                {summary.badge.label}
-                              </span>
+                            {!iconOnlyLauncher && summary && (
+                              <div className="mt-1.5 flex items-baseline gap-2 truncate">
+                                <span className="truncate font-mono text-sm font-bold tabular-nums text-slate-700">
+                                  {summary.headline}
+                                </span>
+                                <span className="truncate text-xs text-slate-400">
+                                  {summary.headlineCaption}
+                                </span>
+                              </div>
                             )}
-                            <ChevronRight
-                              className={`h-4 w-4 text-slate-400 transition-transform group-hover:translate-x-0.5 group-hover:text-blue-600 ${
-                                language === 'ar' ? 'rotate-180 group-hover:-translate-x-0.5' : ''
-                              }`}
-                            />
                           </div>
                         </div>
-
-                        {summary && (
-                          <div className="flex items-baseline justify-between gap-2 border-t border-slate-100 pt-2.5">
-                            <span className="truncate font-mono text-lg font-bold tabular-nums text-slate-900">
-                              {summary.headline}
-                            </span>
-                            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                              {summary.headlineCaption}
-                            </span>
-                          </div>
-                        )}
-
-                        {!iconOnlyLauncher && summary && summary.metrics.length > 0 && (
-                          <div
-                            className={`grid gap-2 rounded-xl bg-slate-50/90 px-2.5 py-2 ${
-                              summary.metrics.length === 2 ? 'grid-cols-2' : 'grid-cols-3'
-                            }`}
-                          >
-                            {summary.metrics.map((metric) => (
-                              <div key={metric.label} className="min-w-0">
-                                <div className="truncate text-[10px] font-medium text-slate-500">
-                                  {metric.label}
-                                </div>
-                                <div className={`mt-0.5 truncate font-mono text-xs font-bold tabular-nums ${metricToneClass(metric.tone)}`}>
-                                  {metric.value}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
+                        <ChevronRight
+                          className={`h-5 w-5 shrink-0 text-slate-300 transition-transform group-hover:translate-x-0.5 group-hover:text-blue-600 ${
+                            language === 'ar' ? 'rotate-180 group-hover:-translate-x-0.5' : ''
+                          }`}
+                        />
                       </button>
                     );
                   })}

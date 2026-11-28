@@ -1,8 +1,11 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Download,
   Edit2,
+  FilePlus2,
   Printer,
+  RefreshCw,
   RotateCcw,
   Search,
   Trash2,
@@ -21,7 +24,7 @@ interface SalesHistoryViewProps {
   sales: Sale[];
   returnVouchers: SalesReturnVoucher[];
   settings: StoreSettings;
-  onReprintSale: (sale: Sale) => void;
+  onReprintSale?: (sale: Sale) => void;
   onOpenReturnRegister?: (sale: Sale) => void;
   onDeleteSale?: (saleId: number) => Promise<void>;
   onEditInvoice?: (sale: Sale) => void;
@@ -45,6 +48,108 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
   const [deletingSaleId, setDeletingSaleId] = useState<number | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const isPhase2Active = settings.enableZatcaEinvoice === true && settings.zatcaPhase === '2';
+  const [zatcaMap, setZatcaMap] = useState<
+    Record<
+      number,
+      {
+        id: number;
+        submissionStatus: 'PENDING' | 'REPORTED' | 'CLEARED' | 'WARNING' | 'REJECTED' | 'FAILED';
+        invoiceSubtype: '0100000' | '0200000';
+        icv: number;
+      }
+    >
+  >({});
+  const [retryingZatcaId, setRetryingZatcaId] = useState<number | null>(null);
+  const [debitNoteSale, setDebitNoteSale] = useState<Sale | null>(null);
+  const [debitAmount, setDebitAmount] = useState('');
+  const [debitReason, setDebitReason] = useState('');
+  const [debitBusy, setDebitBusy] = useState(false);
+  const [debitError, setDebitError] = useState<string | null>(null);
+
+  const loadZatcaStatuses = useCallback(async () => {
+    if (!isPhase2Active) return;
+    try {
+      const res = await fetch('/api/zatca/invoices?limit=500');
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        invoices?: Array<{
+          id: number;
+          documentType: string;
+          documentId: number;
+          submissionStatus: 'PENDING' | 'REPORTED' | 'CLEARED' | 'WARNING' | 'REJECTED' | 'FAILED';
+          invoiceSubtype: '0100000' | '0200000';
+          icv: number;
+        }>;
+      };
+      const next: typeof zatcaMap = {};
+      for (const inv of data.invoices || []) {
+        if (inv.documentType === 'SALE') {
+          next[inv.documentId] = {
+            id: inv.id,
+            submissionStatus: inv.submissionStatus,
+            invoiceSubtype: inv.invoiceSubtype,
+            icv: inv.icv,
+          };
+        }
+      }
+      setZatcaMap(next);
+    } catch {
+      // Ignore network errors while loading ZATCA statuses
+    }
+  }, [isPhase2Active]);
+
+  useEffect(() => {
+    void loadZatcaStatuses();
+  }, [loadZatcaStatuses, sales.length]);
+
+  const handleRetryZatca = async (zatcaId: number) => {
+    setRetryingZatcaId(zatcaId);
+    try {
+      await fetch(`/api/zatca/invoices/${zatcaId}/retry`, { method: 'POST' });
+      await loadZatcaStatuses();
+    } finally {
+      setRetryingZatcaId(null);
+    }
+  };
+
+  const handleSubmitDebitNote = async () => {
+    if (!debitNoteSale) return;
+    const amount = Number(debitAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setDebitError(isRtl ? 'أدخل مبلغاً صحيحاً أكبر من صفر.' : 'Enter a valid positive amount.');
+      return;
+    }
+    if (!debitReason.trim()) {
+      setDebitError(isRtl ? 'سبب الإشعار المدين مطلوب لهيئة الزكاة.' : 'Debit note reason is required by ZATCA.');
+      return;
+    }
+    setDebitBusy(true);
+    setDebitError(null);
+    try {
+      const res = await fetch('/api/zatca/debit-notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          saleId: debitNoteSale.id,
+          amountExclTax: amount,
+          taxRate: settings.taxRate ?? 15,
+          reason: debitReason.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to issue Debit Note.');
+      setDebitNoteSale(null);
+      setDebitAmount('');
+      setDebitReason('');
+      await loadZatcaStatuses();
+    } catch (err) {
+      setDebitError(err instanceof Error ? err.message : 'Failed to issue Debit Note.');
+    } finally {
+      setDebitBusy(false);
+    }
+  };
 
   const c = isRtl ? 'ر.س ' : (settings.currencySymbol || 'SAR ');
 
@@ -131,6 +236,7 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
 
   const renderActions = (sale: Sale) => (
     <div className="flex flex-wrap items-center justify-center gap-1">
+      {onReprintSale && (
       <button
         type="button"
         onClick={() => onReprintSale(sale)}
@@ -148,6 +254,7 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
       >
         <Printer className="h-3.5 w-3.5 lg:h-4 lg:w-4" />
       </button>
+      )}
       {onEditInvoice && (sale.status === 'COMPLETED' || sale.status === 'DRAFT') && !sale.returnStatus && settings.enableZatcaEinvoice !== true && (
         <button
           type="button"
@@ -165,11 +272,68 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
           type="button"
           onClick={() => onOpenReturnRegister(sale)}
           className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors hover:border-violet-300 hover:bg-violet-50 hover:text-violet-700 lg:h-8 lg:w-8"
-          title={isRtl ? 'إرجاع أصناف' : 'Return items'}
+          title={isRtl ? 'إرجاع أصناف (إشعار دائن)' : 'Return items (Credit Note)'}
           aria-label={isRtl ? 'إرجاع أصناف' : 'Return items'}
         >
           <RotateCcw className="h-3.5 w-3.5 lg:h-4 lg:w-4" />
         </button>
+      )}
+      {isPhase2Active && sale.status === 'COMPLETED' && (
+        <>
+          <button
+            type="button"
+            onClick={() => {
+              setDebitNoteSale(sale);
+              setDebitAmount('');
+              setDebitReason('');
+              setDebitError(null);
+            }}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700 lg:h-8 lg:w-8"
+            title={isRtl ? 'إصدار إشعار مدين ZATCA (383)' : 'Issue ZATCA Debit Note (383)'}
+            aria-label={isRtl ? 'إصدار إشعار مدين' : 'Issue Debit Note'}
+          >
+            <FilePlus2 className="h-3.5 w-3.5 lg:h-4 lg:w-4" />
+          </button>
+          {zatcaMap[sale.id] && (
+            <>
+              <span
+                className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[9px] font-bold ${
+                  zatcaMap[sale.id].submissionStatus === 'CLEARED' ||
+                  zatcaMap[sale.id].submissionStatus === 'REPORTED'
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    : zatcaMap[sale.id].submissionStatus === 'PENDING' ||
+                        zatcaMap[sale.id].submissionStatus === 'WARNING'
+                      ? 'border-amber-200 bg-amber-50 text-amber-800'
+                      : 'border-red-200 bg-red-50 text-red-700'
+                }`}
+                title={`ZATCA ${zatcaMap[sale.id].invoiceSubtype === '0100000' ? 'B2B' : 'B2C'} · ICV #${zatcaMap[sale.id].icv}`}
+              >
+                {zatcaMap[sale.id].submissionStatus}
+              </span>
+              {(zatcaMap[sale.id].submissionStatus === 'PENDING' ||
+                zatcaMap[sale.id].submissionStatus === 'FAILED' ||
+                zatcaMap[sale.id].submissionStatus === 'REJECTED') && (
+                <button
+                  type="button"
+                  disabled={retryingZatcaId === zatcaMap[sale.id].id}
+                  onClick={() => void handleRetryZatca(zatcaMap[sale.id].id)}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100 disabled:opacity-50 lg:h-8 lg:w-8"
+                  title={isRtl ? 'إعادة إرسال لهيئة الزكاة' : 'Retry ZATCA submission'}
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${retryingZatcaId === zatcaMap[sale.id].id ? 'animate-spin' : ''}`} />
+                </button>
+              )}
+              <a
+                href={`/api/zatca/invoices/${zatcaMap[sale.id].id}/xml`}
+                download
+                className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 lg:h-8 lg:w-8"
+                title={isRtl ? 'تحميل XML (ZATCA)' : 'Download ZATCA XML'}
+              >
+                <Download className="h-3.5 w-3.5" />
+              </a>
+            </>
+          )}
+        </>
       )}
       {onDeleteSale && !sale.returnStatus && settings.enableZatcaEinvoice !== true && (
         <button
@@ -410,7 +574,11 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
       </div>
 
       {deletingSaleId !== null && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm"
+        >
           <div className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-100 text-rose-700">
@@ -452,6 +620,86 @@ export const SalesHistoryView: React.FC<SalesHistoryViewProps> = ({
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 {isDeleting ? (isRtl ? 'جارٍ الحذف...' : 'Deleting...') : (isRtl ? 'حذف نهائياً' : 'Delete permanently')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {debitNoteSale && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !debitBusy) setDebitNoteSale(null);
+          }}
+        >
+          <div
+            dir={isRtl ? 'rtl' : 'ltr'}
+            className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl"
+          >
+            <div>
+              <h3 className="text-base font-bold text-slate-900">
+                {isRtl ? 'إصدار إشعار مدين ZATCA (383)' : 'Issue ZATCA Debit Note (383)'}
+              </h3>
+              <p className="mt-0.5 text-xs text-slate-500">
+                {isRtl ? 'مرجع الفاتورة الأصلية:' : 'Original Invoice Reference:'}{' '}
+                <strong className="font-mono text-slate-800">{debitNoteSale.receiptNumber}</strong>
+              </p>
+            </div>
+            <label className="block">
+              <span className="mb-1 block text-xs font-semibold text-slate-700">
+                {isRtl
+                  ? `المبلغ قبل الضريبة (${settings.currencySymbol || 'SAR'})`
+                  : `Adjustment Amount Excl. VAT (${settings.currencySymbol || 'SAR'})`}
+              </span>
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={debitAmount}
+                onChange={(e) => setDebitAmount(e.target.value)}
+                placeholder="0.00"
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm text-slate-900"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-semibold text-slate-700">
+                {isRtl ? 'سبب الإشعار المدين (إلزامي لهيئة الزكاة)' : 'Reason (Required by ZATCA)'}
+              </span>
+              <input
+                type="text"
+                value={debitReason}
+                onChange={(e) => setDebitReason(e.target.value)}
+                placeholder={isRtl ? 'مثال: تعديل سعر أو رسوم إضافية' : 'e.g. Price adjustment or additional charge'}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900"
+              />
+            </label>
+            {debitError && (
+              <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
+                {debitError}
+              </p>
+            )}
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                disabled={debitBusy}
+                onClick={() => setDebitNoteSale(null)}
+                className="rounded-lg px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+              >
+                {isRtl ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                disabled={debitBusy}
+                onClick={() => void handleSubmitDebitNote()}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50"
+              >
+                <FilePlus2 className="h-3.5 w-3.5" />
+                {debitBusy
+                  ? isRtl ? 'جارٍ الإرسال...' : 'Submitting...'
+                  : isRtl ? 'إصدار وإرسال لـ ZATCA' : 'Issue & Submit to ZATCA'}
               </button>
             </div>
           </div>

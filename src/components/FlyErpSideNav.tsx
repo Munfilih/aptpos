@@ -1,12 +1,14 @@
 import React from 'react';
 import {
   BarChart3,
+  Barcode,
   BookOpen,
   Clock,
   FileText,
   Files,
   Package,
   Plane,
+  QrCode,
   Receipt,
   RotateCcw,
   Settings,
@@ -100,48 +102,6 @@ export const FlyErpSideNav: React.FC<FlyErpSideNavProps> = ({
       ],
     },
     {
-      id: 'purchase-services',
-      label: 'Purchase & Services',
-      labelAr: 'المشتريات والخدمات',
-      items: [
-        {
-          id: 'purchases',
-          label: 'Purchase',
-          labelAr: 'المشتريات',
-          icon: FileText,
-          tab: 'purchases',
-        },
-        {
-          id: 'purchase-history',
-          label: 'Purchase History',
-          labelAr: 'سجل المشتريات',
-          icon: FileText,
-          tab: 'purchase-history',
-        },
-        {
-          id: 'purchase-return-register',
-          label: 'Purchase Return',
-          labelAr: 'مرتجع مشتريات',
-          icon: RotateCcw,
-          tab: 'purchase-return-register',
-        },
-        {
-          id: 'purchase-return-history',
-          label: 'Purchase Return History',
-          labelAr: 'سجل مرتجعات المشتريات',
-          icon: RotateCcw,
-          tab: 'purchase-return-history',
-        },
-        {
-          id: 'inventory',
-          label: 'Services',
-          labelAr: 'الخدمات',
-          icon: Package,
-          tab: 'inventory',
-        },
-      ],
-    },
-    {
       id: 'accounts',
       label: 'Accounts',
       labelAr: 'الحسابات',
@@ -163,14 +123,6 @@ export const FlyErpSideNav: React.FC<FlyErpSideNavProps> = ({
           accountsSubtab: 'customers',
         },
         {
-          id: 'vendors',
-          label: 'Vendors',
-          labelAr: 'الموردون',
-          icon: Users,
-          tab: 'vendors',
-          accountsSubtab: 'vendors',
-        },
-        {
           id: 'payments',
           label: 'Payments & Receipts',
           labelAr: 'المدفوعات والمقبوضات',
@@ -185,6 +137,13 @@ export const FlyErpSideNav: React.FC<FlyErpSideNavProps> = ({
           icon: Wallet,
           tab: 'accounts',
           action: 'open-cashbook',
+        },
+        {
+          id: 'inventory',
+          label: 'Services',
+          labelAr: 'الخدمات',
+          icon: Package,
+          tab: 'inventory',
         },
       ],
     },
@@ -215,11 +174,68 @@ export const FlyErpSideNav: React.FC<FlyErpSideNavProps> = ({
           tab: 'files',
         },
         {
+          id: 'zatca',
+          label: 'E-Invoicing',
+          labelAr: 'الفوترة الإلكترونية',
+          icon: QrCode,
+          tab: 'zatca',
+        },
+        {
           id: 'settings',
           label: 'Settings',
           labelAr: 'الإعدادات',
           icon: Settings,
           tab: 'settings',
+        },
+      ],
+    },
+    {
+      id: 'purchase-services',
+      label: 'Purchase',
+      labelAr: 'المشتريات',
+      items: [
+        {
+          id: 'purchases',
+          label: 'Purchase',
+          labelAr: 'المشتريات',
+          icon: FileText,
+          tab: 'purchases',
+        },
+        {
+          id: 'purchase-history',
+          label: 'Purchase History',
+          labelAr: 'سجل المشتريات',
+          icon: FileText,
+          tab: 'purchase-history',
+        },
+        {
+          id: 'purchase-return-register',
+          label: 'Purchase Return',
+          labelAr: 'مرتجع مشتريات',
+          icon: RotateCcw,
+          tab: 'purchase-return-register',
+        },
+        {
+          id: 'purchase-return-history',
+          label: 'Purchase Return History',
+          labelAr: 'سجل مرتجعات المشتريات',
+          icon: RotateCcw,
+          tab: 'purchase-return-history',
+        },
+        {
+          id: 'vendors',
+          label: 'Vendors',
+          labelAr: 'الموردون',
+          icon: Users,
+          tab: 'vendors',
+          accountsSubtab: 'vendors',
+        },
+        {
+          id: 'barcode-print',
+          label: 'Barcode Printing',
+          labelAr: 'طباعة الباركود',
+          icon: Barcode,
+          tab: 'barcode-print',
         },
       ],
     },
@@ -257,16 +273,16 @@ export const FlyErpSideNav: React.FC<FlyErpSideNavProps> = ({
   return (
     <>
       <div
-        className="no-print fixed inset-x-0 bottom-0 top-14 z-30 bg-slate-950/35 md:hidden"
+        className="no-print fixed inset-x-0 bottom-0 top-14 z-30 bg-slate-950/35 xl:hidden"
         onClick={onCloseMobile}
         aria-hidden="true"
       />
       <aside
         dir={isRtl ? 'rtl' : 'ltr'}
         aria-label={language === 'ar' ? 'التنقل الجانبي' : 'Side navigation'}
-        className="no-print fixed inset-y-0 start-0 top-14 z-40 flex w-60 shrink-0 flex-col border-e border-slate-200 bg-white shadow-xl md:static md:inset-auto md:top-auto md:z-10 md:shadow-none"
+        className="no-print fixed inset-y-0 start-0 top-14 z-40 flex w-60 shrink-0 flex-col border-e border-slate-200 bg-white shadow-xl xl:static xl:inset-auto xl:top-auto xl:z-10 xl:shadow-none"
       >
-        <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2.5 md:hidden">
+        <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2.5 xl:hidden">
           <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
             {language === 'ar' ? 'القائمة' : 'Navigation'}
           </span>

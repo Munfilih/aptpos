@@ -379,6 +379,36 @@ export const LauncherAppArt: FC<LauncherAppArtProps> = ({ id }) => {
           <path d="m27.5 32 3.2 3.2 6.3-6.8" fill="none" stroke="#15803d" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" />
         </>
       )}
+
+      {id === 'barcode-print' && (
+        <>
+          <rect x="8" y="13" width="48" height="38" rx="6" fill={`url(#${gPaper})`} />
+          <rect x="13" y="18" width="38" height="5" rx="2" fill="#bae6fd" />
+          <rect x="14" y="27" width="3" height="16" rx="1" fill="#0f172a" />
+          <rect x="19" y="27" width="1.8" height="16" rx="0.8" fill="#0f172a" />
+          <rect x="23" y="27" width="3.5" height="16" rx="1" fill="#0f172a" />
+          <rect x="28.5" y="27" width="1.8" height="16" rx="0.8" fill="#0f172a" />
+          <rect x="32.5" y="27" width="2.8" height="16" rx="1" fill="#0f172a" />
+          <rect x="37.5" y="27" width="1.8" height="16" rx="0.8" fill="#0f172a" />
+          <rect x="41.5" y="27" width="3.5" height="16" rx="1" fill="#0f172a" />
+          <rect x="47" y="27" width="2.5" height="16" rx="1" fill="#0f172a" />
+          <path d="M18 46.5h28" stroke="#0284c7" strokeWidth="2.4" strokeLinecap="round" />
+        </>
+      )}
+
+      {id === 'zatca' && (
+        <>
+          <rect x="10" y="10" width="44" height="44" rx="7" fill={`url(#${gPaper})`} />
+          <rect x="16" y="16" width="11" height="11" rx="2" fill="none" stroke="#047857" strokeWidth="2.6" />
+          <rect x="19.5" y="19.5" width="4" height="4" rx="0.8" fill="#047857" />
+          <rect x="37" y="16" width="11" height="11" rx="2" fill="none" stroke="#047857" strokeWidth="2.6" />
+          <rect x="40.5" y="19.5" width="4" height="4" rx="0.8" fill="#047857" />
+          <rect x="16" y="37" width="11" height="11" rx="2" fill="none" stroke="#047857" strokeWidth="2.6" />
+          <rect x="19.5" y="40.5" width="4" height="4" rx="0.8" fill="#047857" />
+          <circle cx="43" cy="43" r="9.5" fill={`url(#${gEmerald})`} />
+          <path d="m39 43 2.8 2.8 5.2-5.4" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+        </>
+      )}
     </svg>
   );
 };

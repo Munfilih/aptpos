@@ -51,6 +51,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getGoogleDriveStatus: () => ipcRenderer.invoke('pos:drive:get-status'),
   connectGoogleDrive: (clientId: string) => ipcRenderer.invoke('pos:drive:connect', clientId),
   disconnectGoogleDrive: () => ipcRenderer.invoke('pos:drive:disconnect'),
+  getTerminalConfig: () => ipcRenderer.invoke('pos:terminal:get-config'),
+  saveTerminalConfig: (config: {
+    mode: 'standalone' | 'primary-server' | 'client';
+    terminalName: string;
+    serverHost: string;
+    serverPort: number;
+  }) => ipcRenderer.invoke('pos:terminal:save-config', config),
+  getLocalSystemCode: () => ipcRenderer.invoke('pos:terminal:get-system-code'),
+  discoverLanServers: () => ipcRenderer.invoke('pos:terminal:discover-lan'),
+  testServerConnection: (host: string, port: number) =>
+    ipcRenderer.invoke('pos:terminal:test-connection', { host, port }),
+  configureWindowsFirewall: (port?: number) =>
+    ipcRenderer.invoke('pos:terminal:configure-firewall', port),
+  getAppVersion: () => ipcRenderer.invoke('pos:app:get-version'),
   resolveCloseRequest: (shouldClose: boolean) =>
     ipcRenderer.invoke('pos:app:resolve-close', shouldClose),
   onCloseRequested: (listener: () => void) => {

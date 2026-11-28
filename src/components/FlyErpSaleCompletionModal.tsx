@@ -79,6 +79,7 @@ export const FlyErpSaleCompletionModal: React.FC<FlyErpSaleCompletionModalProps>
   const isFlyErpSale = sale.appScreenMode === 'flyerp';
   const isFlyErpMode = isFlyErpSale || appScreenMode === 'flyerp';
   const isRposSale = sale.appScreenMode === 'rpos';
+  const isDirectPrintMode = isRposSale || isFlyErpMode;
   const defaultFormatFallback = isFlyErpSale ? 'A4' : (settings.paperWidth || '80mm');
   const paymentMethod = sale.paymentMethod.trim().toUpperCase();
   const canPrintCashReceipt = !isDraftSale && Boolean(settings.enableCashReceipt) && paymentMethod.includes('CASH');
@@ -461,7 +462,7 @@ export const FlyErpSaleCompletionModal: React.FC<FlyErpSaleCompletionModalProps>
     if (busy) return;
     setError(null);
     setNotice(null);
-    if (!isRposSale && !isFlyErpMode) {
+    if (!isDirectPrintMode) {
       setSelectedDocument(docType);
       return;
     }
@@ -730,234 +731,108 @@ export const FlyErpSaleCompletionModal: React.FC<FlyErpSaleCompletionModalProps>
                 {text('Documents & Output', 'المستندات والطباعة')}
               </p>
               <div className="space-y-2">
-                {isFlyErpMode ? (
-                  <>
-                    <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3">
-                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700">
-                        <FileText className="h-4.5 w-4.5" />
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleDocumentClick('sales-invoice')}
+                  className="group flex w-full items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-start transition-colors hover:border-emerald-400 hover:bg-emerald-50/50 disabled:opacity-60"
+                >
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700">
+                    {printingDirectDoc === 'sales-invoice'
+                      ? <Loader2 className="h-4.5 w-4.5 animate-spin" />
+                      : <FileText className="h-4.5 w-4.5" />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold text-slate-900">
+                      {isDraftSale
+                        ? text('Sales Draft', 'مسودة مبيعات')
+                        : text('Sales Invoice', 'فاتورة المبيعات')}
+                    </span>
+                    <span className="mt-0.5 block truncate text-[10px] font-medium text-slate-400">
+                      {getDocumentPrintSummary('sales-invoice')}
+                    </span>
+                  </span>
+                  {isDirectPrintMode
+                    ? <Printer className="h-4 w-4 shrink-0 text-slate-400 group-hover:text-emerald-700" />
+                    : <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 transition-transform group-hover:text-emerald-700 ${isRtl ? 'rotate-180' : ''}`} />}
+                </button>
+
+                {canPrintCashReceipt && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void handleDocumentClick('cash-receipt')}
+                    className="group flex w-full items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-start transition-colors hover:border-emerald-400 hover:bg-emerald-50/50 disabled:opacity-60"
+                  >
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700">
+                      {printingDirectDoc === 'cash-receipt'
+                        ? <Loader2 className="h-4.5 w-4.5 animate-spin" />
+                        : <Banknote className="h-4.5 w-4.5" />}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-semibold text-slate-900">
+                        {text('Cash Receipt', 'إيصال نقدي')}
                       </span>
-                      <div className="min-w-0 flex-1">
-                        <span className="block text-sm font-semibold text-slate-900">
-                          {isDraftSale
-                            ? text('Sales Draft', 'مسودة مبيعات')
-                            : text('Sales Invoice', 'فاتورة المبيعات')}
-                        </span>
-                        <span className="mt-0.5 block truncate text-[10px] font-medium text-slate-400">
-                          {getDocumentPrintSummary('sales-invoice')}
-                        </span>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void handleDirectPrint('sales-invoice')}
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-800 disabled:opacity-60"
-                        >
-                          {printingDirectDoc === 'sales-invoice'
-                            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            : <Printer className="h-3.5 w-3.5" />}
-                          {text('Print', 'طباعة')}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void handleSavePdf('sales-invoice')}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-60"
-                        >
-                          {savingPdfDirectDoc === 'sales-invoice'
-                            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            : <Download className="h-3.5 w-3.5" />}
-                          {text('PDF', 'PDF')}
-                        </button>
-                      </div>
-                    </div>
-
-                    {canPrintCashReceipt && (
-                      <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3">
-                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700">
-                          <Banknote className="h-4.5 w-4.5" />
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <span className="block text-sm font-semibold text-slate-900">
-                            {text('Cash Receipt', 'إيصال نقدي')}
-                          </span>
-                          <span className="mt-0.5 block truncate text-[10px] font-medium text-slate-400">
-                            {getDocumentPrintSummary('cash-receipt')}
-                          </span>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1.5">
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => void handleDirectPrint('cash-receipt')}
-                            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-800 disabled:opacity-60"
-                          >
-                            {printingDirectDoc === 'cash-receipt'
-                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              : <Printer className="h-3.5 w-3.5" />}
-                            {text('Print', 'طباعة')}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => void handleSavePdf('cash-receipt')}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-60"
-                          >
-                            {savingPdfDirectDoc === 'cash-receipt'
-                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              : <Download className="h-3.5 w-3.5" />}
-                            {text('PDF', 'PDF')}
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {canPrintBankReceipt && (
-                      <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3">
-                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 text-blue-700">
-                          <CreditCard className="h-4.5 w-4.5" />
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <span className="block text-sm font-semibold text-slate-900">
-                            {text('Bank Receipt', 'إيصال بنكي')}
-                          </span>
-                          <span className="mt-0.5 block truncate text-[10px] font-medium text-slate-400">
-                            {getDocumentPrintSummary('bank-receipt')}
-                          </span>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1.5">
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => void handleDirectPrint('bank-receipt')}
-                            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-800 disabled:opacity-60"
-                          >
-                            {printingDirectDoc === 'bank-receipt'
-                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              : <Printer className="h-3.5 w-3.5" />}
-                            {text('Print', 'طباعة')}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => void handleSavePdf('bank-receipt')}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-60"
-                          >
-                            {savingPdfDirectDoc === 'bank-receipt'
-                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              : <Download className="h-3.5 w-3.5" />}
-                            {text('PDF', 'PDF')}
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void handleDocumentClick('sales-invoice')}
-                      className="group flex w-full items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-start transition-colors hover:border-emerald-400 hover:bg-emerald-50/50 disabled:opacity-60"
-                    >
-                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700">
-                        {printingDirectDoc === 'sales-invoice'
-                          ? <Loader2 className="h-4.5 w-4.5 animate-spin" />
-                          : <FileText className="h-4.5 w-4.5" />}
+                      <span className="mt-0.5 block truncate text-[10px] font-medium text-slate-400">
+                        {getDocumentPrintSummary('cash-receipt')}
                       </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-semibold text-slate-900">
-                          {isDraftSale
-                            ? text('Sales Draft', 'مسودة مبيعات')
-                            : text('Sales Invoice', 'فاتورة المبيعات')}
-                        </span>
-                        <span className="mt-0.5 block truncate text-[10px] font-medium text-slate-400">
-                          {getDocumentPrintSummary('sales-invoice')}
-                        </span>
+                    </span>
+                    {isDirectPrintMode
+                      ? <Printer className="h-4 w-4 shrink-0 text-slate-400 group-hover:text-emerald-700" />
+                      : <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 transition-transform group-hover:text-emerald-700 ${isRtl ? 'rotate-180' : ''}`} />}
+                  </button>
+                )}
+
+                {canPrintBankReceipt && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void handleDocumentClick('bank-receipt')}
+                    className="group flex w-full items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-start transition-colors hover:border-blue-400 hover:bg-blue-50/50 disabled:opacity-60"
+                  >
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 text-blue-700">
+                      {printingDirectDoc === 'bank-receipt'
+                        ? <Loader2 className="h-4.5 w-4.5 animate-spin" />
+                        : <CreditCard className="h-4.5 w-4.5" />}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-semibold text-slate-900">
+                        {text('Bank Receipt', 'إيصال بنكي')}
                       </span>
-                      {isRposSale
-                        ? <Printer className="h-4 w-4 shrink-0 text-slate-400 group-hover:text-emerald-700" />
-                        : <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 transition-transform group-hover:text-emerald-700 ${isRtl ? 'rotate-180' : ''}`} />}
-                    </button>
+                      <span className="mt-0.5 block truncate text-[10px] font-medium text-slate-400">
+                        {getDocumentPrintSummary('bank-receipt')}
+                      </span>
+                    </span>
+                    {isDirectPrintMode
+                      ? <Printer className="h-4 w-4 shrink-0 text-slate-400 group-hover:text-blue-700" />
+                      : <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 transition-transform group-hover:text-blue-700 ${isRtl ? 'rotate-180' : ''}`} />}
+                  </button>
+                )}
 
-                    {canPrintCashReceipt && (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void handleDocumentClick('cash-receipt')}
-                        className="group flex w-full items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-start transition-colors hover:border-emerald-400 hover:bg-emerald-50/50 disabled:opacity-60"
-                      >
-                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700">
-                          {printingDirectDoc === 'cash-receipt'
-                            ? <Loader2 className="h-4.5 w-4.5 animate-spin" />
-                            : <Banknote className="h-4.5 w-4.5" />}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-sm font-semibold text-slate-900">
-                            {text('Cash Receipt', 'إيصال نقدي')}
-                          </span>
-                          <span className="mt-0.5 block truncate text-[10px] font-medium text-slate-400">
-                            {getDocumentPrintSummary('cash-receipt')}
-                          </span>
-                        </span>
-                        {isRposSale
-                          ? <Printer className="h-4 w-4 shrink-0 text-slate-400 group-hover:text-emerald-700" />
-                          : <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 transition-transform group-hover:text-emerald-700 ${isRtl ? 'rotate-180' : ''}`} />}
-                      </button>
-                    )}
-
-                    {canPrintBankReceipt && (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void handleDocumentClick('bank-receipt')}
-                        className="group flex w-full items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-start transition-colors hover:border-blue-400 hover:bg-blue-50/50 disabled:opacity-60"
-                      >
-                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 text-blue-700">
-                          {printingDirectDoc === 'bank-receipt'
-                            ? <Loader2 className="h-4.5 w-4.5 animate-spin" />
-                            : <CreditCard className="h-4.5 w-4.5" />}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-sm font-semibold text-slate-900">
-                            {text('Bank Receipt', 'إيصال بنكي')}
-                          </span>
-                          <span className="mt-0.5 block truncate text-[10px] font-medium text-slate-400">
-                            {getDocumentPrintSummary('bank-receipt')}
-                          </span>
-                        </span>
-                        {isRposSale
-                          ? <Printer className="h-4 w-4 shrink-0 text-slate-400 group-hover:text-blue-700" />
-                          : <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 transition-transform group-hover:text-blue-700 ${isRtl ? 'rotate-180' : ''}`} />}
-                      </button>
-                    )}
-
-                    {canPrintKot && (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void handleDocumentClick('kot')}
-                        className="group flex w-full items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-start transition-colors hover:border-amber-400 hover:bg-amber-50/50 disabled:opacity-60"
-                      >
-                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-amber-200 bg-amber-50 text-amber-700">
-                          {printingDirectDoc === 'kot'
-                            ? <Loader2 className="h-4.5 w-4.5 animate-spin" />
-                            : <UtensilsCrossed className="h-4.5 w-4.5" />}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-sm font-semibold text-slate-900">
-                            {text('Kitchen Order (KOT)', 'طلب المطبخ (KOT)')}
-                          </span>
-                          <span className="mt-0.5 block truncate text-[10px] font-medium text-slate-400">
-                            {getDocumentPrintSummary('kot')}
-                          </span>
-                        </span>
-                        {isRposSale
-                          ? <Printer className="h-4 w-4 shrink-0 text-slate-400 group-hover:text-amber-700" />
-                          : <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 transition-transform group-hover:text-amber-700 ${isRtl ? 'rotate-180' : ''}`} />}
-                      </button>
-                    )}
-                  </>
+                {canPrintKot && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void handleDocumentClick('kot')}
+                    className="group flex w-full items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-start transition-colors hover:border-amber-400 hover:bg-amber-50/50 disabled:opacity-60"
+                  >
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-amber-200 bg-amber-50 text-amber-700">
+                      {printingDirectDoc === 'kot'
+                        ? <Loader2 className="h-4.5 w-4.5 animate-spin" />
+                        : <UtensilsCrossed className="h-4.5 w-4.5" />}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-semibold text-slate-900">
+                        {text('Kitchen Order (KOT)', 'طلب المطبخ (KOT)')}
+                      </span>
+                      <span className="mt-0.5 block truncate text-[10px] font-medium text-slate-400">
+                        {getDocumentPrintSummary('kot')}
+                      </span>
+                    </span>
+                    {isDirectPrintMode
+                      ? <Printer className="h-4 w-4 shrink-0 text-slate-400 group-hover:text-amber-700" />
+                      : <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 transition-transform group-hover:text-amber-700 ${isRtl ? 'rotate-180' : ''}`} />}
+                  </button>
                 )}
               </div>
             </section>
@@ -1028,26 +903,23 @@ export const FlyErpSaleCompletionModal: React.FC<FlyErpSaleCompletionModalProps>
                 </span>
               )}
             </button>
-            {!isFlyErpMode && (
-              <>
-                <span className="text-slate-300" aria-hidden="true">|</span>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void handleSavePdf(selectedDocument ?? 'sales-invoice')}
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 underline-offset-4 hover:text-emerald-800 hover:underline disabled:opacity-50"
-                >
-                  {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                  <span>{text('Save as PDF', 'حفظ كـ PDF')}</span>
-                </button>
-              </>
-            )}
+            <span className="text-slate-300" aria-hidden="true">|</span>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void handleSavePdf(selectedDocument ?? 'sales-invoice')}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 underline-offset-4 hover:text-emerald-800 hover:underline disabled:opacity-50"
+            >
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+              <span>{text('Save as PDF', 'حفظ كـ PDF')}</span>
+            </button>
           </div>
           <button
             type="button"
+            autoFocus
             disabled={busy}
             onClick={onClose}
-            className="rounded-lg bg-emerald-700 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-50"
+            className="rounded-lg bg-emerald-700 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 disabled:opacity-50"
           >
             {text('Done', 'تم')}
           </button>

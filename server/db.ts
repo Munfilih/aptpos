@@ -1,8 +1,14 @@
 import fs from 'fs';
 import path from 'path';
-import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import initSqlJs, { Database } from 'sql.js';
+import { gunzipSync, gzipSync } from 'node:zlib';
+import {
+  openSqliteDatabase,
+  openSqliteFromBuffer,
+  type CompatibleDatabase,
+} from './sqliteAdapter';
+import { getHardwareSystemIdentity } from './systemIdentity';
+
+type Database = CompatibleDatabase;
 import type {
   Customer,
   CashbookEntry,
@@ -52,15 +58,29 @@ const DEFAULT_POS_ADMIN_USERNAME = 'aptadmin';
 const DEFAULT_POS_ADMIN_PASSWORD = 'aptpwd123';
 
 let db: Database | null = null;
-let cachedHardwareSystemIdentity: { fingerprint: string; systemCode: string } | null = null;
 
 function saveDatabase(): void {
   if (!db) return;
+  // Native SQLite WAL commits directly to disk on every statement/transaction.
+  if (db.isWalMode) return;
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
   const data = db.export();
   fs.writeFileSync(DB_PATH, Buffer.from(data));
+}
+
+export function getDbEngine(): 'node-sqlite-wal' | 'sql.js' | 'uninitialized' {
+  return db ? db.engine : 'uninitialized';
+}
+
+export function closeDb(): void {
+  if (!db) return;
+  try {
+    db.close();
+  } finally {
+    db = null;
+  }
 }
 
 export async function getDb(): Promise<Database> {
@@ -89,13 +109,8 @@ export async function getDb(): Promise<Database> {
     }
   }
 
-  const SQL = await initSqlJs();
-  if (fs.existsSync(DB_PATH)) {
-    const fileBuffer = fs.readFileSync(DB_PATH);
-    db = new SQL.Database(fileBuffer);
-  } else {
-    db = new SQL.Database();
-  }
+  db = await openSqliteDatabase(DB_PATH);
+  console.log(`[aptPOS DB] Opened ${DB_PATH} (${db.engine})`);
 
   initSchema(db);
   seedInitialData(db);
@@ -489,10 +504,70 @@ function initSchema(database: Database): void {
       FOREIGN KEY (voucher_id) REFERENCES purchase_return_vouchers(id),
       FOREIGN KEY (purchase_item_id) REFERENCES purchase_items(id)
     );
+
+    CREATE TABLE IF NOT EXISTS zatca_device_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      egs_uuid TEXT NOT NULL,
+      environment TEXT NOT NULL DEFAULT 'sandbox',
+      business_category TEXT NOT NULL DEFAULT 'Retail',
+      private_key_enc TEXT NOT NULL DEFAULT '',
+      public_key_pem TEXT NOT NULL DEFAULT '',
+      csr_base64 TEXT NOT NULL DEFAULT '',
+      compliance_csid TEXT NOT NULL DEFAULT '',
+      compliance_secret_enc TEXT NOT NULL DEFAULT '',
+      compliance_request_id TEXT NOT NULL DEFAULT '',
+      compliance_checks_passed INTEGER NOT NULL DEFAULT 0,
+      production_csid TEXT NOT NULL DEFAULT '',
+      production_secret_enc TEXT NOT NULL DEFAULT '',
+      certificate_expires_at TEXT,
+      last_icv INTEGER NOT NULL DEFAULT 0,
+      last_pih TEXT NOT NULL DEFAULT 'NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWI0NjcyOWQ3M2EyN2ZiNTdlOQ==',
+      onboarded_at TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS zatca_invoices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      document_type TEXT NOT NULL,
+      document_id INTEGER NOT NULL,
+      invoice_number TEXT NOT NULL,
+      uuid TEXT NOT NULL UNIQUE,
+      invoice_type_code TEXT NOT NULL,
+      invoice_subtype TEXT NOT NULL,
+      icv INTEGER NOT NULL,
+      pih TEXT NOT NULL,
+      invoice_hash TEXT NOT NULL,
+      xml_signed TEXT NOT NULL,
+      xml_cleared TEXT NOT NULL DEFAULT '',
+      qr_phase2 TEXT NOT NULL DEFAULT '',
+      submission_status TEXT NOT NULL DEFAULT 'PENDING',
+      zatca_warnings_json TEXT NOT NULL DEFAULT '[]',
+      zatca_errors_json TEXT NOT NULL DEFAULT '[]',
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      submitted_at TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE (document_type, document_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS linked_terminals (
+      client_system_code TEXT PRIMARY KEY,
+      terminal_name TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active',
+      activation_key_hash TEXT NOT NULL DEFAULT '',
+      activated_at TEXT NOT NULL,
+      last_seen_at TEXT,
+      last_ip TEXT NOT NULL DEFAULT '',
+      screen_mode TEXT NOT NULL DEFAULT 'pos',
+      shell_version TEXT NOT NULL DEFAULT '',
+      license_type TEXT NOT NULL DEFAULT 'registered',
+      expires_at TEXT
+    );
   `);
 
   // Safe migrations for newly added columns if table already exists
   const migrations = [
+    'ALTER TABLE linked_terminals ADD COLUMN license_type TEXT NOT NULL DEFAULT "registered"',
+    'ALTER TABLE linked_terminals ADD COLUMN expires_at TEXT',
     'ALTER TABLE products ADD COLUMN name_ar TEXT DEFAULT ""',
     'ALTER TABLE products ADD COLUMN brand TEXT DEFAULT ""',
     'ALTER TABLE products ADD COLUMN image_data TEXT NOT NULL DEFAULT ""',
@@ -551,6 +626,12 @@ function initSchema(database: Database): void {
     'CREATE INDEX IF NOT EXISTS idx_purchase_return_vouchers_purchase_id ON purchase_return_vouchers(purchase_id)',
     'CREATE INDEX IF NOT EXISTS idx_purchase_return_items_voucher_id ON purchase_return_items(voucher_id)',
     'CREATE INDEX IF NOT EXISTS idx_purchase_return_items_purchase_item_id ON purchase_return_items(purchase_item_id)',
+    'CREATE INDEX IF NOT EXISTS idx_sales_created_status ON sales(created_at DESC, status)',
+    'CREATE INDEX IF NOT EXISTS idx_sales_invoice_date ON sales(invoice_date DESC, id DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_sale_items_sale_product ON sale_items(sale_id, product_id)',
+    'CREATE INDEX IF NOT EXISTS idx_zatca_invoices_status_created ON zatca_invoices(submission_status, created_at)',
+    'CREATE INDEX IF NOT EXISTS idx_cashbook_date ON cashbook_entries(entry_date DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_purchases_created ON purchases(created_at DESC)',
     'DROP INDEX IF EXISTS idx_sales_order_number',
   ];
 
@@ -1343,21 +1424,19 @@ export async function updateInventoryOption(
       );
     }
   }
-  if ((type === 'taxRate' || type === 'unit') && input.isDefault === true) {
+  const supportsDefault = type === 'taxRate' || type === 'unit' || type === 'category';
+  if (supportsDefault && input.isDefault === true) {
     database.run('UPDATE inventory_options SET is_default = 0 WHERE type = ?', [type]);
   }
   database.run(
     `UPDATE inventory_options
      SET value = ?, image_data = ?, is_default = CASE
-       WHEN type IN ('taxRate', 'unit') AND ? = 1 THEN 1 ELSE is_default END
+       WHEN type IN ('taxRate', 'unit', 'category') AND ? = 1 THEN 1 ELSE is_default END
      WHERE id = ?`,
     [
       value,
       imageData,
-      (type === 'taxRate' || type === 'unit') &&
-        (input.isDefault === true || Boolean(row[3]))
-        ? 1
-        : 0,
+      supportsDefault && (input.isDefault === true || Boolean(row[3])) ? 1 : 0,
       id,
     ]
   );
@@ -1367,9 +1446,7 @@ export async function updateInventoryOption(
     type,
     value,
     imageData,
-    isDefault:
-      (type === 'taxRate' || type === 'unit') &&
-      (input.isDefault === true || Boolean(row[3])),
+    isDefault: supportsDefault && (input.isDefault === true || Boolean(row[3])),
   };
 }
 
@@ -1957,8 +2034,8 @@ export async function listSales(): Promise<Sale[]> {
   const itemsRes = database.exec(
     `SELECT si.id, si.sale_id, si.product_id, si.sku, si.product_name, si.quantity,
             si.unit_price, si.line_total, si.name_ar, si.unit_id, si.unit_name,
-            si.units_per_base, si.tax_rate, si.tax_amount, si.discount_amount, p.tax_rate,
-            si.description
+            si.units_per_base, si.tax_rate, si.tax_amount, si.discount_amount,
+            p.tax_rate AS product_tax_rate, si.description
      FROM sale_items si
      LEFT JOIN products p ON p.id = si.product_id
      ORDER BY si.id ASC`
@@ -2546,7 +2623,7 @@ export async function listSalesReturnVouchers(): Promise<SalesReturnVoucher[]> {
   if (!vouchersRes[0]) return [];
 
   const itemsRes = database.exec(
-    `SELECT r.voucher_id, s.id, s.receipt_number, si.id, si.product_name, si.name_ar,
+    `SELECT r.voucher_id, s.id AS sale_id, s.receipt_number, si.id AS sale_item_id, si.product_name, si.name_ar,
             si.sku, ri.returned_quantity, ri.refund_amount, si.unit_name
      FROM sale_returns r
      JOIN sales s ON s.id = r.sale_id
@@ -3542,49 +3619,7 @@ export async function markPrintQueueJobPrinted(id: number): Promise<boolean> {
 }
 
 function getSystemCode(database: Database): string {
-  if (!cachedHardwareSystemIdentity) {
-    if (process.platform !== 'win32') {
-      throw new Error('Hardware-based system codes are supported on Windows only.');
-    }
-
-    let hardwareUuid = '';
-    try {
-      hardwareUuid = execFileSync(
-        'powershell.exe',
-        [
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          '(Get-CimInstance -ClassName Win32_ComputerSystemProduct).UUID',
-        ],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 20000, windowsHide: true }
-      ).trim().toUpperCase();
-    } catch {
-      throw new Error("Could not read this computer's hardware UUID to create a system code.");
-    }
-
-    if (
-      !/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(hardwareUuid) ||
-      hardwareUuid === '00000000-0000-0000-0000-000000000000' ||
-      hardwareUuid === 'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF'
-    ) {
-      throw new Error('This computer did not provide a valid hardware UUID for its system code.');
-    }
-
-    const fingerprint = createHash('sha256')
-      .update('aptPOS-registration-system-v1:')
-      .update(hardwareUuid)
-      .digest('hex');
-    const systemCode = (
-      BigInt(`0x${fingerprint.slice(0, 16)}`) % 10_000_000_000n
-    ).toString().padStart(10, '0');
-    cachedHardwareSystemIdentity = {
-      fingerprint,
-      systemCode,
-    };
-  }
-
-  const { fingerprint, systemCode } = cachedHardwareSystemIdentity;
+  const { fingerprint, systemCode } = getHardwareSystemIdentity();
   const existing = database.exec(
     'SELECT system_code, hardware_fingerprint FROM app_installation WHERE id = 1'
   );
@@ -3886,7 +3921,7 @@ export async function authenticateUser(
   }
 
   const role = String(row[3]) as 'admin' | 'cashier' | 'custom';
-  const permissions = row[5]
+  const permissions = row[5] !== null && row[5] !== undefined
     ? String(row[5]).split(',').filter(Boolean)
     : (role === 'admin'
         ? ['register', 'inventory', 'purchases', 'customers', 'vendors', 'accounts', 'reports', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings']
@@ -3919,7 +3954,7 @@ export async function listUsers(): Promise<UserAccount[]> {
 
   return res[0].values.map((row) => {
     const role = String(row[2]) as 'admin' | 'cashier' | 'custom';
-    const permissions = row[4]
+    const permissions = row[4] !== null && row[4] !== undefined
       ? String(row[4]).split(',').filter(Boolean)
       : (role === 'admin'
           ? ['register', 'inventory', 'purchases', 'customers', 'vendors', 'accounts', 'reports', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings']
@@ -3955,7 +3990,7 @@ export async function createUser(input: {
 
   const role = input.role || 'cashier';
   const displayName = input.displayName?.trim() || username;
-  const permissions = input.permissions && input.permissions.length > 0
+  const permissions = Array.isArray(input.permissions)
     ? input.permissions
     : (role === 'admin'
         ? ['register', 'inventory', 'purchases', 'customers', 'vendors', 'accounts', 'reports', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings']
@@ -4058,7 +4093,7 @@ export async function updateUser(
 
   const permissions = input.permissions !== undefined
     ? input.permissions
-    : (current[5]
+    : (current[5] !== null && current[5] !== undefined
         ? String(current[5]).split(',').filter(Boolean)
         : (role === 'admin'
             ? ['register', 'inventory', 'purchases', 'customers', 'vendors', 'accounts', 'reports', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings']
@@ -5774,13 +5809,21 @@ export async function restoreDatabase(fileBuffer: Buffer): Promise<boolean> {
 
   const database = await getDb();
   const demoAccess = storedDemoAccess(database);
-  const SQL = await initSqlJs();
-  const newDb = new SQL.Database(fileBuffer);
-  
+
+  // Close existing DB handle cleanly before overwriting pos.sqlite + clearing WAL sidecars
+  try {
+    database.close();
+  } catch {
+    // Continue even if close fails
+  }
+  db = null;
+
+  const newDb = await openSqliteFromBuffer(fileBuffer, DB_PATH);
+
   // Verify basic tables exist or init schema if needed
   initSchema(newDb);
-  
-  // Replace active database in memory
+
+  // Replace active database
   db = newDb;
   const systemCode = getSystemCode(newDb);
   restoreDemoAccess(newDb, demoAccess, systemCode);
@@ -5910,4 +5953,915 @@ export async function importProducts(
 
   saveDatabase();
   return { imported, updated, errors };
+}
+
+// --- ZATCA Phase 2 Persistence Helpers ---
+
+export interface ZatcaDeviceConfigRow {
+  egsUuid: string;
+  environment: 'sandbox' | 'simulation' | 'production';
+  businessCategory: string;
+  privateKeyEnc: string;
+  publicKeyPem: string;
+  csrBase64: string;
+  complianceCsid: string;
+  complianceSecretEnc: string;
+  complianceRequestId: string;
+  complianceChecksPassed: boolean;
+  productionCsid: string;
+  productionSecretEnc: string;
+  certificateExpiresAt: string | null;
+  lastIcv: number;
+  lastPih: string;
+  onboardedAt: string | null;
+  updatedAt: string;
+}
+
+export interface ZatcaInvoiceRow {
+  id: number;
+  documentType: 'SALE' | 'SALES_RETURN' | 'DEBIT_NOTE';
+  documentId: number;
+  invoiceNumber: string;
+  uuid: string;
+  invoiceTypeCode: '388' | '381' | '383';
+  invoiceSubtype: '0100000' | '0200000';
+  icv: number;
+  pih: string;
+  invoiceHash: string;
+  xmlSigned: string;
+  xmlCleared: string;
+  qrPhase2: string;
+  submissionStatus: 'PENDING' | 'REPORTED' | 'CLEARED' | 'WARNING' | 'REJECTED' | 'FAILED';
+  zatcaWarningsJson: string;
+  zatcaErrorsJson: string;
+  retryCount: number;
+  submittedAt: string | null;
+  createdAt: string;
+}
+
+function queryAllZatcaRows(
+  database: Database,
+  sql: string,
+  params: (string | number | null)[] = []
+): Record<string, unknown>[] {
+  const result = database.exec(sql, params);
+  if (!result.length) return [];
+  const { columns, values } = result[0];
+  return values.map((row) => {
+    const obj: Record<string, unknown> = {};
+    columns.forEach((col, index) => {
+      obj[col] = row[index];
+    });
+    return obj;
+  });
+}
+
+function queryOneZatcaRow(
+  database: Database,
+  sql: string,
+  params: (string | number | null)[] = []
+): Record<string, unknown> | null {
+  return queryAllZatcaRows(database, sql, params)[0] || null;
+}
+
+export async function getZatcaDeviceConfig(): Promise<ZatcaDeviceConfigRow | null> {
+  const database = await getDb();
+  const row = queryOneZatcaRow(database, 'SELECT * FROM zatca_device_config WHERE id = 1');
+  if (!row) return null;
+  const env = row.environment === 'simulation' || row.environment === 'production'
+    ? row.environment
+    : 'sandbox';
+  return {
+    egsUuid: String(row.egs_uuid || ''),
+    environment: env,
+    businessCategory: String(row.business_category || 'Retail'),
+    privateKeyEnc: String(row.private_key_enc || ''),
+    publicKeyPem: String(row.public_key_pem || ''),
+    csrBase64: String(row.csr_base64 || ''),
+    complianceCsid: String(row.compliance_csid || ''),
+    complianceSecretEnc: String(row.compliance_secret_enc || ''),
+    complianceRequestId: String(row.compliance_request_id || ''),
+    complianceChecksPassed: Number(row.compliance_checks_passed || 0) === 1,
+    productionCsid: String(row.production_csid || ''),
+    productionSecretEnc: String(row.production_secret_enc || ''),
+    certificateExpiresAt: typeof row.certificate_expires_at === 'string' ? row.certificate_expires_at : null,
+    lastIcv: Number(row.last_icv || 0),
+    lastPih: String(
+      row.last_pih ||
+      'NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWI0NjcyOWQ3M2EyN2ZiNTdlOQ=='
+    ),
+    onboardedAt: typeof row.onboarded_at === 'string' ? row.onboarded_at : null,
+    updatedAt: String(row.updated_at || new Date().toISOString()),
+  };
+}
+
+export async function saveZatcaDeviceConfig(config: ZatcaDeviceConfigRow): Promise<ZatcaDeviceConfigRow> {
+  const database = await getDb();
+  const now = new Date().toISOString();
+  database.run(
+    `INSERT INTO zatca_device_config (
+      id, egs_uuid, environment, business_category, private_key_enc, public_key_pem,
+      csr_base64, compliance_csid, compliance_secret_enc, compliance_request_id,
+      compliance_checks_passed, production_csid, production_secret_enc,
+      certificate_expires_at, last_icv, last_pih, onboarded_at, updated_at
+    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      egs_uuid = excluded.egs_uuid,
+      environment = excluded.environment,
+      business_category = excluded.business_category,
+      private_key_enc = excluded.private_key_enc,
+      public_key_pem = excluded.public_key_pem,
+      csr_base64 = excluded.csr_base64,
+      compliance_csid = excluded.compliance_csid,
+      compliance_secret_enc = excluded.compliance_secret_enc,
+      compliance_request_id = excluded.compliance_request_id,
+      compliance_checks_passed = excluded.compliance_checks_passed,
+      production_csid = excluded.production_csid,
+      production_secret_enc = excluded.production_secret_enc,
+      certificate_expires_at = excluded.certificate_expires_at,
+      last_icv = excluded.last_icv,
+      last_pih = excluded.last_pih,
+      onboarded_at = excluded.onboarded_at,
+      updated_at = excluded.updated_at`,
+    [
+      config.egsUuid,
+      config.environment,
+      config.businessCategory,
+      config.privateKeyEnc,
+      config.publicKeyPem,
+      config.csrBase64,
+      config.complianceCsid,
+      config.complianceSecretEnc,
+      config.complianceRequestId,
+      config.complianceChecksPassed ? 1 : 0,
+      config.productionCsid,
+      config.productionSecretEnc,
+      config.certificateExpiresAt,
+      config.lastIcv,
+      config.lastPih,
+      config.onboardedAt,
+      now,
+    ]
+  );
+  saveDatabase();
+  return (await getZatcaDeviceConfig())!;
+}
+
+const ZATCA_XML_ROOT = path.join(DATA_DIR, 'zatca-xml');
+
+function writeZatcaXmlToDisk(
+  xml: string,
+  invoiceNumber: string,
+  documentType: string,
+  documentId: number,
+  kind: 'signed' | 'cleared',
+  isoDate: string
+): string {
+  if (!xml) return '';
+  if (xml.startsWith('file:')) return xml;
+  try {
+    const monthFolder = /^\d{4}-\d{2}/.test(isoDate)
+      ? isoDate.slice(0, 7)
+      : new Date().toISOString().slice(0, 7);
+    const dir = path.join(ZATCA_XML_ROOT, monthFolder);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const safeInvoice = (invoiceNumber || 'doc').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+    const fileName = `${safeInvoice}-${documentType.toLowerCase()}-${documentId}-${kind}.xml.gz`;
+    const fullPath = path.join(dir, fileName);
+    fs.writeFileSync(fullPath, gzipSync(Buffer.from(xml, 'utf8')));
+    return `file:${monthFolder}/${fileName}`;
+  } catch (error) {
+    console.warn('Could not write gzipped ZATCA XML to disk; falling back to inline DB column:', error);
+    return xml;
+  }
+}
+
+function readZatcaXmlFromStorage(storedValue: string): string {
+  if (!storedValue || !storedValue.startsWith('file:')) return storedValue;
+  const relPath = storedValue.slice('file:'.length).replace(/\\/g, '/');
+  const resolved = path.resolve(ZATCA_XML_ROOT, relPath);
+  const rootWithSep = ZATCA_XML_ROOT.endsWith(path.sep) ? ZATCA_XML_ROOT : `${ZATCA_XML_ROOT}${path.sep}`;
+  if (!resolved.startsWith(rootWithSep)) return '';
+  try {
+    if (!fs.existsSync(resolved)) return '';
+    return gunzipSync(fs.readFileSync(resolved)).toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
+function mapZatcaInvoiceRow(row: Record<string, unknown>): ZatcaInvoiceRow {
+  return {
+    id: Number(row.id),
+    documentType: (row.document_type as ZatcaInvoiceRow['documentType']) || 'SALE',
+    documentId: Number(row.document_id),
+    invoiceNumber: String(row.invoice_number || ''),
+    uuid: String(row.uuid || ''),
+    invoiceTypeCode: (row.invoice_type_code as ZatcaInvoiceRow['invoiceTypeCode']) || '388',
+    invoiceSubtype: (row.invoice_subtype as ZatcaInvoiceRow['invoiceSubtype']) || '0200000',
+    icv: Number(row.icv || 0),
+    pih: String(row.pih || ''),
+    invoiceHash: String(row.invoice_hash || ''),
+    xmlSigned: readZatcaXmlFromStorage(String(row.xml_signed || '')),
+    xmlCleared: readZatcaXmlFromStorage(String(row.xml_cleared || '')),
+    qrPhase2: String(row.qr_phase2 || ''),
+    submissionStatus: (row.submission_status as ZatcaInvoiceRow['submissionStatus']) || 'PENDING',
+    zatcaWarningsJson: String(row.zatca_warnings_json || '[]'),
+    zatcaErrorsJson: String(row.zatca_errors_json || '[]'),
+    retryCount: Number(row.retry_count || 0),
+    submittedAt: typeof row.submitted_at === 'string' ? row.submitted_at : null,
+    createdAt: String(row.created_at || ''),
+  };
+}
+
+export async function getZatcaInvoiceByDocument(
+  documentType: ZatcaInvoiceRow['documentType'],
+  documentId: number
+): Promise<ZatcaInvoiceRow | null> {
+  const database = await getDb();
+  const row = queryOneZatcaRow(
+    database,
+    'SELECT * FROM zatca_invoices WHERE document_type = ? AND document_id = ?',
+    [documentType, documentId]
+  );
+  return row ? mapZatcaInvoiceRow(row) : null;
+}
+
+export async function getZatcaInvoiceById(id: number): Promise<ZatcaInvoiceRow | null> {
+  const database = await getDb();
+  const row = queryOneZatcaRow(
+    database,
+    'SELECT * FROM zatca_invoices WHERE id = ?',
+    [id]
+  );
+  return row ? mapZatcaInvoiceRow(row) : null;
+}
+
+export async function listZatcaInvoices(limit = 200): Promise<ZatcaInvoiceRow[]> {
+  const database = await getDb();
+  return queryAllZatcaRows(
+    database,
+    'SELECT * FROM zatca_invoices ORDER BY id DESC LIMIT ?',
+    [limit]
+  ).map(mapZatcaInvoiceRow);
+}
+
+export async function getPendingZatcaReports(limit = 50): Promise<ZatcaInvoiceRow[]> {
+  const database = await getDb();
+  return queryAllZatcaRows(
+    database,
+    `SELECT * FROM zatca_invoices
+     WHERE submission_status IN ('PENDING', 'FAILED')
+     ORDER BY id ASC LIMIT ?`,
+    [limit]
+  ).map(mapZatcaInvoiceRow);
+}
+
+export async function saveZatcaInvoiceRecord(
+  input: Omit<ZatcaInvoiceRow, 'id' | 'createdAt'>
+): Promise<ZatcaInvoiceRow> {
+  const database = await getDb();
+  const now = new Date().toISOString();
+  const storedXmlSigned = writeZatcaXmlToDisk(
+    input.xmlSigned,
+    input.invoiceNumber,
+    input.documentType,
+    input.documentId,
+    'signed',
+    now
+  );
+  const storedXmlCleared = writeZatcaXmlToDisk(
+    input.xmlCleared,
+    input.invoiceNumber,
+    input.documentType,
+    input.documentId,
+    'cleared',
+    now
+  );
+  database.run(
+    `INSERT INTO zatca_invoices (
+      document_type, document_id, invoice_number, uuid, invoice_type_code,
+      invoice_subtype, icv, pih, invoice_hash, xml_signed, xml_cleared,
+      qr_phase2, submission_status, zatca_warnings_json, zatca_errors_json,
+      retry_count, submitted_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(document_type, document_id) DO UPDATE SET
+      xml_cleared = excluded.xml_cleared,
+      qr_phase2 = excluded.qr_phase2,
+      submission_status = excluded.submission_status,
+      zatca_warnings_json = excluded.zatca_warnings_json,
+      zatca_errors_json = excluded.zatca_errors_json,
+      retry_count = excluded.retry_count,
+      submitted_at = excluded.submitted_at`,
+    [
+      input.documentType,
+      input.documentId,
+      input.invoiceNumber,
+      input.uuid,
+      input.invoiceTypeCode,
+      input.invoiceSubtype,
+      input.icv,
+      input.pih,
+      input.invoiceHash,
+      storedXmlSigned,
+      storedXmlCleared,
+      input.qrPhase2,
+      input.submissionStatus,
+      input.zatcaWarningsJson,
+      input.zatcaErrorsJson,
+      input.retryCount,
+      input.submittedAt,
+      now,
+    ]
+  );
+  saveDatabase();
+  return (await getZatcaInvoiceByDocument(input.documentType, input.documentId))!;
+}
+
+export async function updateZatcaInvoiceSubmission(
+  id: number,
+  patch: {
+    submissionStatus: ZatcaInvoiceRow['submissionStatus'];
+    xmlCleared?: string;
+    zatcaWarningsJson: string;
+    zatcaErrorsJson: string;
+    retryCount: number;
+    submittedAt: string | null;
+  }
+): Promise<ZatcaInvoiceRow | null> {
+  const database = await getDb();
+  const existing = queryOneZatcaRow(
+    database,
+    'SELECT document_type, document_id, invoice_number, created_at FROM zatca_invoices WHERE id = ?',
+    [id]
+  );
+  const storedCleared = patch.xmlCleared && existing
+    ? writeZatcaXmlToDisk(
+        patch.xmlCleared,
+        String(existing.invoice_number || ''),
+        String(existing.document_type || 'SALE'),
+        Number(existing.document_id || id),
+        'cleared',
+        String(existing.created_at || new Date().toISOString())
+      )
+    : patch.xmlCleared || '';
+  database.run(
+    `UPDATE zatca_invoices
+     SET submission_status = ?,
+         xml_cleared = COALESCE(NULLIF(?, ''), xml_cleared),
+         zatca_warnings_json = ?,
+         zatca_errors_json = ?,
+         retry_count = ?,
+         submitted_at = ?
+     WHERE id = ?`,
+    [
+      patch.submissionStatus,
+      storedCleared,
+      patch.zatcaWarningsJson,
+      patch.zatcaErrorsJson,
+      patch.retryCount,
+      patch.submittedAt,
+      id,
+    ]
+  );
+  saveDatabase();
+  return getZatcaInvoiceById(id);
+}
+
+// ----------------- LINKED LAN TERMINALS (MULTI-TERMINAL REGISTRY) -----------------
+
+export interface LinkedTerminalRecord {
+  clientSystemCode: string;
+  terminalName: string;
+  status: 'active' | 'blocked' | 'pending';
+  activationKeyHash: string;
+  activatedAt: string;
+  lastSeenAt: string | null;
+  lastIp: string;
+  screenMode: string;
+  shellVersion: string;
+  licenseType: 'registered' | 'demo';
+  expiresAt: string | null;
+}
+
+function mapLinkedTerminalRow(row: unknown[]): LinkedTerminalRecord {
+  const rawStatus = String(row[2] || 'active');
+  const status: LinkedTerminalRecord['status'] =
+    rawStatus === 'blocked' ? 'blocked' : rawStatus === 'pending' ? 'pending' : 'active';
+  const licenseType: LinkedTerminalRecord['licenseType'] =
+    String(row[9] || '') === 'demo' ? 'demo' : 'registered';
+  return {
+    clientSystemCode: String(row[0] || ''),
+    terminalName: String(row[1] || ''),
+    status,
+    activationKeyHash: String(row[3] || ''),
+    activatedAt: String(row[4] || ''),
+    lastSeenAt: row[5] ? String(row[5]) : null,
+    lastIp: String(row[6] || ''),
+    screenMode: String(row[7] || 'pos'),
+    shellVersion: String(row[8] || ''),
+    licenseType,
+    expiresAt: row[10] ? String(row[10]) : null,
+  };
+}
+
+export async function listLinkedTerminals(): Promise<LinkedTerminalRecord[]> {
+  const database = await getDb();
+  const res = database.exec(
+    `SELECT client_system_code, terminal_name, status, activation_key_hash,
+            activated_at, last_seen_at, last_ip, screen_mode, shell_version,
+            license_type, expires_at
+     FROM linked_terminals
+     ORDER BY activated_at DESC`
+  );
+  if (!res[0]) return [];
+  return res[0].values.map(mapLinkedTerminalRow);
+}
+
+export async function getLinkedTerminal(
+  clientSystemCode: string
+): Promise<LinkedTerminalRecord | null> {
+  const code = clientSystemCode.trim().toUpperCase();
+  if (!code) return null;
+  const database = await getDb();
+  const res = database.exec(
+    `SELECT client_system_code, terminal_name, status, activation_key_hash,
+            activated_at, last_seen_at, last_ip, screen_mode, shell_version,
+            license_type, expires_at
+     FROM linked_terminals
+     WHERE client_system_code = ?`,
+    [code]
+  );
+  const row = res[0]?.values[0];
+  return row ? mapLinkedTerminalRow(row) : null;
+}
+
+export async function upsertLinkedTerminal(input: {
+  clientSystemCode: string;
+  terminalName?: string;
+  status?: LinkedTerminalRecord['status'];
+  activationKeyHash?: string;
+  lastIp?: string;
+  screenMode?: string;
+  shellVersion?: string;
+  licenseType?: LinkedTerminalRecord['licenseType'];
+  expiresAt?: string | null;
+}): Promise<LinkedTerminalRecord> {
+  const code = input.clientSystemCode.trim().toUpperCase();
+  if (!code) throw new Error('Client System Code is required.');
+  const database = await getDb();
+  const now = new Date().toISOString();
+  const existing = await getLinkedTerminal(code);
+  const terminalName = (input.terminalName ?? existing?.terminalName ?? '').trim() || `Counter ${code.slice(-4)}`;
+  const status = input.status ?? existing?.status ?? 'active';
+  const activationKeyHash = input.activationKeyHash ?? existing?.activationKeyHash ?? '';
+  const activatedAt = existing?.activatedAt || now;
+  const lastSeenAt = existing?.lastSeenAt || now;
+  const lastIp = input.lastIp ?? existing?.lastIp ?? '';
+  const screenMode = input.screenMode ?? existing?.screenMode ?? 'pos';
+  const shellVersion = input.shellVersion ?? existing?.shellVersion ?? '';
+  const licenseType = input.licenseType ?? existing?.licenseType ?? 'registered';
+  const expiresAt = input.expiresAt !== undefined ? input.expiresAt : (existing?.expiresAt ?? null);
+
+  database.run(
+    `INSERT INTO linked_terminals (
+      client_system_code, terminal_name, status, activation_key_hash,
+      activated_at, last_seen_at, last_ip, screen_mode, shell_version,
+      license_type, expires_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(client_system_code) DO UPDATE SET
+      terminal_name = excluded.terminal_name,
+      status = excluded.status,
+      activation_key_hash = COALESCE(NULLIF(excluded.activation_key_hash, ''), linked_terminals.activation_key_hash),
+      last_seen_at = COALESCE(excluded.last_seen_at, linked_terminals.last_seen_at),
+      last_ip = COALESCE(NULLIF(excluded.last_ip, ''), linked_terminals.last_ip),
+      screen_mode = COALESCE(NULLIF(excluded.screen_mode, ''), linked_terminals.screen_mode),
+      shell_version = COALESCE(NULLIF(excluded.shell_version, ''), linked_terminals.shell_version),
+      license_type = excluded.license_type,
+      expires_at = excluded.expires_at`,
+    [
+      code,
+      terminalName,
+      status,
+      activationKeyHash,
+      activatedAt,
+      lastSeenAt,
+      lastIp,
+      screenMode,
+      shellVersion,
+      licenseType,
+      expiresAt,
+    ]
+  );
+  saveDatabase();
+  return (await getLinkedTerminal(code))!;
+}
+
+export async function setLinkedTerminalStatus(
+  clientSystemCode: string,
+  status: LinkedTerminalRecord['status'],
+  terminalName?: string
+): Promise<LinkedTerminalRecord | null> {
+  const code = clientSystemCode.trim().toUpperCase();
+  const existing = await getLinkedTerminal(code);
+  if (!existing) return null;
+  const database = await getDb();
+  database.run(
+    `UPDATE linked_terminals
+     SET status = ?,
+         terminal_name = ?
+     WHERE client_system_code = ?`,
+    [status, terminalName?.trim() || existing.terminalName, code]
+  );
+  saveDatabase();
+  return getLinkedTerminal(code);
+}
+
+export async function removeLinkedTerminal(clientSystemCode: string): Promise<boolean> {
+  const code = clientSystemCode.trim().toUpperCase();
+  const existing = await getLinkedTerminal(code);
+  if (!existing) return false;
+  const database = await getDb();
+  database.run('DELETE FROM linked_terminals WHERE client_system_code = ?', [code]);
+  saveDatabase();
+  return true;
+}
+
+export async function recordTerminalHeartbeat(
+  clientSystemCode: string,
+  patch: {
+    terminalName?: string;
+    lastIp?: string;
+    screenMode?: string;
+    shellVersion?: string;
+  }
+): Promise<void> {
+  const code = clientSystemCode.trim().toUpperCase();
+  if (!code) return;
+  const database = await getDb();
+  const now = new Date().toISOString();
+  database.run(
+    `UPDATE linked_terminals
+     SET last_seen_at = ?,
+         last_ip = COALESCE(NULLIF(?, ''), last_ip),
+         terminal_name = COALESCE(NULLIF(?, ''), terminal_name),
+         screen_mode = COALESCE(NULLIF(?, ''), screen_mode),
+         shell_version = COALESCE(NULLIF(?, ''), shell_version)
+     WHERE client_system_code = ?`,
+    [
+      now,
+      patch.lastIp || '',
+      patch.terminalName?.trim() || '',
+      patch.screenMode || '',
+      patch.shellVersion || '',
+      code,
+    ]
+  );
+  saveDatabase();
+}
+
+export async function syncLinkedTerminalsFromPortal(
+  portalEntries: Array<{
+    clientSystemCode: string;
+    terminalName?: string;
+    status: 'pending' | 'active' | 'blocked';
+  }>
+): Promise<void> {
+  const database = await getDb();
+  const existing = await listLinkedTerminals();
+  const existingMap = new Map(existing.map((entry) => [entry.clientSystemCode, entry]));
+  const portalCodes = new Set<string>();
+
+  for (const entry of portalEntries) {
+    const code = entry.clientSystemCode.trim().toUpperCase();
+    if (!code) continue;
+    portalCodes.add(code);
+    const current = existingMap.get(code);
+    if (current) {
+      if (current.status !== entry.status || (entry.terminalName && current.terminalName !== entry.terminalName)) {
+        database.run(
+          `UPDATE linked_terminals
+           SET status = ?,
+               terminal_name = COALESCE(NULLIF(?, ''), terminal_name)
+           WHERE client_system_code = ?`,
+          [entry.status, entry.terminalName?.trim() || '', code]
+        );
+      }
+    } else if (entry.status === 'active' || entry.status === 'blocked') {
+      database.run(
+        `INSERT INTO linked_terminals (
+          client_system_code, terminal_name, status, activation_key_hash,
+          activated_at, last_seen_at, last_ip, screen_mode, shell_version
+        ) VALUES (?, ?, ?, '', ?, NULL, '', 'pos', '')`,
+        [code, entry.terminalName?.trim() || `Counter ${code.slice(-4)}`, entry.status, new Date().toISOString()]
+      );
+    }
+  }
+
+  // Note: Do not auto-block terminals absent from legacy `additionalSystems` because
+  // additional terminals can now be registered directly under the Business Serial
+  // (`registeredSystems`) or Demo (`demoLicenses`) and are verified per-terminal.
+  saveDatabase();
+}
+
+// ----------------- HIGH-VOLUME PAGINATION & DASHBOARD AGGREGATES -----------------
+
+export interface ListSalesPageOptions {
+  dateFrom?: string;
+  dateTo?: string;
+  search?: string;
+  status?: string;
+  page?: number;
+  limit?: number;
+}
+
+export async function listSalesPage(options: ListSalesPageOptions): Promise<{
+  items: Sale[];
+  total: number;
+  page: number;
+  limit: number;
+}> {
+  const database = await getDb();
+  const page = Math.max(1, Math.floor(Number(options.page) || 1));
+  const limit = Math.min(500, Math.max(1, Math.floor(Number(options.limit) || 100)));
+  const offset = (page - 1) * limit;
+
+  const whereClauses: string[] = [];
+  const params: Array<string | number> = [];
+
+  if (options.dateFrom) {
+    whereClauses.push('COALESCE(invoice_date, substr(created_at, 1, 10)) >= ?');
+    params.push(options.dateFrom);
+  }
+  if (options.dateTo) {
+    whereClauses.push('COALESCE(invoice_date, substr(created_at, 1, 10)) <= ?');
+    params.push(options.dateTo);
+  }
+  if (options.status && options.status !== 'ALL') {
+    whereClauses.push('status = ?');
+    params.push(options.status);
+  }
+  if (options.search?.trim()) {
+    const pattern = `%${options.search.trim().toLowerCase()}%`;
+    whereClauses.push(
+      '(LOWER(receipt_number) LIKE ? OR LOWER(customer_name) LIKE ? OR LOWER(cashier_name) LIKE ?)'
+    );
+    params.push(pattern, pattern, pattern);
+  }
+
+  const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
+  const countRes = database.exec(`SELECT COUNT(*) FROM sales ${whereSql}`, params);
+  const total = Number(countRes[0]?.values[0]?.[0] || 0);
+  if (total === 0) {
+    return { items: [], total: 0, page, limit };
+  }
+
+  const salesRes = database.exec(
+    `SELECT id, receipt_number, created_at, cashier_name, customer_name,
+            subtotal, discount_type, discount_value, discount_amount,
+            tax_rate, tax_amount, total, payment_method,
+            amount_tendered, change_due, status, tax_type, customer_id, invoice_date,
+            app_screen_mode
+     FROM sales
+     ${whereSql}
+     ORDER BY id DESC
+     LIMIT ? OFFSET ?`,
+    [...params, limit, offset]
+  );
+
+  const saleRows = salesRes[0]?.values || [];
+  if (!saleRows.length) {
+    return { items: [], total, page, limit };
+  }
+
+  const saleIds = saleRows.map((row) => Number(row[0]));
+  const placeholders = saleIds.map(() => '?').join(',');
+
+  const itemsRes = database.exec(
+    `SELECT si.id, si.sale_id, si.product_id, si.sku, si.product_name, si.quantity,
+            si.unit_price, si.line_total, si.name_ar, si.unit_id, si.unit_name,
+            si.units_per_base, si.tax_rate, si.tax_amount, si.discount_amount,
+            p.tax_rate AS product_tax_rate, si.description
+     FROM sale_items si
+     LEFT JOIN products p ON p.id = si.product_id
+     WHERE si.sale_id IN (${placeholders})
+     ORDER BY si.id ASC`,
+    saleIds
+  );
+
+  const itemsBySale = new Map<number, SaleItem[]>();
+  const itemIds: number[] = [];
+  for (const row of itemsRes[0]?.values || []) {
+    const itemId = Number(row[0]);
+    itemIds.push(itemId);
+    const item: SaleItem = {
+      id: itemId,
+      saleId: Number(row[1]),
+      productId: Number(row[2]),
+      sku: String(row[3]),
+      productName: String(row[4]),
+      description: row[16] ? String(row[16]) : undefined,
+      quantity: Number(row[5]),
+      unitPrice: Number(row[6]),
+      lineTotal: Number(row[7]),
+      nameAr: row[8] ? String(row[8]) : undefined,
+      unitId: row[9] ? String(row[9]) : undefined,
+      unitName: row[10] ? String(row[10]) : undefined,
+      unitsPerBase: Number(row[11] || 1),
+      taxRate:
+        row[12] !== null && row[12] !== undefined
+          ? Number(row[12])
+          : row[15] !== null && row[15] !== undefined
+            ? Number(row[15])
+            : undefined,
+      taxAmount: row[13] === null || row[13] === undefined ? undefined : Number(row[13]),
+      discountAmount: row[14] === null || row[14] === undefined ? undefined : Number(row[14]),
+    };
+    const list = itemsBySale.get(item.saleId) || [];
+    list.push(item);
+    itemsBySale.set(item.saleId, list);
+  }
+
+  if (itemIds.length) {
+    const itemPlaceholders = itemIds.map(() => '?').join(',');
+    const returnedRes = database.exec(
+      `SELECT sale_item_id, SUM(returned_quantity)
+       FROM sale_return_items
+       WHERE sale_item_id IN (${itemPlaceholders})
+       GROUP BY sale_item_id`,
+      itemIds
+    );
+    const returnedMap = new Map<number, number>();
+    for (const row of returnedRes[0]?.values || []) {
+      returnedMap.set(Number(row[0]), Number(row[1]));
+    }
+    for (const list of itemsBySale.values()) {
+      for (const item of list) {
+        item.returnedQuantity = returnedMap.get(item.id) || 0;
+      }
+    }
+  }
+
+  const returnTotalsRes = database.exec(
+    `SELECT sale_id, SUM(refund_amount), SUM(tax_refund_amount)
+     FROM sale_returns
+     WHERE sale_id IN (${placeholders})
+     GROUP BY sale_id`,
+    saleIds
+  );
+  const returnTotals = new Map<number, number>();
+  const returnTaxTotals = new Map<number, number>();
+  for (const row of returnTotalsRes[0]?.values || []) {
+    returnTotals.set(Number(row[0]), Number(row[1]));
+    returnTaxTotals.set(Number(row[0]), Number(row[2]));
+  }
+
+  const returnPaymentsRes = database.exec(
+    `SELECT DISTINCT sale_id, payment_method
+     FROM sale_returns
+     WHERE sale_id IN (${placeholders})`,
+    saleIds
+  );
+  const returnPaymentMethods = new Map<number, PaymentMethod[]>();
+  for (const row of returnPaymentsRes[0]?.values || []) {
+    const saleId = Number(row[0]);
+    const method = String(row[1] || '').trim();
+    if (!method) continue;
+    const methods = returnPaymentMethods.get(saleId) || [];
+    methods.push(method);
+    returnPaymentMethods.set(saleId, methods);
+  }
+
+  const items: Sale[] = saleRows.map((row) => {
+    const id = Number(row[0]);
+    const saleItems = itemsBySale.get(id) || [];
+    const returnedQuantity = saleItems.reduce((sum, item) => sum + (item.returnedQuantity || 0), 0);
+    const totalQuantity = saleItems.reduce((sum, item) => sum + item.quantity, 0);
+    return {
+      id,
+      receiptNumber: String(row[1]),
+      createdAt: String(row[2]),
+      cashierName: String(row[3]),
+      customerName: String(row[4]),
+      customerId: row[17] === null || row[17] === undefined ? null : Number(row[17]),
+      invoiceDate: String(row[18] || String(row[2]).slice(0, 10)),
+      appScreenMode:
+        row[19] === 'rpos' || row[19] === 'erp' || row[19] === 'flyerp' ? row[19] : 'pos',
+      subtotal: Number(row[5]),
+      discountType: String(row[6]) === 'percent' ? 'percent' : 'fixed',
+      discountValue: Number(row[7]),
+      discountAmount: Number(row[8]),
+      taxRate: Number(row[9]),
+      taxType:
+        row[16] === 'inclusive' || row[16] === 'exclusive'
+          ? (String(row[16]) as 'inclusive' | 'exclusive')
+          : undefined,
+      taxAmount: Number(row[10]),
+      total: Number(row[11]),
+      paymentMethod: String(row[12]) as PaymentMethod,
+      amountTendered: Number(row[13]),
+      changeDue: Number(row[14]),
+      status:
+        String(row[15]) === 'VOIDED'
+          ? 'VOIDED'
+          : String(row[15]) === 'DRAFT'
+            ? 'DRAFT'
+            : 'COMPLETED',
+      kotNumber: getKotNumberFromInvoice(String(row[1])),
+      returnStatus:
+        returnedQuantity === 0
+          ? undefined
+          : returnedQuantity >= totalQuantity
+            ? 'FULL'
+            : 'PARTIAL',
+      returnedTotal: returnTotals.get(id) || 0,
+      returnedTaxAmount: returnTaxTotals.get(id) || 0,
+      returnPaymentMethods: returnPaymentMethods.get(id) || [],
+      items: saleItems,
+    };
+  });
+
+  return { items, total, page, limit };
+}
+
+export interface DashboardSummary {
+  todayDate: string;
+  todaySalesCount: number;
+  todaySalesTotal: number;
+  todayTaxTotal: number;
+  todayReturnsTotal: number;
+  monthSalesCount: number;
+  monthSalesTotal: number;
+  totalSalesCount: number;
+  totalProductsCount: number;
+  lowStockProductsCount: number;
+  totalCustomersCount: number;
+  totalVendorsCount: number;
+  pendingZatcaCount: number;
+  activeLinkedTerminalsCount: number;
+}
+
+export async function getDashboardSummary(): Promise<DashboardSummary> {
+  const database = await getDb();
+  const todayDate = new Date().toISOString().slice(0, 10);
+  const monthPrefix = todayDate.slice(0, 7);
+
+  const todayRow = database.exec(
+    `SELECT COUNT(*), COALESCE(SUM(total), 0), COALESCE(SUM(tax_amount), 0)
+     FROM sales
+     WHERE status = 'COMPLETED' AND COALESCE(invoice_date, substr(created_at, 1, 10)) = ?`,
+    [todayDate]
+  )[0]?.values[0];
+
+  const todayReturnsRow = database.exec(
+    `SELECT COALESCE(SUM(refund_amount), 0)
+     FROM sale_returns
+     WHERE substr(created_at, 1, 10) = ?`,
+    [todayDate]
+  )[0]?.values[0];
+
+  const monthRow = database.exec(
+    `SELECT COUNT(*), COALESCE(SUM(total), 0)
+     FROM sales
+     WHERE status = 'COMPLETED' AND substr(COALESCE(invoice_date, substr(created_at, 1, 10)), 1, 7) = ?`,
+    [monthPrefix]
+  )[0]?.values[0];
+
+  const totalSalesRow = database.exec(
+    `SELECT COUNT(*) FROM sales WHERE status = 'COMPLETED'`
+  )[0]?.values[0];
+
+  const productsRow = database.exec(
+    `SELECT COUNT(*), COALESCE(SUM(CASE WHEN stock <= reorder_level THEN 1 ELSE 0 END), 0) FROM products`
+  )[0]?.values[0];
+
+  const customersCount = Number(database.exec('SELECT COUNT(*) FROM customers')[0]?.values[0]?.[0] || 0);
+  const vendorsCount = Number(database.exec('SELECT COUNT(*) FROM vendors')[0]?.values[0]?.[0] || 0);
+  const pendingZatcaCount = Number(
+    database.exec(
+      `SELECT COUNT(*) FROM zatca_invoices WHERE submission_status IN ('PENDING', 'FAILED')`
+    )[0]?.values[0]?.[0] || 0
+  );
+  const activeLinkedTerminalsCount = Number(
+    database.exec(`SELECT COUNT(*) FROM linked_terminals WHERE status = 'active'`)[0]?.values[0]?.[0] || 0
+  );
+
+  return {
+    todayDate,
+    todaySalesCount: Number(todayRow?.[0] || 0),
+    todaySalesTotal: Number(todayRow?.[1] || 0),
+    todayTaxTotal: Number(todayRow?.[2] || 0),
+    todayReturnsTotal: Number(todayReturnsRow?.[0] || 0),
+    monthSalesCount: Number(monthRow?.[0] || 0),
+    monthSalesTotal: Number(monthRow?.[1] || 0),
+    totalSalesCount: Number(totalSalesRow?.[0] || 0),
+    totalProductsCount: Number(productsRow?.[0] || 0),
+    lowStockProductsCount: Number(productsRow?.[1] || 0),
+    totalCustomersCount: customersCount,
+    totalVendorsCount: vendorsCount,
+    pendingZatcaCount,
+    activeLinkedTerminalsCount,
+  };
 }

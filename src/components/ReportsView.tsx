@@ -7,9 +7,11 @@ import {
   ChevronRight,
   FileSpreadsheet,
   FileText,
+  QrCode,
   Receipt,
   Wallet,
 } from 'lucide-react';
+import { ZatcaSubmissionsReport } from './ZatcaSubmissionsReport';
 import type {
   CashbookEntry,
   CashbookOpeningBalance,
@@ -35,7 +37,7 @@ import { createPrintTemplateJob, printTemplateJob } from '../printTemplates/rend
 import { getPrintDocumentFormat, resolvePrintTemplate } from '../printTemplates/catalog';
 import type { PrintDocumentData } from '../printTemplates/types';
 
-type ReportTab = 'DAILY_SUMMARY' | 'DETAILED_SALES' | 'DATEWISE_SUMMARY' | 'TAX' | 'SALES_TAX' | 'CASHBOOK';
+type ReportTab = 'DAILY_SUMMARY' | 'DETAILED_SALES' | 'DATEWISE_SUMMARY' | 'TAX' | 'SALES_TAX' | 'ZATCA_SUBMISSIONS' | 'CASHBOOK';
 
 interface ReportsViewProps {
   mode: 'reports' | 'cashbook';
@@ -646,6 +648,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           { value: 'DATEWISE_SUMMARY', label: isRtl ? 'الملخص حسب التاريخ' : 'Datewise Summary', icon: BarChart3 },
           { value: 'TAX', label: isRtl ? 'تقارير الضرائب' : 'Tax Reports', icon: Receipt },
           { value: 'SALES_TAX', label: isRtl ? 'تقارير المبيعات والضريبة' : 'Sales Tax Reports', icon: FileText },
+          { value: 'ZATCA_SUBMISSIONS', label: isRtl ? 'إرسالات فاتورة (ZATCA)' : 'ZATCA Submissions', icon: QrCode },
         ];
   const activeReportLabel = tabs.find((tab) => tab.value === activeReport)?.label || 'Report';
   const formatPeriodDate = (dateKey: string) =>
@@ -1064,161 +1067,186 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           },
         ];
 
+  const isZatcaTab = activeReport === 'ZATCA_SUBMISSIONS';
+
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto bg-slate-50 p-3 lg:p-6">
-      <div className="mx-auto max-w-[1440px] space-y-3 lg:space-y-5">
-        {mode !== 'cashbook' && (
-        <header className="no-print flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-blue-700 text-white shadow-sm">
-              <BarChart3 className="h-5 w-5" />
-            </div>
-            <div>
-              <h1 className="text-lg font-bold tracking-tight text-slate-900 lg:text-xl">
-                {isRtl ? 'التقارير' : 'Reports'}
-              </h1>
-              <p className="mt-0.5 text-xs text-slate-500">
-                {isRtl
-                  ? 'الملخص اليومي والتاريخي وتقارير الضرائب والمبيعات.'
-                  : 'Daily and datewise summaries, tax reports, and sales tax reports.'}
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            {isSingleDaySummary ? (
-              <>
-                <label className="self-center text-sm text-slate-600" htmlFor="reports-summary-day">
-                  {isRtl ? 'اختر اليوم' : 'Choose a day'}
-                </label>
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    aria-label={isRtl ? 'اليوم السابق' : 'Previous day'}
-                    title={isRtl ? 'اليوم السابق' : 'Previous day'}
-                    onClick={() => setSelectedDay(shiftDateKey(selectedDay, -1))}
-                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-100"
-                  >
-                    {isRtl ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-                  </button>
-                  <AppDateInput
-                    id="reports-summary-day"
-                    value={selectedDay}
-                    onChange={(nextDate) => {
-                      if (nextDate) setSelectedDay(nextDate);
-                    }}
-                    className="min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
-                  />
-                  <button
-                    type="button"
-                    aria-label={isRtl ? 'اليوم التالي' : 'Next day'}
-                    title={isRtl ? 'اليوم التالي' : 'Next day'}
-                    onClick={() => setSelectedDay(shiftDateKey(selectedDay, 1))}
-                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-100"
-                  >
-                    {isRtl ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <label className="sr-only" htmlFor="reports-date-filter">
-                  {isRtl ? 'تصفية حسب التاريخ' : 'Filter by date'}
-                </label>
-                <select
-                  id="reports-date-filter"
-                  value={dateFilter}
-                  onChange={(event) => setDateFilter(event.target.value as DateFilter)}
-                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-100"
+    <div
+      dir={isRtl ? 'rtl' : 'ltr'}
+      className={
+        mode === 'cashbook'
+          ? 'flex-1 min-h-0 overflow-y-auto bg-slate-50 p-3 lg:p-6'
+          : 'settings-view flex h-full min-h-0 flex-1 flex-col overflow-hidden'
+      }
+    >
+      {/* Top Settings-Style Section Tabs (Reports Mode Only) */}
+      {mode !== 'cashbook' && (
+        <nav
+          className="no-print settings-section-navigation"
+          aria-label={isRtl ? 'أقسام التقارير' : 'Report sections'}
+          role="tablist"
+        >
+          <div className="settings-section-tabs">
+            {tabs.map((tab) => {
+              const active = activeReport === tab.value;
+              return (
+                <button
+                  key={tab.value}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => {
+                    setActiveReport(tab.value);
+                    setQuery('');
+                  }}
+                  className={`settings-section-tab${active ? ' is-active' : ''}`}
                 >
-                  {(['ALL', 'RANGE', 'TODAY', 'YESTERDAY', 'THIS_WEEK', 'THIS_MONTH'] as const).map(
-                    (filter) => (
-                      <option key={filter} value={filter}>{dateFilterLabel(filter)}</option>
-                    )
-                  )}
-                </select>
-                {dateFilter === 'RANGE' && (
-                  <>
-                    <label className="sr-only" htmlFor="reports-date-from">From date</label>
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+        </nav>
+      )}
+
+      {/* Main Report Workspace */}
+      <div className={mode === 'cashbook' ? 'mx-auto max-w-[1440px] space-y-3 lg:space-y-5' : 'flex min-h-0 flex-1 flex-col overflow-hidden'}>
+        {/* Sticky Top Report Toolbar */}
+        {mode !== 'cashbook' && (
+          <header className="no-print flex shrink-0 flex-wrap items-center justify-between gap-2.5 border-b border-slate-200 bg-white px-4 py-3 lg:px-6">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <h2 className="truncate text-base font-bold tracking-tight text-slate-900">
+                {activeReportLabel}
+              </h2>
+              {!isZatcaTab && (
+                <span className="hidden rounded-full border border-slate-200 bg-slate-50 px-2.5 py-0.5 font-mono text-[11px] font-semibold text-slate-600 sm:inline-block">
+                  {reportPeriodLabel}
+                </span>
+              )}
+            </div>
+
+            {!isZatcaTab && (
+              <div className="flex flex-wrap items-center gap-2">
+                {isSingleDaySummary ? (
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      aria-label={isRtl ? 'اليوم السابق' : 'Previous day'}
+                      title={isRtl ? 'اليوم السابق' : 'Previous day'}
+                      onClick={() => setSelectedDay(shiftDateKey(selectedDay, -1))}
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-100"
+                    >
+                      {isRtl ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+                    </button>
                     <AppDateInput
-                      id="reports-date-from"
-                      value={dateFrom}
+                      id="reports-summary-day"
+                      value={selectedDay}
                       onChange={(nextDate) => {
-                        setDateFrom(nextDate);
-                        if (dateTo && nextDate && dateTo < nextDate) setDateTo('');
+                        if (nextDate) setSelectedDay(nextDate);
                       }}
-                      className="min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                      className="min-w-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
                     />
-                    <label className="sr-only" htmlFor="reports-date-to">To date</label>
-                    <AppDateInput
-                      id="reports-date-to"
-                      min={dateFrom || undefined}
-                      value={dateTo}
-                      onChange={setDateTo}
-                      className="min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
-                    />
+                    <button
+                      type="button"
+                      aria-label={isRtl ? 'اليوم التالي' : 'Next day'}
+                      title={isRtl ? 'اليوم التالي' : 'Next day'}
+                      onClick={() => setSelectedDay(shiftDateKey(selectedDay, 1))}
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-100"
+                    >
+                      {isRtl ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <select
+                      id="reports-date-filter"
+                      value={dateFilter}
+                      onChange={(event) => setDateFilter(event.target.value as DateFilter)}
+                      aria-label={isRtl ? 'تصفية حسب التاريخ' : 'Filter by date'}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:border-blue-500 focus:outline-none"
+                    >
+                      {(['ALL', 'RANGE', 'TODAY', 'YESTERDAY', 'THIS_WEEK', 'THIS_MONTH'] as const).map(
+                        (filter) => (
+                          <option key={filter} value={filter}>{dateFilterLabel(filter)}</option>
+                        )
+                      )}
+                    </select>
+                    {dateFilter === 'RANGE' && (
+                      <>
+                        <AppDateInput
+                          id="reports-date-from"
+                          value={dateFrom}
+                          onChange={(nextDate) => {
+                            setDateFrom(nextDate);
+                            if (dateTo && nextDate && dateTo < nextDate) setDateTo('');
+                          }}
+                          className="min-w-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
+                        />
+                        <AppDateInput
+                          id="reports-date-to"
+                          min={dateFrom || undefined}
+                          value={dateTo}
+                          onChange={setDateTo}
+                          className="min-w-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
+                        />
+                      </>
+                    )}
                   </>
                 )}
-              </>
+
+                {(activeReport === 'TAX' || activeReport === 'DATEWISE_SUMMARY') && (
+                  <input
+                    type="search"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder={isRtl ? 'بحث بالتاريخ...' : 'Search date...'}
+                    className="w-36 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
+                  />
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleExportExcel}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100"
+                >
+                  <FileSpreadsheet className="h-3.5 w-3.5" />
+                  <span>{isRtl ? 'Excel' : 'Excel'}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={exportingPdf}
+                  onClick={handleExportPdf}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-semibold text-rose-800 hover:bg-rose-100 disabled:opacity-50"
+                >
+                  <FileText className="h-3.5 w-3.5" />
+                  <span>{exportingPdf ? (isRtl ? 'جارٍ...' : 'Exporting...') : 'PDF'}</span>
+                </button>
+              </div>
             )}
-          </div>
-        </header>
+          </header>
         )}
 
-        <div className="no-print flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
-          {mode !== 'cashbook' && (
-            <div className="flex gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white p-1">
-              {tabs.map((tab) => {
-                const Icon = tab.icon;
-                return (
-                  <button
-                    key={tab.value}
-                    type="button"
-                    aria-pressed={activeReport === tab.value}
-                    onClick={() => {
-                      setActiveReport(tab.value);
-                      setQuery('');
-                    }}
-                    className={`inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${
-                      activeReport === tab.value
-                        ? 'bg-blue-700 text-white shadow-sm'
-                        : 'text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    <Icon className="h-4 w-4" />
-                    {tab.label}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          <div className="flex gap-2">
-            {mode === 'cashbook' && (
-              <select
-                value={dateFilter}
-                onChange={(event) => setDateFilter(event.target.value as DateFilter)}
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700"
-                aria-label={isRtl ? 'تصفية حسب التاريخ' : 'Filter by date'}
-              >
-                {(['ALL', 'RANGE', 'TODAY', 'YESTERDAY', 'THIS_WEEK', 'THIS_MONTH'] as const).map(
-                  (filter) => (
-                    <option key={filter} value={filter}>{dateFilterLabel(filter)}</option>
-                  )
-                )}
-              </select>
-            )}
-            {(activeReport === 'TAX' || activeReport === 'DATEWISE_SUMMARY' || activeReport === 'CASHBOOK') && (
-              <input
-                type="search"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder={
-                  activeReport === 'CASHBOOK'
-                      ? 'Search cash movement'
-                      : 'Search date'
-                }
-                className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs sm:w-56 sm:flex-none"
-              />
-            )}
+        {/* Cashbook Toolbar (Cashbook Mode Only) */}
+        {mode === 'cashbook' && (
+          <div className="no-print flex flex-wrap items-center justify-end gap-2">
+            <select
+              value={dateFilter}
+              onChange={(event) => setDateFilter(event.target.value as DateFilter)}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700"
+              aria-label={isRtl ? 'تصفية حسب التاريخ' : 'Filter by date'}
+            >
+              {(['ALL', 'RANGE', 'TODAY', 'YESTERDAY', 'THIS_WEEK', 'THIS_MONTH'] as const).map(
+                (filter) => (
+                  <option key={filter} value={filter}>{dateFilterLabel(filter)}</option>
+                )
+              )}
+            </select>
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search cash movement"
+              className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs sm:w-56 sm:flex-none"
+            />
             <button
               type="button"
               onClick={handleExportExcel}
@@ -1239,8 +1267,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 : (isRtl ? 'تصدير PDF' : 'Export PDF')}
             </button>
           </div>
-        </div>
+        )}
 
+        <div className={mode === 'cashbook' ? 'space-y-4' : 'min-h-0 flex-1 overflow-y-auto p-4 lg:p-6'}>
+          <div className={mode === 'cashbook' ? 'space-y-4' : 'mx-auto max-w-[1360px] space-y-4'}>
         {exportError && (
           <p role="alert" className="no-print rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
             {exportError}
@@ -1284,6 +1314,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             </div>
           </div>
 
+          {activeReport !== 'ZATCA_SUBMISSIONS' && (
           <section
             aria-label={isRtl ? 'ملخص التقرير' : 'Report summary'}
             className={activeReport === 'CASHBOOK' ? 'grid grid-cols-1 gap-2 sm:grid-cols-3' : 'grid grid-cols-2 gap-2 xl:grid-cols-4'}
@@ -1297,6 +1328,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               </article>
             ))}
           </section>
+          )}
 
           {activeReport === 'DAILY_SUMMARY' && (
             <div className="space-y-4">
@@ -1483,6 +1515,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             </div>
           )}
 
+          {activeReport === 'ZATCA_SUBMISSIONS' && (
+            <ZatcaSubmissionsReport isRtl={isRtl} />
+          )}
+
           {activeReport === 'CASHBOOK' && (
             <div className="space-y-4">
               {canManageCashbook && (
@@ -1609,6 +1645,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             </div>
           )}
         </main>
+          </div>
+        </div>
       </div>
     </div>
   );

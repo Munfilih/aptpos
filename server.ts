@@ -1,10 +1,23 @@
 import 'dotenv/config';
 import express from 'express';
 import fs from 'fs';
+import https from 'node:https';
 import os from 'node:os';
 import path from 'path';
 import type { Server } from 'http';
 import { fileURLToPath } from 'url';
+import { ensureLocalTls } from './server/localTls';
+import {
+  activateZatcaProductionCsid,
+  createDebitNoteForSale,
+  getZatcaStatusSummary,
+  onboardZatcaCompliance,
+  processPendingZatcaQueue,
+  processSaleForZatca,
+  processSalesReturnForZatca,
+  retryZatcaInvoice,
+  runZatcaComplianceChecks,
+} from './server/zatca/service';
 import {
   adjustProductStock,
   assertCounterShiftOpen,
@@ -28,12 +41,18 @@ import {
   deleteCustomer,
   deleteProduct,
   deleteInventoryOption,
+  getZatcaInvoiceByDocument,
+  getZatcaInvoiceById,
+  listZatcaInvoices,
   deletePurchase,
   deletePurchaseReturnVoucher,
   deleteSale,
   deleteUser,
   deleteVendor,
+  getDashboardSummary,
   getDb,
+  getDbEngine,
+  getLinkedTerminal,
   hasDefaultAdminCredentials,
   getDemoAccess,
   beginDemoOfflineGrace,
@@ -45,6 +64,7 @@ import {
   getRegistrationSystemCode,
   importProducts,
   listCustomers,
+  listLinkedTerminals,
   listPrintQueue,
   markPrintQueueJobPrinted,
   listProducts,
@@ -52,11 +72,14 @@ import {
   listPurchases,
   listPurchaseReturnVouchers,
   listSales,
+  listSalesPage,
   listCashierShifts,
   listSalesReturnVouchers,
   listRegistrationRequests,
   listUsers,
   listVendors,
+  recordTerminalHeartbeat,
+  removeLinkedTerminal,
   resetDatabase,
   restoreDatabase,
   removeBlockedSystemCredentials,
@@ -64,7 +87,9 @@ import {
   reviewRegistrationRequest,
   saveDemoAccess,
   clearRegisteredSystemSettings,
+  setLinkedTerminalStatus,
   syncDemoAccessStatus,
+  syncLinkedTerminalsFromPortal,
   updateCustomer,
   updateProduct,
   updateInventoryOption,
@@ -75,10 +100,12 @@ import {
   updateSettings,
   updateUser,
   updateVendor,
+  upsertLinkedTerminal,
   voidSale,
   setCashbookOpeningBalance,
   openCashierShift,
 } from './server/db';
+import { getLocalLanAddresses } from './server/systemIdentity';
 import {
   buildPurchaseInvoicePrintData,
   buildPurchaseReturnPrintData,
@@ -98,6 +125,40 @@ import type {
 const translationCache = new Map<string, string>();
 const inFlightTranslations = new Map<string, Promise<string>>();
 const DEFAULT_DEMO_PORTAL_API_URL = 'https://aptpos-admin-api.onrender.com';
+const MIN_CLIENT_SHELL_VERSION = '1.0.44';
+
+function readServerAppVersion(): string {
+  try {
+    const pkgPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
+    const altPkgPath = path.resolve(process.cwd(), 'package.json');
+    const target = fs.existsSync(pkgPath) ? pkgPath : altPkgPath;
+    if (fs.existsSync(target)) {
+      const parsed = JSON.parse(fs.readFileSync(target, 'utf8')) as { version?: unknown };
+      if (typeof parsed.version === 'string' && parsed.version.trim()) {
+        return parsed.version.trim();
+      }
+    }
+  } catch {
+    // Fallback below
+  }
+  return '1.0.44';
+}
+
+const SERVER_APP_VERSION = readServerAppVersion();
+
+function normalizeRemoteIp(rawIp: string | undefined): string {
+  if (!rawIp) return '';
+  return rawIp.replace(/^::ffff:/i, '').trim();
+}
+
+function isLoopbackIp(rawIp: string | undefined): boolean {
+  const ip = normalizeRemoteIp(rawIp);
+  return ip === '127.0.0.1' || ip === '::1' || ip === 'localhost' || ip === '';
+}
+
+function isValidSystemCodeFormat(code: string): boolean {
+  return /^\d{10}$/.test(code) || /^APT(?:-[A-Z0-9]{4}){5}$/.test(code);
+}
 
 class TranslationProviderError extends Error {
   constructor(message: string, readonly status?: number) {
@@ -637,6 +698,34 @@ async function getCurrentDemoAccess(eventType: 'login' | 'check' = 'check'): Pro
           ...(registrationDetails ? { registrationDetails } : {}),
         });
       }
+      if (Array.isArray(response.additionalSystems)) {
+        try {
+          const synced = response.additionalSystems.flatMap((item: unknown) => {
+            if (!item || typeof item !== 'object') return [];
+            const obj = item as Record<string, unknown>;
+            const clientSystemCode = typeof obj.clientSystemCode === 'string'
+              ? obj.clientSystemCode.trim().toUpperCase()
+              : '';
+            const status: 'active' | 'blocked' | 'pending' | null =
+              obj.status === 'active'
+                ? 'active'
+                : obj.status === 'blocked'
+                  ? 'blocked'
+                  : obj.status === 'pending'
+                    ? 'pending'
+                    : null;
+            if (!clientSystemCode || !status) return [];
+            return [{
+              clientSystemCode,
+              terminalName: typeof obj.terminalName === 'string' ? obj.terminalName : undefined,
+              status,
+            }];
+          });
+          await syncLinkedTerminalsFromPortal(synced);
+        } catch (syncErr) {
+          console.warn('Could not sync additional systems list from Admin Portal:', syncErr);
+        }
+      }
       const businessName = (registrationDetails || localSettings.registrationDetails)?.businessName?.trim();
       return {
         status: 'registered',
@@ -820,11 +909,443 @@ async function startServer(): Promise<Server> {
 
   app.use(express.json({ limit: '50mb' }));
   app.use(express.raw({ type: 'application/octet-stream', limit: '100mb' }));
+
+  // ----------------- REAL-TIME LAN SSE EVENT BROADCASTER -----------------
+  const sseClients = new Set<express.Response>();
+  const broadcastChange = (resource: string, sourceTerminal?: string): void => {
+    if (sseClients.size === 0) return;
+    const payload = `event: change\ndata: ${JSON.stringify({
+      resource,
+      sourceTerminal: sourceTerminal || '',
+      at: new Date().toISOString(),
+    })}\n\n`;
+    for (const client of sseClients) {
+      try {
+        client.write(payload);
+      } catch {
+        sseClients.delete(client);
+      }
+    }
+  };
+
+  const sseKeepAlive = setInterval(() => {
+    for (const client of sseClients) {
+      try {
+        client.write(': ping\n\n');
+      } catch {
+        sseClients.delete(client);
+      }
+    }
+  }, 25_000);
+  sseKeepAlive.unref();
+
+  const mapPathToResource = (pathname: string): string | null => {
+    if (pathname.startsWith('/api/products')) return 'products';
+    if (pathname.startsWith('/api/inventory-options')) return 'inventory-options';
+    if (pathname.startsWith('/api/sales-returns')) return 'sales';
+    if (pathname.startsWith('/api/sales')) return 'sales';
+    if (pathname.startsWith('/api/purchase-returns')) return 'purchases';
+    if (pathname.startsWith('/api/purchases')) return 'purchases';
+    if (pathname.startsWith('/api/customers')) return 'customers';
+    if (pathname.startsWith('/api/vendors')) return 'vendors';
+    if (pathname.startsWith('/api/settings')) return 'settings';
+    if (pathname.startsWith('/api/shifts')) return 'shifts';
+    if (pathname.startsWith('/api/users')) return 'users';
+    if (pathname.startsWith('/api/cashbook')) return 'cashbook';
+    if (pathname.startsWith('/api/terminals')) return 'terminals';
+    return null;
+  };
+
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS') {
+      const resource = mapPathToResource(req.path);
+      if (resource) {
+        const sourceTerminal = (req.header('x-terminal-system-code') || '').trim().toUpperCase();
+        res.on('finish', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            broadcastChange(resource, sourceTerminal);
+          }
+        });
+      }
+    }
+    next();
+  });
+
+  // ----------------- LAN ADDITIONAL SYSTEM AUTHORIZATION GATE -----------------
+  const lastHeartbeatStamp = new Map<string, number>();
+  type ClientTerminalAccessResult = {
+    authorized: boolean;
+    status: 'active' | 'blocked' | 'pending' | 'awaiting-activation' | 'expired' | 'unregistered';
+    demoStatus:
+      | 'registered'
+      | 'active'
+      | 'blocked'
+      | 'pending'
+      | 'awaiting-activation'
+      | 'expired'
+      | 'deactivated'
+      | 'previous-request'
+      | 'never';
+    licenseType: 'registered' | 'demo';
+    expiresAt: string | null;
+    terminalName: string;
+  };
+  const CLIENT_PORTAL_CACHE_TTL_MS = 60_000;
+  const clientPortalStatusCache = new Map<
+    string,
+    { checkedAt: number; result: ClientTerminalAccessResult }
+  >();
+
+  const verifyClientTerminalAccess = async (
+    clientCode: string,
+    options?: { forceRefresh?: boolean; terminalName?: string; remoteIp?: string; shellVersion?: string }
+  ): Promise<ClientTerminalAccessResult> => {
+    const code = clientCode.trim().toUpperCase();
+    const cached = clientPortalStatusCache.get(code);
+    if (!options?.forceRefresh && cached && Date.now() - cached.checkedAt < CLIENT_PORTAL_CACHE_TTL_MS) {
+      if (
+        cached.result.authorized &&
+        cached.result.licenseType === 'demo' &&
+        cached.result.expiresAt &&
+        Date.parse(cached.result.expiresAt) <= Date.now()
+      ) {
+        // Demo expired since last check — fall through to refresh
+      } else {
+        return cached.result;
+      }
+    }
+
+    const existing = await getLinkedTerminal(code);
+    const resolvedName =
+      options?.terminalName?.trim() || existing?.terminalName || `Counter ${code.slice(-4)}`;
+
+    // Store admin explicitly blocked this terminal locally on the Primary Server
+    if (existing?.status === 'blocked' && !options?.forceRefresh) {
+      const blockedResult: ClientTerminalAccessResult = {
+        authorized: false,
+        status: 'blocked',
+        demoStatus: 'blocked',
+        licenseType: existing.licenseType,
+        expiresAt: existing.expiresAt,
+        terminalName: resolvedName,
+      };
+      clientPortalStatusCache.set(code, { checkedAt: Date.now(), result: blockedResult });
+      return blockedResult;
+    }
+
+    try {
+      const portal = await postToDemoPortal(
+        '/api/registration/demo-status-check',
+        { systemCode: code, eventType: 'check' },
+        8000
+      );
+
+      let result: ClientTerminalAccessResult;
+      if (portal.blocked === true || existing?.status === 'blocked') {
+        if (existing?.status !== 'blocked') {
+          await upsertLinkedTerminal({
+            clientSystemCode: code,
+            terminalName: resolvedName,
+            status: 'blocked',
+            lastIp: options?.remoteIp,
+            shellVersion: options?.shellVersion,
+          });
+        }
+        result = {
+          authorized: false,
+          status: 'blocked',
+          demoStatus: 'blocked',
+          licenseType: existing?.licenseType || 'registered',
+          expiresAt: null,
+          terminalName: resolvedName,
+        };
+      } else if (portal.registered === true && portal.active === true) {
+        await upsertLinkedTerminal({
+          clientSystemCode: code,
+          terminalName: resolvedName,
+          status: 'active',
+          licenseType: 'registered',
+          expiresAt: null,
+          lastIp: options?.remoteIp,
+          shellVersion: options?.shellVersion,
+        });
+        result = {
+          authorized: true,
+          status: 'active',
+          demoStatus: 'registered',
+          licenseType: 'registered',
+          expiresAt: null,
+          terminalName: resolvedName,
+        };
+      } else if (
+        portal.active === true &&
+        typeof portal.expiresAt === 'string' &&
+        Date.parse(portal.expiresAt) > Date.now()
+      ) {
+        await upsertLinkedTerminal({
+          clientSystemCode: code,
+          terminalName: resolvedName,
+          status: 'active',
+          licenseType: 'demo',
+          expiresAt: portal.expiresAt,
+          lastIp: options?.remoteIp,
+          shellVersion: options?.shellVersion,
+        });
+        result = {
+          authorized: true,
+          status: 'active',
+          demoStatus: 'active',
+          licenseType: 'demo',
+          expiresAt: portal.expiresAt,
+          terminalName: resolvedName,
+        };
+      } else if (portal.revoked === true) {
+        if (existing && existing.status === 'active') {
+          await upsertLinkedTerminal({
+            clientSystemCode: code,
+            terminalName: resolvedName,
+            status: 'pending',
+            licenseType: 'demo',
+            expiresAt: null,
+          });
+        }
+        result = {
+          authorized: false,
+          status: 'unregistered',
+          demoStatus: 'deactivated',
+          licenseType: 'demo',
+          expiresAt: null,
+          terminalName: resolvedName,
+        };
+      } else if (typeof portal.expiresAt === 'string' && Date.parse(portal.expiresAt) <= Date.now()) {
+        if (existing && existing.status === 'active') {
+          await upsertLinkedTerminal({
+            clientSystemCode: code,
+            terminalName: resolvedName,
+            status: 'pending',
+            licenseType: 'demo',
+            expiresAt: portal.expiresAt,
+          });
+        }
+        result = {
+          authorized: false,
+          status: 'expired',
+          demoStatus: 'expired',
+          licenseType: 'demo',
+          expiresAt: portal.expiresAt,
+          terminalName: resolvedName,
+        };
+      } else if (portal.pendingRequest === true) {
+        result = {
+          authorized: false,
+          status: 'pending',
+          demoStatus: 'pending',
+          licenseType: 'demo',
+          expiresAt: null,
+          terminalName: resolvedName,
+        };
+      } else if (portal.pendingActivation === true) {
+        result = {
+          authorized: false,
+          status: 'awaiting-activation',
+          demoStatus: 'awaiting-activation',
+          licenseType: 'demo',
+          expiresAt: null,
+          terminalName: resolvedName,
+        };
+      } else {
+        if (existing && existing.status === 'active') {
+          await upsertLinkedTerminal({
+            clientSystemCode: code,
+            terminalName: resolvedName,
+            status: 'pending',
+            licenseType: existing.licenseType,
+            expiresAt: null,
+          });
+        }
+        result = {
+          authorized: false,
+          status: 'unregistered',
+          demoStatus: portal.previousRequest === true ? 'previous-request' : 'never',
+          licenseType: existing?.licenseType || 'registered',
+          expiresAt: null,
+          terminalName: resolvedName,
+        };
+      }
+
+      clientPortalStatusCache.set(code, { checkedAt: Date.now(), result });
+      return result;
+    } catch (err) {
+      if (!(err instanceof DemoPortalUnavailableError)) {
+        // Non-network portal error — fall back safely to cached local record below
+      }
+      if (existing?.status === 'blocked') {
+        return {
+          authorized: false,
+          status: 'blocked',
+          demoStatus: 'blocked',
+          licenseType: existing.licenseType,
+          expiresAt: existing.expiresAt,
+          terminalName: resolvedName,
+        };
+      }
+      if (existing?.status === 'active') {
+        if (
+          existing.licenseType === 'demo' &&
+          existing.expiresAt &&
+          Date.parse(existing.expiresAt) <= Date.now()
+        ) {
+          return {
+            authorized: false,
+            status: 'expired',
+            demoStatus: 'expired',
+            licenseType: 'demo',
+            expiresAt: existing.expiresAt,
+            terminalName: resolvedName,
+          };
+        }
+        const offlineResult: ClientTerminalAccessResult = {
+          authorized: true,
+          status: 'active',
+          demoStatus: existing.licenseType === 'registered' ? 'registered' : 'active',
+          licenseType: existing.licenseType,
+          expiresAt: existing.expiresAt,
+          terminalName: resolvedName,
+        };
+        clientPortalStatusCache.set(code, { checkedAt: Date.now(), result: offlineResult });
+        return offlineResult;
+      }
+      return {
+        authorized: false,
+        status: existing?.status === 'pending' ? 'pending' : 'unregistered',
+        demoStatus: 'never',
+        licenseType: existing?.licenseType || 'registered',
+        expiresAt: existing?.expiresAt || null,
+        terminalName: resolvedName,
+      };
+    }
+  };
+
+  const LAN_AUTH_EXEMPT_PATHS = new Set([
+    '/api/health',
+    '/api/network/info',
+    '/api/terminals/status',
+    '/api/terminals/register',
+    '/api/terminals/request',
+    '/api/terminals/activate',
+    '/api/terminals/demo-request',
+    '/api/terminals/demo-activate',
+  ]);
+
+  app.use('/api', async (req, res, next) => {
+    try {
+      const fullPath = `/api${req.path}`;
+      if (LAN_AUTH_EXEMPT_PATHS.has(fullPath)) {
+        next();
+        return;
+      }
+
+      const remoteIp = normalizeRemoteIp(req.socket.remoteAddress);
+      const isLocal = isLoopbackIp(remoteIp);
+      const headerCode = (
+        req.header('x-terminal-system-code') ||
+        (typeof req.query.terminalCode === 'string' ? req.query.terminalCode : '')
+      )
+        .trim()
+        .toUpperCase();
+
+      let primarySystemCode = '';
+      try {
+        primarySystemCode = await getRegistrationSystemCode();
+      } catch {
+        primarySystemCode = '';
+      }
+
+      // Localhost requests without a foreign terminal code are always the Primary Server itself.
+      if (isLocal && (!headerCode || headerCode === primarySystemCode)) {
+        next();
+        return;
+      }
+
+      const settings = await getSettings();
+      const storeName = settings.storeName || 'aptPOS Primary Server';
+
+      if (!headerCode || !isValidSystemCodeFormat(headerCode)) {
+        res.status(403).json({
+          error: 'Additional system identification (System Code) is required to connect to this server.',
+          code: 'TERMINAL_NOT_REGISTERED',
+          clientSystemCode: headerCode,
+          primarySystemCode,
+          storeName,
+        });
+        return;
+      }
+
+      // If a request carries the Primary PC's own code from its own LAN IP, allow it.
+      if (primarySystemCode && headerCode === primarySystemCode) {
+        next();
+        return;
+      }
+
+      const access = await verifyClientTerminalAccess(headerCode, {
+        terminalName: req.header('x-terminal-name') || undefined,
+        remoteIp,
+        shellVersion: req.header('x-terminal-shell-version') || undefined,
+      });
+
+      if (access.status === 'blocked') {
+        res.status(403).json({
+          error: 'This additional system has been blocked. Contact your service provider or store admin.',
+          code: 'TERMINAL_BLOCKED',
+          clientSystemCode: headerCode,
+          primarySystemCode,
+          storeName,
+          terminalName: access.terminalName,
+          demoStatus: access.demoStatus,
+        });
+        return;
+      }
+
+      if (!access.authorized) {
+        res.status(403).json({
+          error:
+            access.status === 'expired'
+              ? 'This additional system demo has expired. Register under your Serial Key or request a demo extension.'
+              : 'This additional system is not registered yet. Register under your Serial Key or activate a Demo.',
+          code: 'TERMINAL_NOT_REGISTERED',
+          clientSystemCode: headerCode,
+          primarySystemCode,
+          storeName,
+          terminalName: access.terminalName,
+          demoStatus: access.demoStatus,
+          expiresAt: access.expiresAt,
+        });
+        return;
+      }
+
+      // Throttled heartbeat update (every 30s per active terminal)
+      const nowMs = Date.now();
+      const lastStamp = lastHeartbeatStamp.get(headerCode) || 0;
+      if (nowMs - lastStamp > 30_000) {
+        lastHeartbeatStamp.set(headerCode, nowMs);
+        void recordTerminalHeartbeat(headerCode, {
+          lastIp: remoteIp,
+          terminalName: req.header('x-terminal-name') || undefined,
+          shellVersion: req.header('x-terminal-shell-version') || undefined,
+        }).catch(() => {});
+      }
+
+      next();
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
   if (process.env.NODE_ENV === 'production') {
     app.use((_req, res, next) => {
       res.setHeader(
         'Content-Security-Policy',
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+        "default-src 'self'; script-src 'self'; worker-src 'self'; manifest-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
       );
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Referrer-Policy', 'no-referrer');
@@ -832,8 +1353,461 @@ async function startServer(): Promise<Server> {
     });
   }
 
-  app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, engine: 'sqlite' });
+  // Ensure PWA manifest & Service Worker always ship with proper MIME types and update-friendly headers
+  app.use((req, res, next) => {
+    if (req.path === '/sw.js') {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Service-Worker-Allowed', '/');
+    } else if (req.path === '/manifest.webmanifest') {
+      res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+    next();
+  });
+
+  const httpsPortValue = Number(process.env.POS_HTTPS_PORT || port + 400);
+  const tlsDataDir = process.env.POS_DATA_DIR || path.resolve(process.cwd(), 'data');
+
+  // Certificate download so phones/tablets can trust this server (needed to install aptPOS as a real app)
+  app.get('/aptpos-ca.crt', async (_req, res) => {
+    try {
+      const tls = await ensureLocalTls(tlsDataDir);
+      res.setHeader('Content-Type', 'application/x-x509-ca-cert');
+      res.setHeader('Content-Disposition', 'attachment; filename="aptpos-ca.crt"');
+      res.send(tls.cert);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.get('/api/health', async (_req, res) => {
+    try {
+      const settings = await getSettings();
+      let primarySystemCode = '';
+      try {
+        primarySystemCode = await getRegistrationSystemCode();
+      } catch {
+        primarySystemCode = '';
+      }
+      res.json({
+        ok: true,
+        engine: 'sqlite',
+        dbEngine: getDbEngine(),
+        serverVersion: SERVER_APP_VERSION,
+        minClientShellVersion: MIN_CLIENT_SHELL_VERSION,
+        storeName: settings.storeName || 'aptPOS',
+        primarySystemCode,
+        mode: process.env.POS_TERMINAL_MODE || (host === '0.0.0.0' ? 'primary-server' : 'standalone'),
+        hostname: os.hostname(),
+      });
+    } catch {
+      res.json({ ok: true, engine: 'sqlite', dbEngine: getDbEngine(), serverVersion: SERVER_APP_VERSION });
+    }
+  });
+
+  app.get('/api/network/info', async (_req, res) => {
+    try {
+      const settings = await getSettings();
+      let primarySystemCode = '';
+      try {
+        primarySystemCode = await getRegistrationSystemCode();
+      } catch {
+        primarySystemCode = '';
+      }
+      res.json({
+        mode: process.env.POS_TERMINAL_MODE || (host === '0.0.0.0' ? 'primary-server' : 'standalone'),
+        port,
+        httpsPort: httpsPortValue,
+        host,
+        hostname: os.hostname(),
+        primarySystemCode,
+        storeName: settings.storeName || 'aptPOS',
+        serverVersion: SERVER_APP_VERSION,
+        dbEngine: getDbEngine(),
+        lanAddresses: getLocalLanAddresses(),
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.get('/api/events', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+    res.write(`retry: 3000\nevent: ready\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`);
+    sseClients.add(res);
+    req.on('close', () => {
+      sseClients.delete(res);
+    });
+  });
+
+  // ----------------- ADDITIONAL LAN TERMINALS REGISTRATION & MANAGEMENT -----------------
+  app.get('/api/terminals/status', async (req, res) => {
+    try {
+      const remoteIp = normalizeRemoteIp(req.socket.remoteAddress);
+      const isLocal = isLoopbackIp(remoteIp);
+      const clientCode = (
+        req.header('x-terminal-system-code') ||
+        (typeof req.query.clientSystemCode === 'string' ? req.query.clientSystemCode : '')
+      )
+        .trim()
+        .toUpperCase();
+      const settings = await getSettings();
+      let primarySystemCode = '';
+      try {
+        primarySystemCode = await getRegistrationSystemCode();
+      } catch {
+        primarySystemCode = '';
+      }
+
+      if ((isLocal && !clientCode) || (clientCode && primarySystemCode && clientCode === primarySystemCode)) {
+        res.json({
+          registered: true,
+          status: 'active',
+          demoStatus: settings.registeredSystem ? 'registered' : 'active',
+          licenseType: settings.registeredSystem ? 'registered' : 'demo',
+          expiresAt: null,
+          isPrimary: true,
+          clientSystemCode: primarySystemCode,
+          primarySystemCode,
+          storeName: settings.storeName || 'aptPOS',
+          terminalName: os.hostname(),
+        });
+        return;
+      }
+
+      if (!clientCode || !isValidSystemCodeFormat(clientCode)) {
+        res.json({
+          registered: false,
+          status: 'unregistered',
+          demoStatus: 'never',
+          licenseType: 'registered',
+          expiresAt: null,
+          isPrimary: false,
+          clientSystemCode: clientCode,
+          primarySystemCode,
+          storeName: settings.storeName || 'aptPOS',
+          terminalName: '',
+        });
+        return;
+      }
+
+      const access = await verifyClientTerminalAccess(clientCode, {
+        forceRefresh: true,
+        terminalName: req.header('x-terminal-name') || undefined,
+        remoteIp,
+        shellVersion: req.header('x-terminal-shell-version') || undefined,
+      });
+
+      res.json({
+        registered: access.authorized,
+        status: access.status,
+        demoStatus: access.demoStatus,
+        licenseType: access.licenseType,
+        expiresAt: access.expiresAt,
+        isPrimary: false,
+        clientSystemCode: clientCode,
+        primarySystemCode,
+        storeName: settings.storeName || 'aptPOS',
+        terminalName: access.terminalName,
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Path 1: Register Additional System under Business Serial / License Key (same as normal /api/registration/activate, without touching Primary DB users/settings)
+  const handleTerminalSerialRegister = async (req: express.Request, res: express.Response) => {
+    try {
+      const clientSystemCode = (
+        (typeof req.body?.clientSystemCode === 'string' ? req.body.clientSystemCode : '') ||
+        req.header('x-terminal-system-code') ||
+        ''
+      )
+        .trim()
+        .toUpperCase();
+      const registrationKey = (
+        (typeof req.body?.registrationKey === 'string' ? req.body.registrationKey : '') ||
+        (typeof req.body?.activationKey === 'string' ? req.body.activationKey : '')
+      ).trim();
+      const terminalName = typeof req.body?.terminalName === 'string'
+        ? req.body.terminalName.trim().slice(0, 80)
+        : (req.header('x-terminal-name') || '').trim().slice(0, 80);
+
+      if (!isValidSystemCodeFormat(clientSystemCode)) {
+        res.status(400).json({ error: 'A valid 10-digit System Code is required.' });
+        return;
+      }
+      if ((!/^\d{16}$/.test(registrationKey) && registrationKey.length < 24) || registrationKey.length > 128) {
+        res.status(400).json({ error: 'Enter the 16-digit Serial / Registration Key provided by aptadmin.' });
+        return;
+      }
+
+      const prepared = await postToRegistrationPortal('/api/registration/key/prepare', {
+        systemCode: clientSystemCode,
+        registrationKey,
+      });
+      const appVersion = APP_VERSIONS.find((version) => version === prepared.appVersion);
+      if (!appVersion) {
+        throw new Error('The Auth API returned an invalid registered version.');
+      }
+
+      if (prepared.active !== true) {
+        const activated = await postToRegistrationPortal('/api/registration/key/activate', {
+          systemCode: clientSystemCode,
+          registrationKey,
+        });
+        if (activated.registered !== true) {
+          throw new Error('The Auth API did not confirm registration for this device.');
+        }
+      }
+
+      const remoteIp = normalizeRemoteIp(req.socket.remoteAddress);
+      const terminal = await upsertLinkedTerminal({
+        clientSystemCode,
+        terminalName: terminalName || `Counter ${clientSystemCode.slice(-4)}`,
+        status: 'active',
+        licenseType: 'registered',
+        expiresAt: null,
+        lastIp: remoteIp,
+        shellVersion: req.header('x-terminal-shell-version') || '',
+      });
+      clientPortalStatusCache.delete(clientSystemCode);
+      broadcastChange('terminals', clientSystemCode);
+      res.json({
+        activated: true,
+        licenseType: 'registered',
+        appVersion,
+        terminal,
+      });
+    } catch (err) {
+      const status =
+        typeof err === 'object' && err !== null && 'status' in err &&
+        typeof err.status === 'number' && err.status >= 400 && err.status < 500
+          ? err.status
+          : 502;
+      res.status(status).json({
+        error: err instanceof Error ? err.message : 'Could not register this device under the serial key.',
+      });
+    }
+  };
+
+  app.post('/api/terminals/register', handleTerminalSerialRegister);
+  app.post('/api/terminals/activate', handleTerminalSerialRegister);
+
+  // Path 2A: Request normal Demo Key (or Extension) for Additional System (same as normal /api/registration/demo-requests)
+  const handleTerminalDemoRequest = async (req: express.Request, res: express.Response) => {
+    try {
+      const clientSystemCode = (
+        (typeof req.body?.clientSystemCode === 'string' ? req.body.clientSystemCode : '') ||
+        req.header('x-terminal-system-code') ||
+        ''
+      )
+        .trim()
+        .toUpperCase();
+      const terminalName = typeof req.body?.terminalName === 'string'
+        ? req.body.terminalName.trim().slice(0, 80)
+        : (req.header('x-terminal-name') || '').trim().slice(0, 80);
+      const requestType = req.body?.requestType === 'extension' ? 'extension' : 'demo';
+      const requestedByRaw =
+        (typeof req.body?.requestedBy === 'string' ? req.body.requestedBy.trim() : '') ||
+        terminalName ||
+        `Counter_${clientSystemCode.slice(-4)}`;
+      const requestedBy = requestedByRaw.slice(0, 80);
+
+      if (!isValidSystemCodeFormat(clientSystemCode)) {
+        res.status(400).json({ error: 'A valid 10-digit System Code is required.' });
+        return;
+      }
+      const primarySystemCode = await getRegistrationSystemCode();
+      if (clientSystemCode === primarySystemCode) {
+        res.status(400).json({ error: 'This PC is already the Primary Server.' });
+        return;
+      }
+
+      const remoteIp = normalizeRemoteIp(req.socket.remoteAddress);
+      const portalRes = await postToDemoPortal('/api/registration/demo-requests', {
+        requestType,
+        systemCode: clientSystemCode,
+        requestedBy,
+      });
+
+      await upsertLinkedTerminal({
+        clientSystemCode,
+        terminalName: terminalName || `Counter ${clientSystemCode.slice(-4)}`,
+        status: 'pending',
+        licenseType: 'demo',
+        lastIp: remoteIp,
+        shellVersion: req.header('x-terminal-shell-version') || '',
+      });
+      clientPortalStatusCache.delete(clientSystemCode);
+      broadcastChange('terminals', clientSystemCode);
+      res.status(201).json(portalRes);
+    } catch (err) {
+      const status =
+        typeof err === 'object' && err !== null && 'status' in err &&
+        typeof err.status === 'number' && err.status >= 400 && err.status < 500
+          ? err.status
+          : 502;
+      res.status(status).json({
+        error: err instanceof Error ? err.message : 'Could not submit the demo key request.',
+      });
+    }
+  };
+
+  app.post('/api/terminals/demo-request', handleTerminalDemoRequest);
+  app.post('/api/terminals/request', handleTerminalDemoRequest);
+
+  // Path 2B: Activate normal Demo Key for Additional System (same as normal /api/registration/demo-activation, without touching Primary DB users/settings)
+  app.post('/api/terminals/demo-activate', async (req, res) => {
+    try {
+      const clientSystemCode = (
+        (typeof req.body?.clientSystemCode === 'string' ? req.body.clientSystemCode : '') ||
+        req.header('x-terminal-system-code') ||
+        ''
+      )
+        .trim()
+        .toUpperCase();
+      const activationKey = typeof req.body?.activationKey === 'string'
+        ? req.body.activationKey.trim()
+        : '';
+      const terminalName = typeof req.body?.terminalName === 'string'
+        ? req.body.terminalName.trim().slice(0, 80)
+        : (req.header('x-terminal-name') || '').trim().slice(0, 80);
+
+      if (!isValidSystemCodeFormat(clientSystemCode)) {
+        res.status(400).json({ error: 'A valid 10-digit System Code is required.' });
+        return;
+      }
+      if (!activationKey || activationKey.length < 10 || activationKey.length > 256) {
+        res.status(400).json({ error: 'Enter a valid demo key.' });
+        return;
+      }
+
+      const portalRes = await postToDemoPortal('/api/registration/demo-activation', {
+        systemCode: clientSystemCode,
+        activationKey,
+      });
+      if (!('expiresAt' in portalRes) || typeof portalRes.expiresAt !== 'string') {
+        throw new Error('The demo activation service returned an invalid expiration date.');
+      }
+
+      const remoteIp = normalizeRemoteIp(req.socket.remoteAddress);
+      const terminal = await upsertLinkedTerminal({
+        clientSystemCode,
+        terminalName: terminalName || `Counter ${clientSystemCode.slice(-4)}`,
+        status: 'active',
+        licenseType: 'demo',
+        expiresAt: portalRes.expiresAt,
+        lastIp: remoteIp,
+        shellVersion: req.header('x-terminal-shell-version') || '',
+      });
+      clientPortalStatusCache.delete(clientSystemCode);
+      broadcastChange('terminals', clientSystemCode);
+      res.json({
+        activated: true,
+        licenseType: 'demo',
+        expiresAt: portalRes.expiresAt,
+        terminal,
+      });
+    } catch (err) {
+      const status =
+        typeof err === 'object' && err !== null && 'status' in err &&
+        typeof err.status === 'number' && err.status >= 400 && err.status < 500
+          ? err.status
+          : 502;
+      res.status(status).json({
+        error: err instanceof Error ? err.message : 'Could not activate the demo key for this device.',
+      });
+    }
+  });
+
+  app.post('/api/terminals/heartbeat', async (req, res) => {
+    try {
+      const clientCode = (req.header('x-terminal-system-code') || '').trim().toUpperCase();
+      if (clientCode && isValidSystemCodeFormat(clientCode)) {
+        await recordTerminalHeartbeat(clientCode, {
+          lastIp: normalizeRemoteIp(req.socket.remoteAddress),
+          terminalName: typeof req.body?.terminalName === 'string' ? req.body.terminalName : undefined,
+          screenMode: typeof req.body?.screenMode === 'string' ? req.body.screenMode : undefined,
+          shellVersion:
+            (typeof req.body?.shellVersion === 'string' ? req.body.shellVersion : '') ||
+            req.header('x-terminal-shell-version') ||
+            undefined,
+        });
+      }
+      res.json({ ok: true, serverTime: new Date().toISOString() });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.get('/api/terminals', async (_req, res) => {
+    try {
+      res.json(await listLinkedTerminals());
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.patch('/api/terminals/:code', async (req, res) => {
+    try {
+      const code = String(req.params.code || '').trim().toUpperCase();
+      if (!isValidSystemCodeFormat(code)) {
+        res.status(400).json({ error: 'Invalid terminal System Code.' });
+        return;
+      }
+      const status =
+        req.body?.status === 'active' || req.body?.status === 'blocked' || req.body?.status === 'pending'
+          ? req.body.status
+          : undefined;
+      const terminalName = typeof req.body?.terminalName === 'string' ? req.body.terminalName : undefined;
+      const existing = await getLinkedTerminal(code);
+      if (!existing && status) {
+        const created = await upsertLinkedTerminal({
+          clientSystemCode: code,
+          terminalName,
+          status,
+        });
+        res.json(created);
+        return;
+      }
+      const updated = await setLinkedTerminalStatus(code, status || existing?.status || 'active', terminalName);
+      if (!updated) {
+        res.status(404).json({ error: 'Linked terminal not found.' });
+        return;
+      }
+      clientPortalStatusCache.delete(code);
+      res.json(updated);
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  app.delete('/api/terminals/:code', async (req, res) => {
+    try {
+      const code = String(req.params.code || '').trim().toUpperCase();
+      const removed = await removeLinkedTerminal(code);
+      if (!removed) {
+        res.status(404).json({ error: 'Linked terminal not found.' });
+        return;
+      }
+      clientPortalStatusCache.delete(code);
+      res.json({ deleted: true });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  app.get('/api/dashboard/summary', async (_req, res) => {
+    try {
+      res.json(await getDashboardSummary());
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
   });
 
   app.get('/api/registration/system-code', async (_req, res) => {
@@ -1452,8 +2426,27 @@ async function startServer(): Promise<Server> {
     }
   });
 
-  app.get('/api/sales', async (_req, res) => {
+  app.get('/api/sales', async (req, res) => {
     try {
+      const hasPaginationParams =
+        req.query.page !== undefined ||
+        req.query.limit !== undefined ||
+        req.query.dateFrom !== undefined ||
+        req.query.dateTo !== undefined ||
+        req.query.search !== undefined ||
+        req.query.status !== undefined;
+      if (hasPaginationParams) {
+        const result = await listSalesPage({
+          dateFrom: typeof req.query.dateFrom === 'string' ? req.query.dateFrom : undefined,
+          dateTo: typeof req.query.dateTo === 'string' ? req.query.dateTo : undefined,
+          search: typeof req.query.search === 'string' ? req.query.search : undefined,
+          status: typeof req.query.status === 'string' ? req.query.status : undefined,
+          page: req.query.page !== undefined ? Number(req.query.page) : 1,
+          limit: req.query.limit !== undefined ? Number(req.query.limit) : 100,
+        });
+        res.json(result);
+        return;
+      }
       const sales = await listSales();
       res.json(sales);
     } catch (err) {
@@ -1574,7 +2567,16 @@ async function startServer(): Promise<Server> {
     try {
       await assertCounterShiftOpen();
       const result = await createSale(req.body);
-      res.status(201).json(result);
+      let zatca: unknown = null;
+      if (result?.sale?.id && result.sale.status === 'COMPLETED') {
+        try {
+          zatca = await processSaleForZatca(result.sale.id);
+        } catch (zatcaErr) {
+          console.error('ZATCA Phase 2 sale submission error:', zatcaErr);
+          zatca = { error: (zatcaErr as Error).message };
+        }
+      }
+      res.status(201).json(zatca ? { ...result, zatca } : result);
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
     }
@@ -1610,9 +2612,137 @@ async function startServer(): Promise<Server> {
         res.status(404).json({ error: 'Sales invoices not found' });
         return;
       }
-      res.status(201).json(result);
+      let zatca: unknown = null;
+      if (result.voucher?.id) {
+        try {
+          const reason = typeof req.body?.reason === 'string' ? req.body.reason : 'Customer return / refund';
+          zatca = await processSalesReturnForZatca(result.voucher.id, reason);
+        } catch (zatcaErr) {
+          console.error('ZATCA Phase 2 credit note error:', zatcaErr);
+          zatca = { error: (zatcaErr as Error).message };
+        }
+      }
+      res.status(201).json(zatca ? { ...result, zatca } : result);
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  // --- ZATCA Phase 2 Direct Fatoora API Routes ---
+  app.get('/api/zatca/status', async (_req, res) => {
+    try {
+      res.json(await getZatcaStatusSummary());
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.post('/api/zatca/onboard/compliance', async (req, res) => {
+    try {
+      const environment =
+        req.body?.environment === 'simulation' || req.body?.environment === 'production'
+          ? req.body.environment
+          : 'sandbox';
+      const otp = String(req.body?.otp || '');
+      const businessCategory = typeof req.body?.businessCategory === 'string' ? req.body.businessCategory : 'Retail';
+      const result = await onboardZatcaCompliance({ environment, otp, businessCategory });
+      res.json(result);
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  app.post('/api/zatca/onboard/compliance-checks', async (_req, res) => {
+    try {
+      const report = await runZatcaComplianceChecks();
+      res.json(report);
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  app.post('/api/zatca/onboard/production', async (_req, res) => {
+    try {
+      const result = await activateZatcaProductionCsid();
+      res.json(result);
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  app.get('/api/zatca/invoices', async (req, res) => {
+    try {
+      const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
+      const rows = (await listZatcaInvoices(limit)).map((r) => ({
+        id: r.id,
+        documentType: r.documentType,
+        documentId: r.documentId,
+        invoiceNumber: r.invoiceNumber,
+        uuid: r.uuid,
+        invoiceTypeCode: r.invoiceTypeCode,
+        invoiceSubtype: r.invoiceSubtype,
+        icv: r.icv,
+        invoiceHash: r.invoiceHash,
+        submissionStatus: r.submissionStatus,
+        warnings: JSON.parse(r.zatcaWarningsJson || '[]'),
+        errors: JSON.parse(r.zatcaErrorsJson || '[]'),
+        retryCount: r.retryCount,
+        submittedAt: r.submittedAt,
+        createdAt: r.createdAt,
+      }));
+      res.json({ invoices: rows });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.get('/api/zatca/invoices/:id/xml', async (req, res) => {
+    try {
+      const record = await getZatcaInvoiceById(Number(req.params.id));
+      if (!record) {
+        res.status(404).json({ error: 'ZATCA invoice not found.' });
+        return;
+      }
+      const xml = record.xmlCleared || record.xmlSigned;
+      res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${record.invoiceNumber.replace(/[^a-zA-Z0-9_-]/g, '_')}.xml"`
+      );
+      res.send(xml);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.post('/api/zatca/invoices/:id/retry', async (req, res) => {
+    try {
+      const updated = await retryZatcaInvoice(Number(req.params.id));
+      res.json(updated);
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  app.post('/api/zatca/debit-notes', async (req, res) => {
+    try {
+      const saleId = Number(req.body?.saleId);
+      const amountExclTax = Number(req.body?.amountExclTax);
+      const taxRate = req.body?.taxRate !== undefined ? Number(req.body.taxRate) : undefined;
+      const reason = String(req.body?.reason || '');
+      const created = await createDebitNoteForSale({ saleId, amountExclTax, taxRate, reason });
+      res.status(201).json(created);
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  app.post('/api/zatca/queue/flush', async (_req, res) => {
+    try {
+      const processed = await processPendingZatcaQueue();
+      res.json({ processed });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
     }
   });
 
@@ -1722,9 +2852,14 @@ async function startServer(): Promise<Server> {
         const customers = await listCustomers();
         const customer = customers.find((entry) => entry.id === sale.customerId)
           || customers.find((entry) => entry.name === sale.customerName);
+        const context = buildSalesInvoicePrintData(sale, settings, customer);
+        const zatcaRecord = await getZatcaInvoiceByDocument('SALE', sale.id);
+        if (zatcaRecord?.qrPhase2) {
+          context.voucher.eInvoiceQrCodePhase2 = zatcaRecord.qrPhase2;
+        }
         res.json({
           voucherType,
-          context: buildSalesInvoicePrintData(sale, settings, customer),
+          context,
         });
         return;
       }
@@ -1737,9 +2872,14 @@ async function startServer(): Promise<Server> {
         const sourceSale = (await listSales()).find((sale) =>
           voucher.sourceInvoices.includes(sale.receiptNumber)
         );
+        const context = buildSalesReturnPrintData(voucher, settings, sourceSale?.customerName);
+        const zatcaRecord = await getZatcaInvoiceByDocument('SALES_RETURN', voucher.id);
+        if (zatcaRecord?.qrPhase2) {
+          context.voucher.eInvoiceQrCodePhase2 = zatcaRecord.qrPhase2;
+        }
         res.json({
           voucherType,
-          context: buildSalesReturnPrintData(voucher, settings, sourceSale?.customerName),
+          context,
         });
         return;
       }
@@ -2115,6 +3255,30 @@ async function startServer(): Promise<Server> {
   const server = app.listen(port, host, () => {
     console.log(`aptPOS server running on http://${host}:${port}`);
   });
+
+  // Local HTTPS listener (LAN only) so Android/iOS can install aptPOS as a full-screen app
+  if (host === '0.0.0.0') {
+    void ensureLocalTls(tlsDataDir)
+      .then((tls) => {
+        const secureServer = https.createServer({ key: tls.key, cert: tls.cert }, app);
+        secureServer.on('error', (err) => {
+          console.warn(`Local HTTPS server could not start on :${httpsPortValue}:`, err.message);
+        });
+        secureServer.listen(httpsPortValue, host, () => {
+          console.log(`aptPOS HTTPS server running on https://${host}:${httpsPortValue}`);
+        });
+        server.on('close', () => secureServer.close());
+      })
+      .catch((err) => console.warn('Local HTTPS certificate could not be created:', err));
+  }
+
+  // Background ZATCA Phase 2 reporting queue worker (batched every 15s for 5,000+ invoices/day SLA)
+  const zatcaQueueTimer = setInterval(() => {
+    void processPendingZatcaQueue().catch((err) => {
+      console.error('ZATCA background reporting queue error:', err);
+    });
+  }, 15_000);
+  zatcaQueueTimer.unref();
 
   await new Promise<void>((resolve, reject) => {
     server.once('listening', resolve);

@@ -1,4 +1,42 @@
 @import "tailwindcss";
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+.rpos-register-main {
+  width: 100%;
+}
+
+.rpos-checkout-panel {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.rpos-mobile-cart-button {
+  position: fixed;
+  bottom: max(1rem, calc(env(safe-area-inset-bottom) + 0.5rem));
+  left: 0.75rem;
+  right: 0.75rem;
+  z-index: 40;
+}
+
+@media (min-width: 900px) {
+  .rpos-register-main {
+    width: calc(100% - max(150px, min(var(--rpos-ticket-width), calc(100vw - 120px))));
+    margin-right: auto;
+  }
+
+  .rpos-checkout-panel {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    z-index: 30;
+    width: min(var(--rpos-ticket-width), calc(100vw - 120px));
+    min-width: 150px;
+    max-width: 800px;
+  }
+}
 
 .app-launcher-backdrop {
   background-color: var(--theme-launcher-backdrop);
@@ -22,6 +60,31 @@
 
 .login-screen {
   background: #12081f;
+  /* Lock standard slate scale inside the self-contained dark Login screen
+     so Medium / Dark app themes never invert login text or input surfaces */
+  --color-slate-50: oklch(98.4% 0.003 247.858);
+  --color-slate-100: oklch(96.8% 0.007 247.896);
+  --color-slate-200: oklch(92.9% 0.013 255.508);
+  --color-slate-300: oklch(86.9% 0.022 252.894);
+  --color-slate-400: oklch(70.4% 0.04 256.788);
+  --color-slate-500: oklch(55.4% 0.046 257.417);
+  --color-slate-600: oklch(44.6% 0.043 257.281);
+  --color-slate-700: oklch(37.2% 0.044 257.287);
+  --color-slate-800: oklch(27.9% 0.041 260.031);
+  --color-slate-900: oklch(20.8% 0.042 265.755);
+  --color-slate-950: oklch(12.9% 0.042 264.695);
+}
+
+.login-screen .bg-slate-800 {
+  background-color: oklch(27.9% 0.041 260.031);
+}
+
+.login-screen .bg-slate-900 {
+  background-color: oklch(20.8% 0.042 265.755);
+}
+
+.login-screen .bg-slate-950 {
+  background-color: oklch(12.9% 0.042 264.695);
 }
 
 .login-splash {
@@ -29,17 +92,17 @@
 }
 
 .login-language {
-  border: 1px solid rgb(226 232 240);
-  background: rgb(255 255 255 / 0.9);
-  color: #475569;
-  box-shadow: 0 6px 18px rgb(15 23 42 / 0.08);
+  border: 1px solid rgb(255 255 255 / 0.16);
+  background: rgb(255 255 255 / 0.08);
+  color: #e2e8f0;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.25);
   backdrop-filter: blur(12px);
 }
 
 .login-language:hover {
-  background: #ffffff;
-  color: #7c3aed;
-  border-color: rgb(196 181 253);
+  background: rgb(255 255 255 / 0.16);
+  color: #ffffff;
+  border-color: rgb(196 181 253 / 0.5);
 }
 
 .login-shell {
@@ -47,13 +110,13 @@
   min-height: 520px;
   display: grid;
   grid-template-columns: 0.92fr 1.08fr;
-  border: 1px solid rgb(255 255 255 / 0.08);
+  border: 1px solid rgb(255 255 255 / 0.1);
   border-radius: 28px;
   overflow: hidden;
-  background: #ffffff;
+  background: #140b24;
   box-shadow:
-    0 36px 100px rgb(15 23 42 / 0.14),
-    0 0 70px rgb(124 58 237 / 0.06);
+    0 36px 100px rgb(0 0 0 / 0.45),
+    0 0 70px rgb(124 58 237 / 0.14);
   backdrop-filter: blur(24px);
 }
 
@@ -497,7 +560,8 @@
 }
 
 /* Surface & utility mapping for medium and dark themes */
-:is([data-theme="medium"], [data-theme="dark"]) .bg-white {
+:is([data-theme="medium"], [data-theme="dark"]) .bg-white,
+:is([data-theme="medium"], [data-theme="dark"]) .focus\:bg-white:focus {
   background-color: var(--theme-surface);
 }
 
@@ -586,6 +650,7 @@
 }
 
 /* Preserve solid high-contrast primary/semantic buttons in dark mode */
+[data-theme="dark"] .bg-blue-600,
 [data-theme="dark"] .bg-blue-700 {
   background-color: #2563eb;
   background-image: none;
@@ -629,9 +694,8 @@
   background-color: #020617;
 }
 
-/* Print & product surfaces stay crisp white paper regardless of UI theme */
+/* Print-only surfaces stay crisp white paper regardless of UI theme */
 :is([data-theme="medium"], [data-theme="dark"]) .purchase-print-area,
-:is([data-theme="medium"], [data-theme="dark"]) .report-print-area,
 :is([data-theme="medium"], [data-theme="dark"]) .shift-print-page {
   --color-slate-50: oklch(98.4% 0.003 247.858);
   --color-slate-100: oklch(96.8% 0.007 247.896);
@@ -646,15 +710,8 @@
   --color-slate-950: oklch(12.9% 0.042 264.695);
 }
 
-:is([data-theme="medium"], [data-theme="dark"]) .purchase-print-area .bg-white,
-[data-theme="medium"] .report-print-area .bg-white {
+:is([data-theme="medium"], [data-theme="dark"]) .purchase-print-area .bg-white {
   background-color: #ffffff;
-}
-
-[data-theme="dark"] .report-print-area .bg-white {
-  background-color: var(--theme-surface);
-  border-color: var(--theme-border);
-  box-shadow: none;
 }
 
 :is([data-theme="medium"], [data-theme="dark"]) .product-image-surface {
@@ -752,6 +809,16 @@
 .win11-launcher-icon[data-art="cashbook"] {
   --launcher-art-light: #99f6e4;
   --launcher-art-dark: #0f766e;
+}
+
+.win11-launcher-icon[data-art="barcode-print"] {
+  --launcher-art-light: #38bdf8;
+  --launcher-art-dark: #0369a1;
+}
+
+.win11-launcher-icon[data-art="zatca"] {
+  --launcher-art-light: #34d399;
+  --launcher-art-dark: #047857;
 }
 
 .win11-launcher-icon[data-art="sales-settings"] {
@@ -1015,6 +1082,21 @@
 }
 
 @media print {
+  .report-print-area {
+    --color-slate-50: oklch(98.4% 0.003 247.858);
+    --color-slate-100: oklch(96.8% 0.007 247.896);
+    --color-slate-200: oklch(92.9% 0.013 255.508);
+    --color-slate-300: oklch(86.9% 0.022 252.894);
+    --color-slate-400: oklch(70.4% 0.04 256.788);
+    --color-slate-500: oklch(55.4% 0.046 257.417);
+    --color-slate-600: oklch(44.6% 0.043 257.281);
+    --color-slate-700: oklch(37.2% 0.044 257.287);
+    --color-slate-800: oklch(27.9% 0.041 260.031);
+    --color-slate-900: oklch(20.8% 0.042 265.755);
+    --color-slate-950: oklch(12.9% 0.042 264.695);
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+  }
   .report-print-area .bg-white {
     background-color: #ffffff !important;
   }
@@ -1441,4 +1523,51 @@
 /* Crisp, reduced corner roundness across all buttons */
 button:not(.rounded-none):not([role="switch"]) {
   border-radius: 5px !important;
+}
+
+/* ==========================================================================
+   Global Modal Safe-Viewport & Layering Guard
+   Ensures NO modal ever hides behind the TopBar, SideNav, or Bottom Bars
+   or clips off-screen at ANY viewport resolution (720p, 600p, 1080p, 4K).
+   ========================================================================== */
+.fixed.inset-0[role="dialog"],
+.fixed.inset-0:has(> [role="dialog"]) {
+  z-index: 200 !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  align-items: safe center !important;
+  padding-top: max(0.75rem, env(safe-area-inset-top)) !important;
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom)) !important;
+}
+
+/* Preserve stacking order for nested / confirmation modals above base modals */
+.fixed.inset-0[role="dialog"].z-\[130\],
+.fixed.inset-0[role="dialog"].z-\[140\] {
+  z-index: 230 !important;
+}
+
+.fixed.inset-0[role="dialog"].z-\[160\] {
+  z-index: 260 !important;
+}
+
+/* Clamp every modal dialog card height to the visible viewport without overriding Tailwind max-w-* widths */
+.fixed.inset-0[role="dialog"] > div,
+.fixed.inset-0:has(> [role="dialog"]) > [role="dialog"] {
+  max-height: calc(100dvh - 1.5rem) !important;
+  margin-top: auto;
+  margin-bottom: auto;
+}
+
+.fixed.inset-0[role="dialog"] > div:not(.overflow-hidden),
+.fixed.inset-0:has(> [role="dialog"]) > [role="dialog"]:not(.overflow-hidden) {
+  overflow-y: auto;
+}
+
+/* Standalone full-screen receipt preview & floating controls stay above TopBar & bottom bars */
+.receipt-standalone-preview {
+  z-index: 210 !important;
+}
+
+.receipt-preview-controls {
+  z-index: 220 !important;
 }

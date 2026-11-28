@@ -90,6 +90,7 @@ interface RegisterViewProps {
   onAddProduct?: (barcode: string) => void;
   productEditorOpen?: boolean;
   productCreateModalOpen?: boolean;
+  onInvoiceTypeChange?: (type: 'B2B' | 'B2C') => void;
 }
 
 function isInventoryOption(value: unknown): value is InventoryOption {
@@ -300,6 +301,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   onAddProduct,
   productEditorOpen = false,
   productCreateModalOpen = false,
+  onInvoiceTypeChange,
 }) => {
   const { t, isRtl } = useLanguage();
   const isRpos = settings.posScreenLayout === 'rpos';
@@ -329,12 +331,17 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   };
   const [mobileTab, setMobileTab] = useState<'table' | 'checkout'>('table');
   const [barcodeInput, setBarcodeInput] = useState('');
+  const [posProductSearch, setPosProductSearch] = useState('');
   const [posSearchHighlightIndex, setPosSearchHighlightIndex] = useState(0);
+  const posProductSearchInputRef = useRef<HTMLInputElement>(null);
+  const posSearchItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [flavorPickerRequest, setFlavorPickerRequest] = useState<{
     product: Product;
     unitId?: string;
     scannedBarcode?: string;
   } | null>(null);
+  const [flavorPickerIndex, setFlavorPickerIndex] = useState(0);
+  const flavorButtonRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [isCatalogOpen, setIsCatalogOpen] = useState(false);
   const [isBrowsingCategories, setIsBrowsingCategories] = useState(false);
   const [catalogSearch, setCatalogSearch] = useState('');
@@ -358,6 +365,15 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   const [ticketEditUnitId, setTicketEditUnitId] = useState('');
   const [customerSearch, setCustomerSearch] = useState('');
   const [isCustomerPickerOpen, setIsCustomerPickerOpen] = useState(false);
+
+  useEffect(() => {
+    if (!flavorPickerRequest) return;
+    setFlavorPickerIndex(0);
+    const frame = window.requestAnimationFrame(() => {
+      flavorButtonRefs.current[0]?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [flavorPickerRequest]);
 
   useEffect(() => {
     let active = true;
@@ -456,6 +472,11 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
 
   const cart = activeTab.cart;
   const customerName = activeTab.customerName;
+  useEffect(() => {
+    const matched = customers.find((entry) => entry.name.trim() === customerName.trim());
+    const isB2B = Boolean(matched?.vatNumber && /^\d{15}$/.test(matched.vatNumber.trim()));
+    onInvoiceTypeChange?.(isB2B ? 'B2B' : 'B2C');
+  }, [customerName, customers, onInvoiceTypeChange]);
   const defaultCustomerName = settings.defaultCustomer || 'Walk-in Customer / عميل نقدي';
   const customerQuery = customerSearch.trim().toLowerCase();
   const matchingCustomers = customers.filter((cust) => {
@@ -642,6 +663,14 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   const [isCancelConfirmationOpen, setIsCancelConfirmationOpen] = useState(false);
   const keepTicketButtonRef = useRef<HTMLButtonElement>(null);
   const cancelTicketButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!isCancelConfirmationOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      cancelTicketButtonRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [isCancelConfirmationOpen]);
   const [isTenderModalOpen, setIsTenderModalOpen] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'error' | 'info'; text: string } | null>(null);
   const [isPrintingKot, setIsPrintingKot] = useState(false);
@@ -1605,23 +1634,13 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
   const posSearchMode = settings.posDefaultSearchField || 'barcode';
 
   const posSearchMatches = useMemo(() => {
-    if (posSearchMode === 'barcode') return [];
-    const raw = barcodeInput.trim();
+    const raw = posProductSearch.trim();
     if (!raw) return [];
     const tokens = normalizeCatalogSearch(raw).split(/\s+/).filter(Boolean);
     if (tokens.length === 0) return [];
 
     return products
       .filter((product) => {
-        if (posSearchMode === 'name') {
-          const haystack = normalizeCatalogSearch([product.name, product.nameAr || ''].join(' '));
-          return tokens.every((token) => haystack.includes(token));
-        }
-        if (posSearchMode === 'sku') {
-          const haystack = normalizeCatalogSearch(product.sku || '');
-          return tokens.every((token) => haystack.includes(token));
-        }
-        // 'all': search across every product attribute including tax rate %
         const taxRate = product.taxRate ?? settings.taxRate ?? 0;
         const haystack = normalizeCatalogSearch([
           product.name,
@@ -1637,21 +1656,28 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           String(product.stock),
           String(taxRate),
           `${taxRate}%`,
+          ...(product.flavors || []),
           ...(product.multiUnits || []).flatMap((unit) => [
             unit.name,
             unit.barcode,
-            String(unit.price),
+            String(unit.price ?? ''),
           ]),
           ...(product.additionalBarcodes || []).map((entry) => entry.barcode),
         ].join(' '));
         return tokens.every((token) => haystack.includes(token));
       })
       .slice(0, 12);
-  }, [barcodeInput, posSearchMode, products, settings.decimalPoints, settings.taxRate]);
+  }, [posProductSearch, products, settings.decimalPoints, settings.taxRate]);
 
   useEffect(() => {
     setPosSearchHighlightIndex(0);
-  }, [barcodeInput, posSearchMode]);
+  }, [posProductSearch]);
+
+  useEffect(() => {
+    if (posSearchMatches.length === 0) return;
+    const clamped = Math.min(posSearchHighlightIndex, posSearchMatches.length - 1);
+    posSearchItemRefs.current[clamped]?.scrollIntoView({ block: 'nearest' });
+  }, [posSearchHighlightIndex, posSearchMatches.length]);
 
   // BARCODE SCAN HANDLER WITH SCANNER-LOCK ON INVALID BARCODE
   const handleBarcodeSubmit = (e: React.SyntheticEvent) => {
@@ -2296,8 +2322,8 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         <button
           type="button"
           onClick={() => {
-            setMobileTab('table');
-            if (!isRpos) focusBarcodeInput();
+              setMobileTab('table');
+              focusBarcodeInput();
           }}
           className={`flex-1 py-2 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 ${
             mobileTab === 'table'
@@ -2305,28 +2331,22 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
               : 'bg-slate-100 text-slate-700'
           }`}
         >
-          {isRpos ? <LayoutGrid className="w-3.5 h-3.5" /> : <Layers className="w-3.5 h-3.5" />}
+          <Layers className="w-3.5 h-3.5" />
           <span>
-            {isRpos
-              ? (isRtl ? 'قائمة الأصناف والمجموعات' : 'Menu Catalogue')
-              : (isRtl ? `الأصناف (${totalUnitsInCart})` : `Scanned Table (${totalUnitsInCart})`)}
+              {isRtl ? `الأصناف (${totalUnitsInCart})` : `Scanned Table (${totalUnitsInCart})`}
           </span>
         </button>
         <button
           type="button"
           onClick={() => setMobileTab('checkout')}
           className={`flex-1 py-2 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 ${
-            mobileTab === 'checkout'
-              ? 'bg-blue-700 text-white shadow-xs'
-              : 'bg-slate-100 text-slate-700'
+              mobileTab === 'checkout'
+                ? 'bg-blue-700 text-white shadow-xs'
+                : 'bg-slate-100 text-slate-700'
           }`}
         >
           <ShoppingBag className="w-3.5 h-3.5" />
-          <span>
-            {isRpos
-              ? (isRtl ? `طلب الطاولة · ${c} ${total.toFixed(2)}` : `Ticket · ${c} ${total.toFixed(2)}`)
-              : (isRtl ? `الدفع · ${c} ${total.toFixed(2)}` : `Pay · ${c} ${total.toFixed(2)}`)}
-          </span>
+          <span>{isRtl ? `الدفع · ${c} ${total.toFixed(2)}` : `Pay · ${c} ${total.toFixed(2)}`}</span>
         </button>
       </div>
       )}
@@ -2341,12 +2361,12 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         {isRpos ? (
           <main
             className={`order-1 flex-1 flex flex-col min-h-0 min-w-0 border-r border-slate-200 bg-slate-50 overflow-hidden ${
-              mobileTab === 'table' ? 'flex' : 'hidden lg:flex'
+              mobileTab === 'table' ? 'flex' : 'hidden min-[900px]:flex'
             }`}
           >
             {/* 1. RPOS Category Selector & Colored Block Toolbar */}
             <div className="shrink-0 border-b border-slate-200 bg-slate-100/80 p-2.5 sm:p-3">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+              <div className="flex min-w-0 flex-row items-stretch gap-1.5 min-[900px]:gap-2">
                 <button
                   type="button"
                   onClick={() => {
@@ -2359,17 +2379,18 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                       setIsBrowsingCategories(true);
                     }
                   }}
+                  aria-label={isRtl ? 'عرض الفئات' : 'Browse categories'}
                   aria-pressed={isBrowsingCategories}
-                  className={`inline-flex w-full shrink-0 items-center justify-center gap-2 rounded-xl border px-3.5 py-2.5 text-xs font-bold shadow-xs transition-colors sm:w-auto ${
+                  className={`inline-flex h-10 w-10 shrink-0 items-center justify-center gap-2 rounded-xl border p-0 text-xs font-bold shadow-xs transition-colors min-[900px]:h-auto min-[900px]:w-auto min-[900px]:px-3.5 min-[900px]:py-2.5 ${
                     isBrowsingCategories
                       ? 'border-blue-800 bg-blue-800 text-white ring-2 ring-blue-300'
                       : 'border-blue-600 bg-blue-600 text-white hover:bg-blue-700'
                   }`}
                 >
                   <LayoutGrid className="h-4 w-4 text-white" />
-                  <span>{getGroupDisplayName('All')}</span>
+                  <span className="hidden min-[900px]:inline">{getGroupDisplayName('All')}</span>
                 </button>
-                <div className="flex min-w-0 flex-1 items-stretch gap-2">
+                <div className="flex min-w-0 flex-1 items-stretch gap-1.5 min-[900px]:gap-2">
                   <div className="relative min-w-0 flex-1">
                     <Search className={`pointer-events-none absolute top-1/2 h-4 w-4 -translate-y-1/2 text-sky-600 ${isRtl ? 'right-3' : 'left-3'}`} />
                     <input
@@ -2403,10 +2424,11 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                     <button
                       type="button"
                       onClick={onOpenSalesHistory}
-                      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl border border-emerald-600 bg-emerald-600 px-3.5 py-2.5 text-xs font-bold text-white shadow-xs transition-colors hover:bg-emerald-700"
+                      aria-label={isRtl ? 'سجل المبيعات' : 'Sales history'}
+                      className="inline-flex h-10 w-10 shrink-0 items-center justify-center gap-1.5 rounded-xl border border-emerald-600 bg-emerald-600 p-0 text-xs font-bold text-white shadow-xs transition-colors hover:bg-emerald-700 min-[900px]:h-auto min-[900px]:w-auto min-[900px]:px-3.5 min-[900px]:py-2.5"
                     >
                       <HistoryIcon className="h-4 w-4 text-white" />
-                      <span>{isRtl ? 'سجل المبيعات' : 'Sales History'}</span>
+                      <span className="hidden min-[900px]:inline">{isRtl ? 'سجل المبيعات' : 'Sales History'}</span>
                     </button>
                   )}
                 </div>
@@ -2414,7 +2436,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                   aria-label={isRtl ? 'ترتيب المنتجات' : 'Sort products'}
                   value={catalogSort}
                   onChange={(event) => setCatalogSort(event.target.value as typeof catalogSort)}
-                  className="w-full shrink-0 rounded-[5px] border border-violet-200 bg-violet-50 px-3 py-2.5 text-xs font-bold text-violet-900 shadow-xs transition-colors hover:bg-violet-100 focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-200 sm:w-44"
+                  className="h-10 w-28 min-w-0 shrink-0 rounded-[5px] border border-violet-200 bg-violet-50 px-1.5 text-[10px] font-bold text-violet-900 shadow-xs transition-colors hover:bg-violet-100 focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-200 min-[900px]:h-auto min-[900px]:w-44 min-[900px]:px-3 min-[900px]:py-2.5 min-[900px]:text-xs"
                 >
                   <option value="frequent">{isRtl ? 'الأكثر استخداماً' : 'Frequently Used'}</option>
                   <option value="featured">{isRtl ? 'الترتيب الافتراضي' : 'Featured'}</option>
@@ -2426,7 +2448,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
             </div>
 
             {/* 3. Product Cards Grid */}
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3 sm:p-4 bg-slate-100/60">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3 pb-24 sm:p-4 sm:pb-24 min-[900px]:pb-4 bg-slate-100/60">
               {isBrowsingCategories ? (
                 <>
                   {rposCategoryError && (
@@ -2675,7 +2697,8 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           <div className="p-2 sm:p-3 bg-slate-50 border-b border-slate-200 space-y-1.5 shrink-0">
             <form onSubmit={handleBarcodeSubmit} className="flex flex-col gap-1.5">
               <div className="flex flex-col gap-1.5 sm:flex-row">
-                <div className="relative min-w-0 flex-1">
+                {/* Column 1: Barcode Scan (Auto-focused) */}
+                <div className="relative min-w-0 flex-1 sm:max-w-[260px]">
                   <input
                     ref={barcodeInputRef}
                     id="pos-barcode-scanner-input"
@@ -2683,7 +2706,52 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                     type="text"
                     value={barcodeInput}
                     onKeyDown={(e) => {
-                      if (posSearchMode !== 'barcode' && posSearchMatches.length > 0) {
+                      const moveNextKey = isRtl ? 'ArrowLeft' : 'ArrowRight';
+                      if (e.key === moveNextKey) {
+                        const el = e.currentTarget;
+                        const atEnd = el.selectionStart === el.value.length && el.selectionEnd === el.value.length;
+                        if (atEnd || el.value.length === 0) {
+                          e.preventDefault();
+                          posProductSearchInputRef.current?.focus();
+                          return;
+                        }
+                      }
+                      if (e.key === 'Escape' && barcodeInput) {
+                        e.preventDefault();
+                        setBarcodeInput('');
+                        return;
+                      }
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleBarcodeSubmit(e);
+                      }
+                    }}
+                    onChange={(e) => setBarcodeInput(e.target.value)}
+                    placeholder={isRtl ? 'امسح الباركود...' : 'Scan barcode...'}
+                    className="w-full rounded border border-blue-300 bg-white px-3 py-1.5 font-mono text-xs font-semibold text-slate-900 placeholder:font-sans placeholder:font-normal placeholder:text-slate-400 transition-colors focus:border-blue-600 focus:outline-none disabled:bg-slate-100 disabled:opacity-50 sm:text-sm"
+                  />
+                </div>
+
+                {/* Column 2: Search Product (Any part of product & name) */}
+                <div className="relative min-w-0 flex-1">
+                  <input
+                    ref={posProductSearchInputRef}
+                    id="pos-product-search-input"
+                    disabled={Boolean(wrongBarcodeModal)}
+                    type="text"
+                    value={posProductSearch}
+                    onKeyDown={(e) => {
+                      const movePrevKey = isRtl ? 'ArrowRight' : 'ArrowLeft';
+                      if (e.key === movePrevKey) {
+                        const el = e.currentTarget;
+                        const atStart = el.selectionStart === 0 && el.selectionEnd === 0;
+                        if (atStart || el.value.length === 0) {
+                          e.preventDefault();
+                          focusBarcodeInput();
+                          return;
+                        }
+                      }
+                      if (posSearchMatches.length > 0) {
                         if (e.key === 'ArrowDown') {
                           e.preventDefault();
                           setPosSearchHighlightIndex((prev) => (prev + 1) % posSearchMatches.length);
@@ -2694,30 +2762,42 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                           setPosSearchHighlightIndex((prev) => (prev - 1 + posSearchMatches.length) % posSearchMatches.length);
                           return;
                         }
-                        if (e.key === 'Escape') {
-                          e.preventDefault();
-                          setBarcodeInput('');
-                          return;
-                        }
+                      }
+                      if (e.key === 'Escape') {
+                        e.preventDefault();
+                        setPosProductSearch('');
+                        focusBarcodeInput();
+                        return;
                       }
                       if (e.key === 'Enter') {
                         e.preventDefault();
-                        handleBarcodeSubmit(e);
+                        const selected =
+                          posSearchMatches[Math.min(posSearchHighlightIndex, Math.max(0, posSearchMatches.length - 1))] ||
+                          posSearchMatches[0];
+                        if (selected) {
+                          addToCart(selected);
+                          setPosProductSearch('');
+                          setPosSearchHighlightIndex(0);
+                          focusBarcodeInput();
+                        } else if (posProductSearch.trim()) {
+                          setFeedback({
+                            type: 'error',
+                            text: isRtl
+                              ? `لم يتم العثور على منتج مطابق لـ "${posProductSearch.trim()}"`
+                              : `No matching product found for "${posProductSearch.trim()}"`,
+                          });
+                        }
                       }
                     }}
-                    onChange={(e) => setBarcodeInput(e.target.value)}
+                    onChange={(e) => setPosProductSearch(e.target.value)}
                     placeholder={
-                      posSearchMode === 'name'
-                        ? (isRtl ? 'ابحث باسم المنتج...' : 'Search by product name...')
-                        : posSearchMode === 'sku'
-                          ? (isRtl ? 'ابحث برمز الصنف (SKU)...' : 'Search by SKU...')
-                          : posSearchMode === 'all'
-                            ? (isRtl ? 'ابحث بالاسم، الرمز، الباركود، الفئة، الضريبة %...' : 'Search by name, SKU, barcode, category, price, tax %...')
-                            : t.scanOrSearch
+                      isRtl
+                        ? 'ابحث بأي جزء من اسم المنتج، الرمز، الباركود، الفئة...'
+                        : 'Search by product name, SKU, barcode, category...'
                     }
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 font-mono text-xs text-slate-900 placeholder:text-slate-400 transition-colors focus:outline-none disabled:bg-slate-100 disabled:opacity-50 sm:text-sm"
+                    className="w-full rounded border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 transition-colors focus:border-blue-600 focus:outline-none disabled:bg-slate-100 disabled:opacity-50 sm:text-sm"
                   />
-                  {posSearchMode !== 'barcode' && barcodeInput.trim() !== '' && (
+                  {posProductSearch.trim() !== '' && (
                     <div className="absolute left-0 right-0 top-full z-40 mt-1 max-h-72 overflow-y-auto rounded-lg border border-slate-200 bg-white p-1 shadow-xl">
                       {posSearchMatches.length === 0 ? (
                         <div className="px-3 py-2 text-xs text-slate-500">
@@ -2725,22 +2805,25 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                         </div>
                       ) : (
                         posSearchMatches.map((product, idx) => {
-                          const highlighted = idx === posSearchHighlightIndex;
+                          const highlighted = idx === Math.min(posSearchHighlightIndex, posSearchMatches.length - 1);
                           const prodTax = product.taxRate ?? settings.taxRate ?? 0;
                           return (
                             <button
                               key={product.id}
+                              ref={(el) => {
+                                posSearchItemRefs.current[idx] = el;
+                              }}
                               type="button"
                               onMouseDown={(event) => event.preventDefault()}
                               onClick={() => {
                                 addToCart(product);
-                                setBarcodeInput('');
+                                setPosProductSearch('');
                                 setPosSearchHighlightIndex(0);
                                 focusBarcodeInput();
                               }}
                               onMouseEnter={() => setPosSearchHighlightIndex(idx)}
-                              className={`flex w-full items-center justify-between gap-3 px-2.5 py-2 text-start text-xs transition-colors ${
-                                highlighted ? 'bg-blue-50 text-blue-900' : 'text-slate-800 hover:bg-slate-50'
+                              className={`flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-2 text-start text-xs transition-colors ${
+                                highlighted ? 'bg-blue-700 text-white' : 'text-slate-800 hover:bg-slate-50'
                               }`}
                             >
                               <div className="min-w-0 flex-1">
@@ -2748,14 +2831,14 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                                   {isRtl && product.nameAr ? product.nameAr : product.name}
                                   {product.nameAr && !isRtl ? ` · ${product.nameAr}` : ''}
                                 </div>
-                                <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[10px] text-slate-500">
+                                <div className={`mt-0.5 flex flex-wrap items-center gap-x-2 text-[10px] ${highlighted ? 'text-blue-100' : 'text-slate-500'}`}>
                                   {product.sku && <span className="font-mono">SKU: {product.sku}</span>}
                                   {product.barcode && <span className="font-mono">{product.barcode}</span>}
                                   {product.category && <span>{product.category}</span>}
                                   <span className="font-mono">VAT {prodTax}%</span>
                                 </div>
                               </div>
-                              <div className="shrink-0 font-mono text-xs font-bold tabular-nums text-blue-700">
+                              <div className={`shrink-0 font-mono text-xs font-bold tabular-nums ${highlighted ? 'text-white' : 'text-blue-700'}`}>
                                 {c} {product.retailPrice.toFixed(settings.decimalPoints ?? 2)}
                               </div>
                             </button>
@@ -2981,8 +3064,10 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         )}
         <aside
           data-pos-checkout-panel
-          style={isRpos ? { width: `min(${rposTicketWidth}px, calc(100vw - 120px))` } : undefined}
-          className={`${isRpos ? 'fixed inset-y-0 right-0 z-30' : 'order-2 z-0 h-full'} shrink-0 ${
+          style={isRpos
+            ? { '--rpos-ticket-width': `${rposTicketWidth}px` } as React.CSSProperties
+            : undefined}
+          className={`${isRpos ? 'rpos-checkout-panel order-2 z-0 h-full' : 'order-2 z-0 h-full'} shrink-0 ${
             isRpos
               ? 'min-w-[150px] max-w-[800px]'
               : `w-full min-[900px]:fixed min-[900px]:inset-y-0 ${
@@ -2995,7 +3080,9 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           } border-slate-200 ${
             isRpos ? 'xl:flex-none' : 'lg:flex-none'
           } ${
-            isRpos ? 'flex' : mobileTab === 'checkout' ? 'flex flex-1 min-[900px]:flex-none' : 'hidden min-[900px]:flex'
+            isRpos
+              ? mobileTab === 'checkout' ? 'flex flex-1 min-[900px]:flex-none' : 'hidden min-[900px]:flex'
+              : mobileTab === 'checkout' ? 'flex flex-1 min-[900px]:flex-none' : 'hidden min-[900px]:flex'
           }`}
         >
           {/* Header */}
@@ -3493,6 +3580,38 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
         </div>
       )}
 
+      {isRpos && (
+        <button
+          type="button"
+          onClick={() => setMobileTab(mobileTab === 'table' ? 'checkout' : 'table')}
+          className="rpos-mobile-cart-button inline-flex items-center justify-between gap-3 rounded-xl bg-blue-700 px-4 py-3 text-white shadow-xl ring-1 ring-blue-900/10 transition-colors hover:bg-blue-800 active:bg-blue-900 min-[900px]:hidden"
+          aria-label={
+            mobileTab === 'table'
+              ? (isRtl ? `عرض السلة، ${totalUnitsInCart} أصناف، ${c} ${total.toFixed(2)}` : `View cart, ${totalUnitsInCart} items, ${c} ${total.toFixed(2)}`)
+              : (isRtl ? 'العودة إلى قائمة الأصناف' : 'Back to menu')
+          }
+        >
+          <span className="inline-flex min-w-0 items-center gap-2">
+            <span className="relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/15">
+              {mobileTab === 'table'
+                ? <ShoppingBag className="h-5 w-5" />
+                : <LayoutGrid className="h-5 w-5" />}
+              <span className="absolute -right-1.5 -top-1.5 inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-white px-1 text-[10px] font-black text-blue-800">
+                {totalUnitsInCart}
+              </span>
+            </span>
+            <span className="truncate text-sm font-bold">
+              {mobileTab === 'table'
+                ? (isRtl ? 'عرض السلة' : 'View Cart')
+                : (isRtl ? 'العودة إلى قائمة الأصناف' : 'Back to Menu')}
+            </span>
+          </span>
+          <span className="shrink-0 font-mono text-sm font-black tabular-nums">
+            {c} {total.toFixed(settings.decimalPoints ?? 2)}
+          </span>
+        </button>
+      )}
+
       {!isRpos && (
         <footer
           className={`${mobileTab === 'table' ? 'flex' : 'hidden min-[900px]:flex'} fixed bottom-0 left-0 z-40 h-[0.5cm] w-full min-[900px]:w-2/3 items-center border-t border-slate-200 bg-white px-2`}
@@ -3537,7 +3656,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                 type="button"
                 ref={keepTicketButtonRef}
                 onClick={() => setIsCancelConfirmationOpen(false)}
-                className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-2"
               >
                 {isRtl ? 'الاحتفاظ بالفاتورة' : 'Keep ticket'}
               </button>
@@ -3545,7 +3664,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
                 type="button"
                 ref={cancelTicketButtonRef}
                 onClick={cancelCurrentTicket}
-                className="rounded-lg bg-red-700 px-4 py-2 text-xs font-bold text-white hover:bg-red-800"
+                className="rounded-lg bg-red-700 px-4 py-2 text-xs font-bold text-white hover:bg-red-800 focus:outline-none focus:ring-2 focus:ring-red-600 focus:ring-offset-2"
               >
                 {isRtl ? 'نعم، إلغاء الفاتورة' : 'Yes, cancel ticket'}
               </button>
@@ -4135,7 +4254,48 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
           role="dialog"
           aria-modal="true"
           onClick={(event) => {
-            if (event.target === event.currentTarget) setFlavorPickerRequest(null);
+            if (event.target === event.currentTarget) {
+              setFlavorPickerRequest(null);
+              window.requestAnimationFrame(() => focusBarcodeInput());
+            }
+          }}
+          onKeyDown={(event) => {
+            const flavors = flavorPickerRequest.product.flavors || [];
+            if (flavors.length === 0) return;
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              event.stopPropagation();
+              setFlavorPickerRequest(null);
+              window.requestAnimationFrame(() => focusBarcodeInput());
+              return;
+            }
+            if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+              event.preventDefault();
+              event.stopPropagation();
+              const nextIndex = (flavorPickerIndex + 1) % flavors.length;
+              setFlavorPickerIndex(nextIndex);
+              flavorButtonRefs.current[nextIndex]?.focus();
+              flavorButtonRefs.current[nextIndex]?.scrollIntoView({ block: 'nearest' });
+              return;
+            }
+            if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+              event.preventDefault();
+              event.stopPropagation();
+              const prevIndex = (flavorPickerIndex - 1 + flavors.length) % flavors.length;
+              setFlavorPickerIndex(prevIndex);
+              flavorButtonRefs.current[prevIndex]?.focus();
+              flavorButtonRefs.current[prevIndex]?.scrollIntoView({ block: 'nearest' });
+              return;
+            }
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              event.stopPropagation();
+              const chosenFlavor = flavors[Math.min(flavorPickerIndex, flavors.length - 1)] || flavors[0];
+              const req = flavorPickerRequest;
+              setFlavorPickerRequest(null);
+              addToCart(req.product, req.unitId, req.scannedBarcode, chosenFlavor);
+              window.requestAnimationFrame(() => focusBarcodeInput());
+            }
           }}
         >
           <div
@@ -4155,7 +4315,10 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
               </div>
               <button
                 type="button"
-                onClick={() => setFlavorPickerRequest(null)}
+                onClick={() => {
+                  setFlavorPickerRequest(null);
+                  window.requestAnimationFrame(() => focusBarcodeInput());
+                }}
                 className="rounded-lg p-1.5 text-slate-500 hover:bg-white hover:text-slate-800"
                 aria-label={isRtl ? 'إغلاق' : 'Close'}
               >
@@ -4163,20 +4326,33 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
               </button>
             </header>
             <div className="grid max-h-[60vh] grid-cols-2 gap-2.5 overflow-y-auto p-4 sm:grid-cols-3">
-              {(flavorPickerRequest.product.flavors || []).map((flavor) => (
-                <button
-                  key={flavor}
-                  type="button"
-                  onClick={() => {
-                    const req = flavorPickerRequest;
-                    setFlavorPickerRequest(null);
-                    addToCart(req.product, req.unitId, req.scannedBarcode, flavor);
-                  }}
-                  className="flex min-h-[52px] items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50/60 px-3 py-2.5 text-center text-xs font-bold text-emerald-900 transition-colors hover:border-emerald-500 hover:bg-emerald-600 hover:text-white"
-                >
-                  {flavor}
-                </button>
-              ))}
+              {(flavorPickerRequest.product.flavors || []).map((flavor, idx) => {
+                const isSelected = idx === flavorPickerIndex;
+                return (
+                  <button
+                    key={flavor}
+                    ref={(el) => {
+                      flavorButtonRefs.current[idx] = el;
+                    }}
+                    type="button"
+                    onMouseEnter={() => setFlavorPickerIndex(idx)}
+                    onFocus={() => setFlavorPickerIndex(idx)}
+                    onClick={() => {
+                      const req = flavorPickerRequest;
+                      setFlavorPickerRequest(null);
+                      addToCart(req.product, req.unitId, req.scannedBarcode, flavor);
+                      window.requestAnimationFrame(() => focusBarcodeInput());
+                    }}
+                    className={`flex min-h-[52px] items-center justify-center rounded-lg border px-3 py-2.5 text-center text-xs font-bold transition-colors focus:outline-none ${
+                      isSelected
+                        ? 'border-emerald-700 bg-emerald-700 text-white shadow-md ring-2 ring-emerald-300'
+                        : 'border-emerald-200 bg-emerald-50/60 text-emerald-900 hover:border-emerald-500 hover:bg-emerald-600 hover:text-white'
+                    }`}
+                  >
+                    {flavor}
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -4285,7 +4461,7 @@ export const RegisterView: React.FC<RegisterViewProps> = ({
       {/* ======================================================== */}
       {!isRpos && isCatalogOpen && (
         <div
-          className="fixed inset-0 z-40 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6"
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6"
           role="dialog"
           aria-modal="true"
           aria-labelledby="catalog-modal-title"

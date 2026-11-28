@@ -15,8 +15,58 @@ export type SettingsSectionId =
   | 'payment'
   | 'users'
   | 'database'
+  | 'network'
   | 'registration'
   | 'updates';
+
+export type TerminalMode = 'standalone' | 'primary-server' | 'client';
+
+export interface TerminalConfig {
+  mode: TerminalMode;
+  terminalName: string;
+  serverHost: string;
+  serverPort: number;
+}
+
+export interface LinkedTerminal {
+  clientSystemCode: string;
+  terminalName: string;
+  status: 'active' | 'blocked' | 'pending';
+  activatedAt: string;
+  lastSeenAt: string | null;
+  lastIp: string;
+  screenMode: string;
+  shellVersion: string;
+  licenseType?: 'registered' | 'demo';
+  expiresAt?: string | null;
+}
+
+export interface LanDiscoveredServer {
+  host: string;
+  port: number;
+  storeName: string;
+  primarySystemCode: string;
+  serverVersion: string;
+  hostname: string;
+}
+
+export interface NetworkServerInfo {
+  mode: TerminalMode;
+  port: number;
+  httpsPort?: number;
+  host: string;
+  hostname: string;
+  primarySystemCode: string;
+  storeName: string;
+  serverVersion: string;
+  dbEngine: string;
+  lanAddresses: Array<{
+    interfaceName: string;
+    address: string;
+    cidr: string | null;
+    mac: string;
+  }>;
+}
 
 export const APP_COMPONENTS = [
   { id: 'register', label: 'Counter', labelAr: 'نقطة البيع' },

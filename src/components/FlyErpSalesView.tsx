@@ -43,6 +43,7 @@ interface FlyErpSalesViewProps {
   onOpenServiceMaster?: () => void;
   onOpenSalesHistory?: () => void;
   onEditService?: (product: Product) => void;
+  onInvoiceTypeChange?: (type: 'B2B' | 'B2C') => void;
 }
 
 interface TravelSaleRow {
@@ -113,20 +114,59 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
   onOpenServiceMaster,
   onOpenSalesHistory,
   onEditService,
+  onInvoiceTypeChange,
 }) => {
   const { isRtl } = useLanguage();
   const text = (english: string, arabic: string) => isRtl ? arabic : english;
   const currency = settings.currencySymbol || 'SAR';
   const decimals = settings.decimalPoints ?? 2;
-  const [customerId, setCustomerId] = useState<number | null>(null);
+  const FLYERP_SALES_STATE_KEY = 'aptpos_flyerp_sales_state_v1';
+
+  const savedInitialState = useMemo(() => {
+    if (editingSale) return null;
+    try {
+      const raw = localStorage.getItem(FLYERP_SALES_STATE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as {
+        customerId?: number | null;
+        invoiceDate?: string;
+        discountType?: 'fixed' | 'percent';
+        discountValue?: string;
+        paymentMethod?: PaymentMethod;
+        cashTendered?: string | null;
+        rows?: TravelSaleRow[];
+        nextRowId?: number;
+      };
+      if (!parsed || typeof parsed !== 'object') return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const [customerId, setCustomerId] = useState<number | null>(() => savedInitialState?.customerId ?? null);
   const [customerModalOpen, setCustomerModalOpen] = useState(false);
-  const [invoiceDate, setInvoiceDate] = useState(getTodayDate);
-  const [discountType, setDiscountType] = useState<'fixed' | 'percent'>('fixed');
-  const [discountValue, setDiscountValue] = useState('0');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Cash');
-  const [cashTendered, setCashTendered] = useState<string | null>(null);
-  const [rows, setRows] = useState<TravelSaleRow[]>([]);
-  const [nextRowId, setNextRowId] = useState(1);
+  const [invoiceDate, setInvoiceDate] = useState(() => savedInitialState?.invoiceDate || getTodayDate());
+  const [discountType, setDiscountType] = useState<'fixed' | 'percent'>(
+    () => (savedInitialState?.discountType === 'percent' ? 'percent' : 'fixed')
+  );
+  const [discountValue, setDiscountValue] = useState(() => savedInitialState?.discountValue ?? '0');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
+    () => savedInitialState?.paymentMethod || 'Cash'
+  );
+  const [cashTendered, setCashTendered] = useState<string | null>(() => savedInitialState?.cashTendered ?? null);
+  const [rows, setRows] = useState<TravelSaleRow[]>(
+    () => (Array.isArray(savedInitialState?.rows) ? savedInitialState.rows : [])
+  );
+  const [nextRowId, setNextRowId] = useState(() => {
+    if (typeof savedInitialState?.nextRowId === 'number' && savedInitialState.nextRowId > 0) {
+      return savedInitialState.nextRowId;
+    }
+    const maxId = Array.isArray(savedInitialState?.rows)
+      ? savedInitialState.rows.reduce((max, r) => Math.max(max, Number(r.id) || 0), 0)
+      : 0;
+    return maxId + 1;
+  });
   const [serviceModalRowId, setServiceModalRowId] = useState<number | null>(null);
   const [serviceModalIsNew, setServiceModalIsNew] = useState(false);
   const [serviceModalOriginalRow, setServiceModalOriginalRow] = useState<TravelSaleRow | null>(null);
@@ -157,6 +197,10 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
   const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
 
   const customer = customers.find((entry) => entry.id === customerId);
+  useEffect(() => {
+    const isB2B = Boolean(customer?.vatNumber && /^\d{15}$/.test(customer.vatNumber.trim()));
+    onInvoiceTypeChange?.(isB2B ? 'B2B' : 'B2C');
+  }, [customer, onInvoiceTypeChange]);
   const invoiceTaxType = settings.taxType;
   const methods = useMemo(
     () => [...new Set([
@@ -620,7 +664,47 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
     };
   }, [servicePickerRowId]);
 
+  useEffect(() => {
+    if (editingSale) return;
+    try {
+      if (rows.length === 0 && customerId === null && discountValue === '0' && cashTendered === null) {
+        localStorage.removeItem(FLYERP_SALES_STATE_KEY);
+        return;
+      }
+      localStorage.setItem(
+        FLYERP_SALES_STATE_KEY,
+        JSON.stringify({
+          customerId,
+          invoiceDate,
+          discountType,
+          discountValue,
+          paymentMethod,
+          cashTendered,
+          rows,
+          nextRowId,
+        })
+      );
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [
+    editingSale,
+    customerId,
+    invoiceDate,
+    discountType,
+    discountValue,
+    paymentMethod,
+    cashTendered,
+    rows,
+    nextRowId,
+  ]);
+
   const clearDraft = () => {
+    try {
+      localStorage.removeItem(FLYERP_SALES_STATE_KEY);
+    } catch {
+      // Ignore storage errors
+    }
     setCustomerId(null);
     setInvoiceDate(getTodayDate());
     setDiscountType('fixed');
@@ -1486,52 +1570,69 @@ export const FlyErpSalesView: React.FC<FlyErpSalesViewProps> = ({
                 {error}
               </p>
             )}
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-white/95 px-4 py-2.5 shadow-[0_10px_28px_-10px_rgba(6,78,59,0.28)] backdrop-blur">
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setSettlementExpanded(true)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  setSettlementExpanded(true);
+                }
+              }}
+              className="flex cursor-pointer flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-700 bg-emerald-700 px-4 py-2.5 text-white shadow-[0_10px_28px_-10px_rgba(6,78,59,0.45)] transition-colors hover:border-emerald-800 hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-emerald-300"
+            >
               <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
                 <div className="min-w-0">
-                  <span className="block text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  <span className="block text-[10px] font-semibold uppercase tracking-wider text-emerald-100">
                     {text('Total', 'الإجمالي')}
                   </span>
-                  <span className="font-mono text-lg font-bold tabular-nums text-emerald-700">
+                  <span className="font-mono text-lg font-bold tabular-nums text-white">
                     {formatMoney(totals.total)}
                   </span>
                 </div>
-                <div className="hidden h-7 w-px bg-slate-200 sm:block" />
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-600">
+                <div className="hidden h-7 w-px bg-white/25 sm:block" />
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-emerald-50">
                   <span>
-                    <strong className="font-mono font-semibold text-slate-900">{rows.length}</strong>{' '}
+                    <strong className="font-mono font-semibold text-white">{rows.length}</strong>{' '}
                     {rows.length === 1 ? text('service', 'خدمة') : text('services', 'خدمات')}
                   </span>
-                  <span className="text-slate-300">·</span>
-                  <span className="max-w-[160px] truncate font-medium text-slate-700">
+                  <span className="text-white/40">·</span>
+                  <span className="max-w-[160px] truncate font-medium text-white">
                     {customer?.name || settings.defaultCustomer || text('Walk-in customer', 'عميل نقدي')}
                   </span>
-                  <span className="hidden text-slate-300 md:inline">·</span>
+                  <span className="hidden text-white/40 md:inline">·</span>
                   <span className="hidden md:inline">
                     {text('VAT', 'الضريبة')}:{' '}
-                    <strong className="font-mono font-semibold text-slate-800">{formatMoney(totals.taxAmount)}</strong>
+                    <strong className="font-mono font-semibold text-white">{formatMoney(totals.taxAmount)}</strong>
                   </span>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setSettlementExpanded(true)}
-                className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-emerald-700 px-5 py-2.5 text-sm font-bold text-white shadow-sm transition-colors hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-emerald-300"
-              >
-                <span>{text('Settle', 'تسوية')}</span>
-                <ChevronUp className="h-4 w-4" aria-hidden="true" />
-              </button>
             </div>
           </div>
         ) : (
         <div className="sticky bottom-2 z-20 mx-2 mt-auto rounded-xl border border-emerald-200 bg-white/95 shadow-[0_-8px_20px_-10px_rgba(6,78,59,0.28)] backdrop-blur">
-          <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-4 py-2 sm:px-5">
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => setSettlementExpanded(false)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                setSettlementExpanded(false);
+              }
+            }}
+            className="flex cursor-pointer items-center justify-between gap-2 border-b border-slate-100 px-4 py-2 transition-colors hover:bg-slate-50/80 sm:px-5"
+          >
             <span className="text-xs font-semibold text-slate-800">
               {text('Customer & Settlement', 'العميل والتسوية')}
             </span>
             <button
               type="button"
-              onClick={() => setSettlementExpanded(false)}
+              onClick={(event) => {
+                event.stopPropagation();
+                setSettlementExpanded(false);
+              }}
               className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-100 hover:text-slate-900"
             >
               <span>{text('Collapse', 'تصغير')}</span>

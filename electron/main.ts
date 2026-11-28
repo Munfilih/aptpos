@@ -1,6 +1,7 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, screen, shell, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, screen, session, shell, type IpcMainInvokeEvent } from 'electron';
 import electronUpdater from 'electron-updater';
 import { createHash, randomBytes } from 'node:crypto';
+import type dgram from 'node:dgram';
 import { mkdir, readFile, stat, unlink, writeFile } from 'fs/promises';
 import path from 'path';
 import http from 'http';
@@ -8,6 +9,20 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
 import type { Server } from 'http';
 import type { UpdateStatus } from './updateStatus.js';
+import {
+  buildClientRecoveryHtml,
+  configureWindowsFirewall,
+  DEFAULT_SERVER_PORT,
+  defaultTerminalConfig,
+  discoverLanServers,
+  getLocalHardwareSystemCode,
+  readTerminalConfig,
+  sanitizeTerminalConfig,
+  startLanDiscoveryResponder,
+  testServerConnection,
+  writeTerminalConfig,
+  type TerminalConfig,
+} from './networkHelper.js';
 
 // pdf-to-printer is CommonJS — load via createRequire to stay compatible with ESM Electron main
 const _require = createRequire(import.meta.url);
@@ -110,6 +125,10 @@ app.setAppUserModelId('com.counterline.pos');
 
 let mainWindow: BrowserWindow | null = null;
 let backendServer: Server | null = null;
+let discoverySocket: dgram.Socket | null = null;
+let activeTerminalConfig: TerminalConfig = defaultTerminalConfig();
+let localHardwareSystemCode = '';
+let isRecoveryScreenActive = false;
 let trustedOrigin = '';
 let updateStatus: UpdateStatus = { state: 'idle' };
 let currentReleaseNotes: string | undefined;
@@ -282,7 +301,17 @@ async function checkForUpdates(): Promise<UpdateStatus> {
   return updateStatus;
 }
 
-function assertTrustedSender(event: IpcMainInvokeEvent): void {
+function assertTrustedSender(event: IpcMainInvokeEvent, allowRecoveryScreen = false): void {
+  if (
+    allowRecoveryScreen &&
+    isRecoveryScreenActive &&
+    mainWindow &&
+    event.sender === mainWindow.webContents &&
+    event.senderFrame === mainWindow.webContents.mainFrame
+  ) {
+    return;
+  }
+
   let senderOrigin = '';
   try {
     senderOrigin = new URL(event.senderFrame?.url || '').origin;
@@ -778,6 +807,13 @@ async function handleAppCloseAttempt(): Promise<void> {
     return;
   }
 
+  // Client Mode PCs do not own the database — close immediately without local DB backup prompts
+  if (activeTerminalConfig.mode === 'client' || isRecoveryScreenActive) {
+    closeApproved = true;
+    mainWindow?.close();
+    return;
+  }
+
   closeHandlingPending = true;
   try {
     const preferences = await readBackupPreferences();
@@ -796,18 +832,58 @@ async function handleAppCloseAttempt(): Promise<void> {
   }
 }
 
-async function startBackendServer(): Promise<number> {
+async function startBackendServer(config: TerminalConfig): Promise<number> {
+  const port = config.serverPort || PRODUCTION_PORT;
   process.env.NODE_ENV = 'production';
   process.env.POS_DATA_DIR = path.join(app.getPath('userData'), 'data');
-  process.env.POS_PORT = String(PRODUCTION_PORT);
-  process.env.POS_HOST = '127.0.0.1';
+  process.env.POS_PORT = String(port);
+  process.env.POS_HOST = config.mode === 'primary-server' ? '0.0.0.0' : '127.0.0.1';
+  process.env.POS_TERMINAL_MODE = config.mode;
   process.env.POS_SERVER_AUTOSTART = 'false';
   delete process.env.POS_TEMPLATE_DB;
 
   const serverModulePath = pathToFileURL(path.join(__dirname, 'server.js')).href;
   const serverModule = await import(serverModulePath) as { startServer: () => Promise<Server> };
   backendServer = await serverModule.startServer();
-  return PRODUCTION_PORT;
+
+  if (config.mode === 'primary-server') {
+    if (discoverySocket) {
+      try {
+        discoverySocket.close();
+      } catch {
+        // Ignore
+      }
+      discoverySocket = null;
+    }
+    discoverySocket = startLanDiscoveryResponder(async () => {
+      const check = await testServerConnection('127.0.0.1', port, 1500);
+      return {
+        port,
+        storeName: check.storeName || 'aptPOS Primary Server',
+        primarySystemCode: check.primarySystemCode || localHardwareSystemCode,
+        serverVersion: check.serverVersion || app.getVersion(),
+      };
+    });
+  }
+
+  return port;
+}
+
+function attachClientIdentityHeaders(targetOrigin: string, systemCode: string, terminalName: string): void {
+  if (!systemCode) return;
+  const normalizedTarget = targetOrigin.replace(/\/+$/, '');
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: [`${normalizedTarget}/*`] },
+    (details, callback) => {
+      const headers = {
+        ...details.requestHeaders,
+        'X-Terminal-System-Code': systemCode,
+        'X-Terminal-Name': terminalName || '',
+        'X-Terminal-Shell-Version': app.getVersion(),
+      };
+      callback({ requestHeaders: headers });
+    }
+  );
 }
 
 function waitForServer(url: string, retries = 30): Promise<void> {
@@ -1504,6 +1580,60 @@ ipcMain.handle('pos:drive:disconnect', async (event) => {
   };
 });
 
+ipcMain.handle('pos:terminal:get-config', (event) => {
+  assertTrustedSender(event, true);
+  return activeTerminalConfig;
+});
+
+ipcMain.handle('pos:terminal:save-config', async (event, rawConfig: unknown) => {
+  assertTrustedSender(event, true);
+  const nextConfig = sanitizeTerminalConfig(rawConfig);
+  if (nextConfig.mode === 'client' && !nextConfig.serverHost) {
+    throw new Error('Enter the Primary Server IP address or hostname.');
+  }
+  const saved = await writeTerminalConfig(app.getPath('userData'), nextConfig);
+  activeTerminalConfig = saved;
+  // Relaunch cleanly into the new mode (Standalone / Primary Server / Client)
+  closeApproved = true;
+  app.relaunch();
+  app.exit(0);
+  return saved;
+});
+
+ipcMain.handle('pos:terminal:get-system-code', (event) => {
+  assertTrustedSender(event, true);
+  if (!localHardwareSystemCode) {
+    localHardwareSystemCode = getLocalHardwareSystemCode();
+  }
+  return localHardwareSystemCode;
+});
+
+ipcMain.handle('pos:terminal:discover-lan', async (event) => {
+  assertTrustedSender(event, true);
+  return discoverLanServers(1800);
+});
+
+ipcMain.handle('pos:terminal:test-connection', async (event, rawOptions: unknown) => {
+  assertTrustedSender(event, true);
+  const opts = rawOptions && typeof rawOptions === 'object'
+    ? (rawOptions as { host?: unknown; port?: unknown })
+    : {};
+  const host = typeof opts.host === 'string' ? opts.host : '';
+  const port = Number(opts.port) || DEFAULT_SERVER_PORT;
+  return testServerConnection(host, port);
+});
+
+ipcMain.handle('pos:terminal:configure-firewall', async (event, rawPort: unknown) => {
+  assertTrustedSender(event, true);
+  const port = typeof rawPort === 'number' && Number.isInteger(rawPort) ? rawPort : DEFAULT_SERVER_PORT;
+  return configureWindowsFirewall(port);
+});
+
+ipcMain.handle('pos:app:get-version', (event) => {
+  assertTrustedSender(event, true);
+  return app.getVersion();
+});
+
 ipcMain.handle('pos:open-external', (event, url: unknown) => {
   assertTrustedSender(event);
   if (typeof url === 'string') openExternalUrl(url);
@@ -1534,6 +1664,14 @@ app.on('before-quit', (event) => {
     clearInterval(scheduledBackupTimer);
     scheduledBackupTimer = null;
   }
+  if (discoverySocket) {
+    try {
+      discoverySocket.close();
+    } catch {
+      // Ignore
+    }
+    discoverySocket = null;
+  }
   if (!backendServer) return;
   backendServer.close((error) => {
     if (error) console.error('Failed to stop the local application server:', error);
@@ -1562,8 +1700,65 @@ if (!app.requestSingleInstanceLock()) {
       } catch (error) {
         console.error('Could not load the saved screen mode; using the launch mode.', error);
       }
+      try {
+        localHardwareSystemCode = getLocalHardwareSystemCode();
+      } catch (error) {
+        console.warn('Could not read hardware System Code in main process:', error);
+      }
+
+      activeTerminalConfig = await readTerminalConfig(app.getPath('userData'));
       initializeAutoUpdater();
-      const port = isDev ? 3000 : await startBackendServer();
+
+      if (!isDev && activeTerminalConfig.mode === 'client') {
+        const host = activeTerminalConfig.serverHost.trim();
+        const port = activeTerminalConfig.serverPort || DEFAULT_SERVER_PORT;
+        const targetOrigin = `http://${host}:${port}`;
+        const connection = await testServerConnection(host, port, 4000);
+        if (!connection.ok) {
+          isRecoveryScreenActive = true;
+          const recoveryHtml = buildClientRecoveryHtml(
+            activeTerminalConfig,
+            localHardwareSystemCode,
+            connection.error || `Could not connect to Primary Server at ${host}:${port}.`
+          );
+          const { workArea } = screen.getPrimaryDisplay();
+          trustedOrigin = '';
+          mainWindow = new BrowserWindow({
+            x: workArea.x,
+            y: workArea.y,
+            width: Math.min(920, workArea.width),
+            height: Math.min(720, workArea.height),
+            title: 'aptPOS — Connect to Primary Server',
+            icon: getAppIconPath(currentScreenMode),
+            backgroundColor: '#0f172a',
+            autoHideMenuBar: true,
+            webPreferences: {
+              preload: path.join(__dirname, 'preload.cjs'),
+              contextIsolation: true,
+              nodeIntegration: false,
+              sandbox: true,
+              webSecurity: true,
+            },
+          });
+          await mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(recoveryHtml)}`);
+          return;
+        }
+        isRecoveryScreenActive = false;
+        attachClientIdentityHeaders(
+          targetOrigin,
+          localHardwareSystemCode,
+          activeTerminalConfig.terminalName
+        );
+        createWindow(targetOrigin, currentScreenMode);
+        if (app.isPackaged) {
+          setTimeout(() => {
+            void checkForUpdates();
+          }, 5000);
+        }
+        return;
+      }
+
+      const port = isDev ? 3000 : await startBackendServer(activeTerminalConfig);
       const targetUrl = isDev
         ? process.env.ELECTRON_START_URL!
         : `http://127.0.0.1:${port}`;

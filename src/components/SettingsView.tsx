@@ -1,4 +1,18 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { ZatcaPhase2Panel } from './ZatcaPhase2Panel';
+import { NetworkTerminalsSection } from './NetworkTerminalsSection';
+import {
+  ALL_ACTION_LABELS,
+  PERMISSION_MODULES,
+  formatPermissionSummary,
+  getDefaultCashierPermissions,
+  getFullAdminPermissions,
+  makePermissionToken,
+  normalizeToGranularPermissions,
+  syncLegacyPermissionTokens,
+  type PermissionAction,
+  type PermissionModuleId,
+} from '../utils/permissions';
 import {
   Check,
   ChevronDown,
@@ -67,6 +81,7 @@ interface SettingsViewProps {
   activeSection: SettingsSectionId;
   onActiveSectionChange: (section: SettingsSectionId) => void;
   showSectionNavigation?: boolean;
+  isAdmin?: boolean;
   isAppAdmin: boolean;
   canRegisterSystem: boolean;
   theme: ThemeMode;
@@ -297,16 +312,38 @@ function getCardDimensionInputs(settings: StoreSettings): Record<CardDimensionFi
 
 interface SettingsSectionTabsProps {
   activeSection: SettingsSectionId | null;
+  isAdmin?: boolean;
   isAppAdmin: boolean;
+  zatcaPhase2Active?: boolean;
   onSelect: (section: SettingsSectionId) => void;
 }
 
 export const SettingsSectionTabs: React.FC<SettingsSectionTabsProps> = ({
   activeSection,
+  isAdmin = false,
   isAppAdmin,
+  zatcaPhase2Active,
   onSelect,
 }) => {
   const { t, isRtl } = useLanguage();
+  const [fetchedPhase2Active, setFetchedPhase2Active] = useState(false);
+
+  useEffect(() => {
+    if (zatcaPhase2Active !== undefined) return;
+    let active = true;
+    void fetch('/api/zatca/status')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { hasProductionCsid?: boolean } | null) => {
+        if (active && data) setFetchedPhase2Active(Boolean(data.hasProductionCsid));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [zatcaPhase2Active]);
+
+  const isZatcaPhase2Active = zatcaPhase2Active ?? fetchedPhase2Active;
+
   const allSections: Array<{
     id: SettingsSectionId;
     label: string;
@@ -314,11 +351,11 @@ export const SettingsSectionTabs: React.FC<SettingsSectionTabsProps> = ({
     { id: 'general', label: isRtl ? 'عام' : 'General' },
     { id: 'business', label: isRtl ? 'الأعمال' : 'Business' },
     { id: 'billing', label: isRtl ? 'الفوترة' : 'Billing' },
-    { id: 'zatca', label: isRtl ? 'الفوترة الإلكترونية' : 'E-Invoicing' },
     { id: 'print', label: isRtl ? 'الطباعة' : 'Print' },
     { id: 'customers', label: isRtl ? 'العملاء' : 'Customers' },
     { id: 'payment', label: isRtl ? 'الدفع' : 'Payment' },
     { id: 'database', label: isRtl ? t.secDatabase : 'Database' },
+    { id: 'network', label: isRtl ? 'الشبكة والأجهزة' : 'Network & Terminals' },
     { id: 'registration', label: isRtl ? 'التسجيل' : 'Registration' },
     { id: 'updates', label: isRtl ? 'التحديثات' : 'Updates' },
     { id: 'users', label: isRtl ? t.secUsersPerms : 'Users' },
@@ -326,9 +363,19 @@ export const SettingsSectionTabs: React.FC<SettingsSectionTabsProps> = ({
   return (
     <div className="settings-section-tabs">
       {allSections
-        .filter((section) => isAppAdmin || section.id !== 'users')
+        .filter((section) => isAppAdmin || isAdmin || section.id !== 'users')
         .map((section) => {
         const active = activeSection === section.id;
+        const isZatca = section.id === 'zatca';
+        const zatcaColorClass = isZatca
+          ? isZatcaPhase2Active
+            ? active
+              ? ' !border-emerald-600 !bg-emerald-600 !text-white'
+              : ' !border-emerald-300 !bg-emerald-50 !text-emerald-700 hover:!bg-emerald-100'
+            : active
+              ? ' !border-red-600 !bg-red-600 !text-white'
+              : ' !border-red-300 !bg-red-50 !text-red-700 hover:!bg-red-100'
+          : '';
         return (
           <button
             key={section.id}
@@ -337,7 +384,7 @@ export const SettingsSectionTabs: React.FC<SettingsSectionTabsProps> = ({
             aria-selected={active}
             onClick={() => onSelect(section.id)}
             title={section.label}
-            className={`settings-section-tab${active ? ' is-active' : ''}`}
+            className={`settings-section-tab${active ? ' is-active' : ''}${zatcaColorClass}`}
           >
             {section.label}
           </button>
@@ -354,6 +401,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   activeSection,
   onActiveSectionChange,
   showSectionNavigation = true,
+  isAdmin = false,
   isAppAdmin,
   canRegisterSystem,
   theme,
@@ -924,18 +972,35 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
+  const [zatcaPhase2Active, setZatcaPhase2Active] = useState<boolean | undefined>(undefined);
+
   useEffect(() => {
-    if (isAppAdmin) void fetchUsers();
-  }, [isAppAdmin]);
+    let active = true;
+    void fetch('/api/zatca/status')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { hasProductionCsid?: boolean } | null) => {
+        if (active && data) setZatcaPhase2Active(Boolean(data.hasProductionCsid));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const canManageUsers = isAppAdmin || isAdmin;
+
+  useEffect(() => {
+    if (canManageUsers) void fetchUsers();
+  }, [canManageUsers]);
 
   useEffect(() => {
     if (
-      !isAppAdmin &&
-      activeSettingsSection === 'users'
+      activeSettingsSection === 'zatca' ||
+      (!canManageUsers && activeSettingsSection === 'users')
     ) {
       onActiveSectionChange('general');
     }
-  }, [activeSettingsSection, isAppAdmin, onActiveSectionChange]);
+  }, [activeSettingsSection, canManageUsers, onActiveSectionChange]);
 
   useEffect(() => {
     const api = window.electronAPI;
@@ -968,7 +1033,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       password: '',
       role: 'cashier',
       displayName: '',
-      permissions: ['register', 'sales', 'reports'],
+      permissions: getDefaultCashierPermissions(),
     });
     setUserFormError(null);
     setUserModalOpen(true);
@@ -982,12 +1047,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       password: '', // Leave blank to keep existing password
       role: user.role,
       displayName: user.displayName,
-      permissions: user.permissions && user.permissions.length > 0
-        ? [...new Set([
-            ...user.permissions,
-            ...(user.permissions.includes('sales') ? ['reports'] : []),
-          ])]
-        : ['register', 'sales', 'reports'],
+      permissions:
+        user.role === 'admin'
+          ? getFullAdminPermissions()
+          : normalizeToGranularPermissions(user.permissions),
     });
     setUserFormError(null);
     setUserModalOpen(true);
@@ -1032,37 +1095,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         throw new Error('Password is required for new accounts.');
       }
 
-      const allPossiblePerms = [
-        'register',
-        'sales',
-        'edit-sales',
-        'sales-return',
-        'manage-sales-returns',
-        'delete-sales',
-        'inventory',
-        'purchases',
-        'customers',
-        'vendors',
-        'accounts',
-        'reports',
-        'settings',
-      ];
-      const requestedPerms = new Set(userFormData.permissions);
-      if (requestedPerms.has('edit-sales')) {
-        requestedPerms.add('register');
-        requestedPerms.add('sales');
-      }
-      if (
-        requestedPerms.has('sales-return') ||
-        requestedPerms.has('manage-sales-returns') ||
-        requestedPerms.has('delete-sales')
-      ) {
-        requestedPerms.add('sales');
-      }
-      if (requestedPerms.has('manage-sales-returns')) requestedPerms.add('sales-return');
       const effectivePerms = userFormData.role === 'admin'
-        ? allPossiblePerms
-        : (requestedPerms.size > 0 ? [...requestedPerms] : ['register']);
+        ? getFullAdminPermissions()
+        : syncLegacyPermissionTokens(userFormData.permissions.filter((p) => p.includes(':')));
 
       if (editingUser) {
         const payload: any = {
@@ -1428,7 +1463,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         >
           <SettingsSectionTabs
             activeSection={activeSettingsSection}
+            isAdmin={isAdmin}
             isAppAdmin={isAppAdmin}
+            zatcaPhase2Active={zatcaPhase2Active}
             onSelect={onActiveSectionChange}
           />
         </nav>
@@ -3292,14 +3329,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <button
                       type="button"
                       onClick={() => setForm((cur) => ({ ...cur, zatcaPhase: '1' }))}
-                      className="flex flex-col items-start rounded-xl border border-emerald-600 bg-emerald-50/70 p-3.5 text-start ring-1 ring-emerald-500 transition-colors"
+                      className={`flex flex-col items-start rounded-xl border p-3.5 text-start transition-colors ${
+                        (form.zatcaPhase || '1') === '1'
+                          ? 'border-emerald-600 bg-emerald-50/70 ring-1 ring-emerald-500'
+                          : 'border-slate-200 bg-white hover:border-slate-300'
+                      }`}
                     >
                       <div className="flex w-full items-center justify-between gap-2">
                         <span className="text-xs font-bold text-emerald-900">
                           {isRtl ? 'المرحلة 1 — الإصدار' : 'Phase 1 — Generation'}
                         </span>
-                        <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-[10px] font-bold text-white">
-                          {isRtl ? 'نشط' : 'Active'}
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                            (form.zatcaPhase || '1') === '1'
+                              ? 'bg-emerald-700 text-white'
+                              : 'bg-slate-200 text-slate-600'
+                          }`}
+                        >
+                          {(form.zatcaPhase || '1') === '1'
+                            ? isRtl ? 'نشط' : 'Active'
+                            : isRtl ? 'اختر' : 'Select'}
                         </span>
                       </div>
                       <span className="mt-1 text-[11px] text-slate-600">
@@ -3309,26 +3358,43 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       </span>
                     </button>
 
-                    <div
-                      aria-disabled="true"
-                      className="flex cursor-not-allowed flex-col items-start rounded-xl border border-slate-200 bg-slate-50/90 p-3.5 text-start opacity-75"
+                    <button
+                      type="button"
+                      onClick={() => setForm((cur) => ({ ...cur, zatcaPhase: '2' }))}
+                      className={`flex flex-col items-start rounded-xl border p-3.5 text-start transition-colors ${
+                        form.zatcaPhase === '2'
+                          ? 'border-emerald-600 bg-emerald-50/70 ring-1 ring-emerald-500'
+                          : 'border-slate-200 bg-white hover:border-slate-300'
+                      }`}
                     >
                       <div className="flex w-full items-center justify-between gap-2">
-                        <span className="text-xs font-bold text-slate-600">
+                        <span className="text-xs font-bold text-slate-900">
                           {isRtl ? 'المرحلة 2 — الربط والتكامل' : 'Phase 2 — Integration'}
                         </span>
-                        <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-bold text-slate-600">
-                          {isRtl ? 'غير نشط' : 'Inactive'}
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                            form.zatcaPhase === '2'
+                              ? 'bg-emerald-700 text-white'
+                              : 'bg-slate-200 text-slate-600'
+                          }`}
+                        >
+                          {form.zatcaPhase === '2'
+                            ? isRtl ? 'نشط' : 'Active'
+                            : isRtl ? 'تفعيل' : 'Enable'}
                         </span>
                       </div>
-                      <span className="mt-1 text-[11px] font-medium text-amber-800">
+                      <span className="mt-1 text-[11px] text-slate-600">
                         {isRtl
-                          ? 'أنت غير مرتبط بالمرحلة 2. يرجى التواصل مع فريق aptPOS وسيرشدونك.'
-                          : 'You are not integrated with Phase 2. Please contact team aptPOS and they will guide you.'}
+                          ? 'الربط المباشر مع فاتورة (B2B اعتماد فوري، B2C إبلاغ، إشعار دائن ومدين).'
+                          : 'Direct Fatoora integration (B2B real-time clearance, B2C reporting, Credit & Debit notes).'}
                       </span>
-                    </div>
+                    </button>
                   </div>
                 </section>
+
+                {form.zatcaPhase === '2' && (
+                  <ZatcaPhase2Panel isRtl={isRtl} onStatusChange={setZatcaPhase2Active} />
+                )}
 
                 {/* ZATCA Settings */}
                 <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs space-y-4">
@@ -3740,6 +3806,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
             )}
 
+            {/* SECTION: NETWORK & MULTI-TERMINAL LAN */}
+            {activeSettingsSection === 'network' && <NetworkTerminalsSection />}
+
             {/* SECTION 5: DATABASE MAINTENANCE, BACKUP & RESTORE */}
             {activeSettingsSection === 'database' && (
               <div className="space-y-4">
@@ -4100,7 +4169,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             )}
 
             {/* SECTION: USERS & PERMISSIONS */}
-            {isAppAdmin && activeSettingsSection === 'users' && (
+            {canManageUsers && activeSettingsSection === 'users' && (
               <div className="space-y-4">
                 <div className="px-1">
                   <h2 className="text-[15px] font-semibold text-[#1f1f1f] flex items-center gap-2">
@@ -4158,15 +4227,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
                 {/* User list */}
                 <div className="settings-item-list">
-                  {usersLoading ? (
-                    <div className="py-8 text-center text-slate-400 text-xs">Loading accounts…</div>
-                  ) : usersList.length === 0 ? (
-                    <div className="py-8 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-lg">
-                      No user accounts found.
-                    </div>
-                  ) : (
-                    usersList.map((u) => {
-                      const isAdmin = u.role === 'admin';
+                  {(() => {
+                    const visibleUsersList = isAppAdmin
+                      ? usersList
+                      : usersList.filter((u) => u.username.toLowerCase() !== 'aptadmin');
+                    if (usersLoading) {
+                      return <div className="py-8 text-center text-slate-400 text-xs">Loading accounts…</div>;
+                    }
+                    if (visibleUsersList.length === 0) {
+                      return (
+                        <div className="py-8 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-lg">
+                          No user accounts found.
+                        </div>
+                      );
+                    }
+                    return visibleUsersList.map((u) => {
+                      const isAdminUser = u.role === 'admin';
                       const isPrimaryAdmin = u.username.toLowerCase() === 'aptadmin';
                       const isRegisteredPrimary =
                         settings.registeredSystem &&
@@ -4177,8 +4253,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           className="settings-item-row"
                         >
                             <div className="settings-item-copy flex items-center gap-3">
-                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${isAdmin ? 'bg-blue-100 text-blue-700' : 'bg-slate-200 text-slate-600'}`}>
-                              {isAdmin ? <Shield className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${isAdminUser ? 'bg-blue-100 text-blue-700' : 'bg-slate-200 text-slate-600'}`}>
+                              {isAdminUser ? <Shield className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
                             </div>
                             <div className="min-w-0">
                               <div className="flex items-center gap-2 flex-wrap">
@@ -4200,11 +4276,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                               </div>
                               <div className="text-[11px] text-slate-500 mt-0.5 truncate">
                                 {u.displayName}
-                                {u.permissions && u.permissions.length > 0 && (
-                                  <span className="ml-1.5 text-slate-400">
-                                    · {u.permissions.join(', ')}
-                                  </span>
-                                )}
+                                <span className="ml-1.5 text-slate-400">
+                                  · {u.role === 'admin'
+                                    ? (isRtl ? 'صلاحيات كاملة' : 'Full Access')
+                                    : formatPermissionSummary(u.permissions, isRtl)}
+                                </span>
                               </div>
                             </div>
                           </div>
@@ -4232,8 +4308,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           </div>
                         </div>
                       );
-                    })
-                  )}
+                    });
+                  })()}
                 </div>
 
                 {/* Add new user button */}
@@ -4275,7 +4351,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
       {/* Reset Database Confirmation Modal */}
       {showResetModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
+        >
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-red-100 text-red-700 flex items-center justify-center shrink-0">
@@ -4530,8 +4610,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
       {/* ===== User Add/Edit Modal ===== */}
       {userModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-slate-200 overflow-hidden">
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+        >
+          <div className="bg-white rounded-2xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-y-auto">
             {/* Header */}
             <div className="flex items-center justify-between p-5 border-b border-slate-200">
               <div className="flex items-center gap-2">
@@ -4623,9 +4707,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         ...userFormData,
                         role,
                         permissions: role === 'admin'
-                          ? ['register', 'inventory', 'purchases', 'customers', 'vendors', 'accounts', 'reports', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'settings']
+                          ? getFullAdminPermissions()
                           : role === 'cashier'
-                          ? ['register', 'sales', 'reports']
+                          ? getDefaultCashierPermissions()
                           : userFormData.permissions,
                       })}
                       className={`py-2 px-3 rounded-lg border text-xs font-semibold capitalize transition-all ${
@@ -4644,77 +4728,189 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
               </div>
 
-              {/* Permissions (only for custom / cashier roles) */}
-              {userFormData.role !== 'admin' && (
-                <div className="space-y-2">
-                  <label className="block font-semibold text-slate-700">
-                    Access Permissions
-                  </label>
-                  <div className="grid grid-cols-2 gap-1.5 p-3 bg-slate-50 border border-slate-200 rounded-xl">
-                    {(['register', 'sales', 'edit-sales', 'sales-return', 'manage-sales-returns', 'delete-sales', 'inventory', 'purchases', 'customers', 'vendors', 'accounts', 'reports', 'settings'] as const).map((perm) => {
-                      const checked = userFormData.permissions.includes(perm);
-                      return (
-                        <label key={perm} className="flex items-center gap-2 cursor-pointer select-none py-1 px-2 hover:bg-slate-100 rounded-lg">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => {
-                              let next = checked
-                                ? userFormData.permissions.filter((p) => p !== perm)
-                                : [...userFormData.permissions, perm];
-                              if (perm === 'edit-sales' && !checked) {
-                                next = [...new Set([...next, 'register', 'sales'])];
-                              } else if (
-                                (perm === 'sales-return' ||
-                                  perm === 'manage-sales-returns' ||
-                                  perm === 'delete-sales') &&
-                                !checked
-                              ) {
-                                next = [...new Set([...next, 'sales'])];
-                                if (perm === 'manage-sales-returns') {
-                                  next = [...new Set([...next, 'sales-return'])];
-                                }
-                              } else if (perm === 'sales-return' && checked) {
-                                next = next.filter((p) => p !== 'manage-sales-returns');
-                              } else if (perm === 'register' && checked) {
-                                next = next.filter((p) => p !== 'edit-sales');
-                              } else if (perm === 'sales' && checked) {
-                                next = next.filter(
-                                  (p) =>
-                                    p !== 'edit-sales' &&
-                                    p !== 'sales-return' &&
-                                    p !== 'manage-sales-returns' &&
-                                    p !== 'delete-sales'
-                                );
-                              }
-                              setUserFormData({ ...userFormData, permissions: next });
-                            }}
-                            className="w-3.5 h-3.5 accent-blue-700"
-                          />
-                          <span className="font-medium text-slate-700 capitalize">
-                            {perm === 'edit-sales'
-                              ? 'Edit Sales'
-                              : perm === 'sales-return'
-                                ? 'Sales Return'
-                                : perm === 'manage-sales-returns'
-                                  ? 'Manage Sales Returns'
-                                : perm === 'delete-sales'
-                                  ? 'Delete Sales'
-                                : perm === 'accounts'
-                                  ? 'Accounts'
-                                : perm === 'reports'
-                                  ? 'Reports'
-                                  : perm}
-                          </span>
-                        </label>
-                      );
-                    })}
+              {/* Granular Module × Action Access Control Matrix (for custom / cashier roles) */}
+              {userFormData.role !== 'admin' && (() => {
+                const actionColumns: PermissionAction[] = ['view', 'add', 'edit', 'delete', 'print'];
+                const toggleModuleAll = (moduleId: PermissionModuleId, actions: PermissionAction[], enable: boolean) => {
+                  const prefix = `${moduleId}:`;
+                  const withoutModule = userFormData.permissions.filter((p) => !p.startsWith(prefix));
+                  const nextGranular = enable
+                    ? [...withoutModule, ...actions.map((a) => makePermissionToken(moduleId, a))]
+                    : withoutModule;
+                  setUserFormData({
+                    ...userFormData,
+                    permissions: syncLegacyPermissionTokens(nextGranular),
+                  });
+                };
+
+                const toggleSingleAction = (
+                  moduleId: PermissionModuleId,
+                  action: PermissionAction,
+                  currentlyChecked: boolean
+                ) => {
+                  const token = makePermissionToken(moduleId, action);
+                  const viewToken = makePermissionToken(moduleId, 'view');
+                  let nextGranular = userFormData.permissions.filter((p) => p.includes(':'));
+                  if (currentlyChecked) {
+                    if (action === 'view') {
+                      // Turning off View disables the entire module
+                      nextGranular = nextGranular.filter((p) => !p.startsWith(`${moduleId}:`));
+                    } else {
+                      nextGranular = nextGranular.filter((p) => p !== token);
+                    }
+                  } else {
+                    nextGranular = [...new Set([...nextGranular, token, viewToken])];
+                  }
+                  setUserFormData({
+                    ...userFormData,
+                    permissions: syncLegacyPermissionTokens(nextGranular),
+                  });
+                };
+
+                return (
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <label className="block font-semibold text-slate-700">
+                        {isRtl ? 'صلاحيات الوصول لكل قسم' : 'Module Access Control'}
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setUserFormData({
+                              ...userFormData,
+                              permissions: getFullAdminPermissions(),
+                            })
+                          }
+                          className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-blue-50 hover:text-blue-700"
+                        >
+                          {isRtl ? 'تفعيل الكل' : 'Enable All'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setUserFormData({
+                              ...userFormData,
+                              permissions: syncLegacyPermissionTokens(
+                                PERMISSION_MODULES.map((m) => makePermissionToken(m.id, 'view'))
+                              ),
+                            })
+                          }
+                          className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-blue-50 hover:text-blue-700"
+                        >
+                          {isRtl ? 'عرض فقط' : 'View Only'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setUserFormData({
+                              ...userFormData,
+                              permissions: [],
+                            })
+                          }
+                          className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-rose-600 hover:bg-rose-50"
+                        >
+                          {isRtl ? 'مسح الكل' : 'Clear All'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                      <table className="w-full text-start text-[11px]">
+                        <thead className="border-b border-slate-200 bg-slate-50 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                          <tr>
+                            <th className="px-3 py-2 text-start">
+                              {isRtl ? 'القسم' : 'Module'}
+                            </th>
+                            {actionColumns.map((col) => (
+                              <th key={col} className="px-2 py-2 text-center">
+                                {isRtl ? ALL_ACTION_LABELS[col].ar : ALL_ACTION_LABELS[col].en}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {PERMISSION_MODULES.map((mod) => {
+                            const enabledCount = mod.actions.filter((a) =>
+                              userFormData.permissions.includes(makePermissionToken(mod.id, a))
+                            ).length;
+                            const allEnabled = enabledCount === mod.actions.length;
+                            const partial = enabledCount > 0 && !allEnabled;
+                            return (
+                              <tr
+                                key={mod.id}
+                                className={`transition-colors ${
+                                  enabledCount > 0 ? 'bg-blue-50/25' : 'hover:bg-slate-50'
+                                }`}
+                              >
+                                <td className="px-3 py-2">
+                                  <label className="flex cursor-pointer items-center gap-2 select-none">
+                                    <input
+                                      type="checkbox"
+                                      checked={allEnabled}
+                                      ref={(el) => {
+                                        if (el) el.indeterminate = partial;
+                                      }}
+                                      onChange={() => toggleModuleAll(mod.id, mod.actions, !allEnabled)}
+                                      className="h-3.5 w-3.5 accent-blue-700"
+                                    />
+                                    <div className="min-w-0">
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="font-semibold text-slate-800">
+                                          {isRtl ? mod.labelAr : mod.label}
+                                        </span>
+                                        {allEnabled && (
+                                          <span className="rounded bg-emerald-100 px-1 py-0.2 text-[9px] font-bold text-emerald-700">
+                                            {isRtl ? 'كامل' : 'Full'}
+                                          </span>
+                                        )}
+                                        {partial && (
+                                          <span className="rounded bg-amber-100 px-1 py-0.2 text-[9px] font-bold text-amber-800">
+                                            {isRtl ? 'جزئي' : 'Partial'}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </label>
+                                </td>
+                                {actionColumns.map((col) => {
+                                  const supported = mod.actions.includes(col);
+                                  if (!supported) {
+                                    return (
+                                      <td key={col} className="px-2 py-2 text-center text-slate-300">
+                                        —
+                                      </td>
+                                    );
+                                  }
+                                  const checked = userFormData.permissions.includes(
+                                    makePermissionToken(mod.id, col)
+                                  );
+                                  return (
+                                    <td key={col} className="px-2 py-2 text-center">
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        aria-label={`${mod.label} ${col}`}
+                                        onChange={() => toggleSingleAction(mod.id, col, checked)}
+                                        className="h-3.5 w-3.5 cursor-pointer accent-blue-700"
+                                      />
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      {isRtl
+                        ? 'فعّل القسم بالكامل أو اختر صلاحيات جزئية (عرض، إضافة، تعديل، حذف، طباعة) لكل قسم.'
+                        : 'Toggle a module to grant/revoke full access, or pick individual View, Add, Edit, Delete, and Print actions.'}
+                    </p>
                   </div>
-                  <p className="text-[11px] text-slate-500">
-                    Edit Sales requires Register and Sales History access. Sales Return, Manage Sales Returns, and Delete Sales require Sales History access.
-                  </p>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Footer */}
               <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-200">

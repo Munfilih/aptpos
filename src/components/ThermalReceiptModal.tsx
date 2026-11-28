@@ -15,6 +15,7 @@ interface ThermalReceiptModalProps {
   returnVouchers: SalesReturnVoucher[];
   settings: StoreSettings;
   queuedOffline?: boolean;
+  canPrint?: boolean;
   onClose: () => void;
 }
 
@@ -23,6 +24,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   returnVouchers,
   settings,
   queuedOffline,
+  canPrint = true,
   onClose,
 }) => {
   const { language } = useLanguage();
@@ -382,38 +384,42 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
             )}
           </div>
           <div className="flex items-center gap-2">
+            {canPrint && (
+              <>
+                <button
+                  type="button"
+                  disabled={isPrintingReceipt}
+                  onClick={() => void openPrintPreview()}
+                  className="inline-flex items-center gap-1.5 px-3 py-2.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap"
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'معاينة' : 'Preview'}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isPrintingReceipt}
+                  onClick={() => void handlePrintAndClose()}
+                  className={autoPrint
+                    ? 'inline-flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap shadow-sm'
+                    : 'inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold text-blue-700 bg-white border border-blue-200 hover:bg-blue-50 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap'}
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>
+                    {isPrintingReceipt
+                      ? (isAr ? 'جارٍ الطباعة...' : 'Printing...')
+                      : (isAr ? 'طباعة الفاتورة' : 'Print Receipt')}
+                  </span>
+                </button>
+              </>
+            )}
             <button
-              type="button"
-              disabled={isPrintingReceipt}
-              onClick={() => void openPrintPreview()}
-              className="inline-flex items-center gap-1.5 px-3 py-2.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap"
-            >
-              <Eye className="w-3.5 h-3.5" />
-              <span>{isAr ? 'معاينة' : 'Preview'}</span>
-            </button>
-            <button
-              ref={autoPrint ? primaryActionBtnRef : undefined}
-              type="button"
-              disabled={isPrintingReceipt}
-              onClick={() => void handlePrintAndClose()}
-              className={autoPrint
-                ? 'inline-flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap shadow-sm'
-                : 'inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold text-blue-700 bg-white border border-blue-200 hover:bg-blue-50 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap'}
-            >
-              <Printer className="w-3.5 h-3.5" />
-              <span>
-                {isPrintingReceipt
-                  ? (isAr ? 'جارٍ الطباعة...' : 'Printing...')
-                  : (isAr ? 'طباعة الفاتورة' : 'Print Receipt')}
-              </span>
-            </button>
-            <button
-              ref={autoPrint ? undefined : primaryActionBtnRef}
+              ref={primaryActionBtnRef}
+              autoFocus
               type="button"
               onClick={onClose}
               className={autoPrint
-                ? 'inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors whitespace-nowrap'
-                : 'inline-flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors whitespace-nowrap shadow-sm'}
+                ? 'inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 rounded-lg transition-colors whitespace-nowrap'
+                : 'inline-flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 rounded-lg transition-colors whitespace-nowrap shadow-sm'}
             >
               <Check className="w-3.5 h-3.5" />
               <span>{isAr ? 'تم' : 'Done'}</span>

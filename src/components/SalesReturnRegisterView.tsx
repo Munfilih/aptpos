@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import type {
   CreateSalesReturnVoucherInput,
+  Customer,
   PaymentMethod,
   Sale,
   SalesReturnVoucher,
@@ -25,11 +26,13 @@ import { getPaymentMethods } from '../utils/paymentMethods';
 interface SalesReturnRegisterViewProps {
   initialSales: Sale[];
   sales: Sale[];
+  customers?: Customer[];
   settings: StoreSettings;
   cashierName: string;
   editingVoucher?: SalesReturnVoucher;
   onCancel: () => void;
   onOpenReturnHistory: () => void;
+  onInvoiceTypeChange?: (type: 'B2B' | 'B2C') => void;
   onProcessVoucher: (
     input: Omit<CreateSalesReturnVoucherInput, 'cashierName'>
   ) => Promise<SalesReturnVoucher>;
@@ -88,16 +91,28 @@ function getSaleWithoutVoucher(sale: Sale, voucher?: SalesReturnVoucher): Sale {
 export const SalesReturnRegisterView: React.FC<SalesReturnRegisterViewProps> = ({
   initialSales,
   sales,
+  customers = [],
   settings,
   cashierName,
   editingVoucher,
   onCancel,
   onOpenReturnHistory,
+  onInvoiceTypeChange,
   onProcessVoucher,
   onUpdateVoucher,
 }) => {
   const { isRtl } = useLanguage();
   const [selectedSales, setSelectedSales] = useState(initialSales);
+
+  useEffect(() => {
+    const primarySale = selectedSales[0];
+    const matched = primarySale
+      ? customers.find((c) => c.id === primarySale.customerId) ||
+        customers.find((c) => c.name.trim() === primarySale.customerName.trim())
+      : undefined;
+    const isB2B = Boolean(matched?.vatNumber && /^\d{15}$/.test(matched.vatNumber.trim()));
+    onInvoiceTypeChange?.(isB2B ? 'B2B' : 'B2C');
+  }, [selectedSales, customers, onInvoiceTypeChange]);
   const [returnQuantities, setReturnQuantities] = useState(() =>
     getInitialQuantities(initialSales, editingVoucher)
   );

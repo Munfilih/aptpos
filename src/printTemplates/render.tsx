@@ -401,8 +401,12 @@ export async function createVoucherTemplateJob(
         },
       }
     : payload.context;
-  const showQr = documentType === 'sales-invoice' && settings.invoiceShowQrCode !== false;
-  const qrPayload = payload.context.voucher.eInvoiceQrCodePhase1;
+  const showQr = (documentType === 'sales-invoice' || documentType === 'sales-return') && settings.invoiceShowQrCode !== false;
+  const phase2QrPayload = payload.context.voucher.eInvoiceQrCodePhase2;
+  const qrPayload =
+    settings.zatcaPhase === '2' && typeof phase2QrPayload === 'string' && phase2QrPayload.trim()
+      ? phase2QrPayload
+      : payload.context.voucher.eInvoiceQrCodePhase1;
   const resolvedQrDataUrl = showQr
     ? qrDataUrl || (
         typeof qrPayload === 'string' && qrPayload.trim()

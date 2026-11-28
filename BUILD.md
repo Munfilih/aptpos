@@ -38,7 +38,7 @@ Runs in sequence:
 2. `electron:compile` — TypeScript → `dist-electron/` + esbuild server bundle
 3. `electron-builder --win nsis --x64` — packages and creates the NSIS installer
 
-Output: `release\aptPOS-Setup-<version>.exe` (version is read from `package.json`; current: `1.0.36`)
+Output: `release\aptPOS-Setup-<version>.exe` (version is read from `package.json`; current: `1.0.45`)
 
 The installer creates one aptPOS shortcut. Choose aptERP, aptPOS, or aptRPOS in Settings → Theme → Default Screen Mode, then confirm the backup and restart. The app remembers the selected mode and updates the window title, icon, and login branding on launch. Previous mode-specific install-folder shortcuts are removed during installation.
 

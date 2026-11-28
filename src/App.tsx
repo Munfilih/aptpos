@@ -5,6 +5,7 @@ import { RegisterView } from './components/RegisterView';
 import { ErpSalesView } from './components/ErpSalesView';
 import { FlyErpSalesView } from './components/FlyErpSalesView';
 import { InventoryView } from './components/InventoryView';
+import { BarcodePrintView } from './components/BarcodePrintView';
 import { PurchasesView } from './components/PurchasesView';
 import {
   PurchaseReturnHistoryView,
@@ -16,6 +17,7 @@ import { SalesReturnRegisterView } from './components/SalesReturnRegisterView';
 import { SalesReturnHistoryView } from './components/SalesReturnHistoryView';
 import { ReportsView } from './components/ReportsView';
 import { SettingsView } from './components/SettingsView';
+import { ZatcaView } from './components/ZatcaView';
 import { FilesView } from './components/FilesView';
 import { LedgerView } from './components/LedgerView';
 import { ShiftView } from './components/ShiftView';
@@ -23,6 +25,20 @@ import { ThermalReceiptModal } from './components/ThermalReceiptModal';
 import { FlyErpSaleCompletionModal } from './components/FlyErpSaleCompletionModal';
 import { LoginForm } from './components/LoginForm';
 import { DemoRegistrationWindow } from './components/DemoRegistrationWindow';
+import {
+  AdditionalSystemRegistrationModal,
+  type TerminalRegistrationBlockInfo,
+} from './components/AdditionalSystemRegistrationModal';
+import { PwaStatusBar } from './components/PwaStatusBar';
+import {
+  applyLocalTerminalPrinterOverrides,
+  saveLocalTerminalPrinterPrefsFromSettings,
+} from './utils/terminalLocalPrefs';
+import {
+  buildPwaEventSourceUrl,
+  getOrCreatePwaSystemCode,
+  isRemoteLanBrowser,
+} from './utils/pwaClient';
 import { LanguageProvider, useLanguage } from './i18n/LanguageContext';
 import type {
   AppComponentId,
@@ -57,6 +73,7 @@ import {
 } from './utils/appScreenMode';
 import { getSaleBalanceDue } from './utils/saleBalances';
 import { getInvoiceDateTime, toLocalDateKey } from './utils/dateFilters';
+import { hasAnyModuleAccess, hasModuleAction } from './utils/permissions';
 
 const RPOS_TICKET_WIDTH_KEY = 'counterline_rpos_ticket_width';
 const DEFAULT_RPOS_TICKET_WIDTH = 320;
@@ -279,8 +296,17 @@ export function App() {
   const [accountsSubtab, setAccountsSubtab] = useState<'ledger' | 'customers' | 'vendors' | 'payments'>('ledger');
   const [openLauncherAfterLogin, setOpenLauncherAfterLogin] = useState(false);
   const [flyErpSideNavOpen, setFlyErpSideNavOpen] = useState(
-    () => typeof window !== 'undefined' && window.innerWidth >= 1920
+    () => typeof window !== 'undefined' && window.innerWidth >= 1280
   );
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth >= 1280) {
+        setFlyErpSideNavOpen(true);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
   const [loginDemoRegistration, setLoginDemoRegistration] = useState<{
     user: UserSession;
     status: DemoAccessStatus;
@@ -319,6 +345,9 @@ export function App() {
   const [purchases, setPurchases] = useState<PurchaseEntry[]>([]);
   const [purchaseReturnVouchers, setPurchaseReturnVouchers] = useState<PurchaseReturnVoucher[]>([]);
   const [settings, setSettings] = useState<StoreSettings>(DEFAULT_SETTINGS);
+  const [isClientTerminal, setIsClientTerminal] = useState(false);
+  const [terminalBlockInfo, setTerminalBlockInfo] = useState<TerminalRegistrationBlockInfo | null>(null);
+  const [billingInvoiceType, setBillingInvoiceType] = useState<'B2B' | 'B2C'>('B2C');
   const [purchaseVendor, setPurchaseVendor] = useState<{
     name: string;
     taxNumber: string;
@@ -460,6 +489,52 @@ export function App() {
     return () => window.removeEventListener('keydown', handleProductShortcut);
   }, [currentUser]);
 
+  const checkTerminalAuthorization = useCallback(async () => {
+    try {
+      const response = await fetch('/api/terminals/status', { cache: 'no-store' });
+      if (!response.ok) return;
+      const data = (await response.json()) as {
+        registered?: boolean;
+        status?: string;
+        demoStatus?: TerminalRegistrationBlockInfo['demoStatus'];
+        expiresAt?: string | null;
+        isPrimary?: boolean;
+        clientSystemCode?: string;
+        primarySystemCode?: string;
+        storeName?: string;
+        terminalName?: string;
+      };
+      const clientMode = data.isPrimary === false;
+      setIsClientTerminal(clientMode);
+      if (clientMode && !data.registered) {
+        let localCode = data.clientSystemCode || '';
+        if (!localCode && window.electronAPI?.getLocalSystemCode) {
+          localCode = await window.electronAPI.getLocalSystemCode().catch(() => '');
+        }
+        if (!localCode && isRemoteLanBrowser()) {
+          localCode = getOrCreatePwaSystemCode();
+        }
+        setTerminalBlockInfo({
+          code: data.status === 'blocked' ? 'TERMINAL_BLOCKED' : 'TERMINAL_NOT_REGISTERED',
+          clientSystemCode: localCode,
+          primarySystemCode: data.primarySystemCode || '',
+          storeName: data.storeName || 'aptPOS Primary Server',
+          terminalName: data.terminalName || '',
+          demoStatus: data.demoStatus,
+          expiresAt: data.expiresAt ?? null,
+        });
+      } else {
+        setTerminalBlockInfo(null);
+      }
+    } catch {
+      // Ignore transient network errors
+    }
+  }, []);
+
+  useEffect(() => {
+    void checkTerminalAuthorization();
+  }, [checkTerminalAuthorization]);
+
   const fetchAll = useCallback(async () => {
     try {
       const [
@@ -484,9 +559,40 @@ export function App() {
         fetch('/api/cashbook'),
       ]);
 
+      if (setRes.status === 403 || prodRes.status === 403) {
+        const blockedRes = setRes.status === 403 ? setRes : prodRes;
+        const errBody = (await blockedRes.json().catch(() => null)) as {
+          code?: string;
+          clientSystemCode?: string;
+          primarySystemCode?: string;
+          storeName?: string;
+          terminalName?: string;
+          demoStatus?: TerminalRegistrationBlockInfo['demoStatus'];
+          expiresAt?: string | null;
+          error?: string;
+        } | null;
+        if (errBody?.code === 'TERMINAL_NOT_REGISTERED' || errBody?.code === 'TERMINAL_BLOCKED') {
+          setIsClientTerminal(true);
+          setTerminalBlockInfo({
+            code: errBody.code,
+            clientSystemCode: errBody.clientSystemCode || '',
+            primarySystemCode: errBody.primarySystemCode || '',
+            storeName: errBody.storeName || 'aptPOS Primary Server',
+            terminalName: errBody.terminalName || '',
+            demoStatus: errBody.demoStatus,
+            expiresAt: errBody.expiresAt ?? null,
+            message: errBody.error,
+          });
+          return;
+        }
+      }
+
       if (prodRes.ok) setProducts(await prodRes.json());
       if (salesRes.ok) setSales(await salesRes.json());
-      if (setRes.ok) setSettings(await setRes.json());
+      if (setRes.ok) {
+        const loadedSettings = (await setRes.json()) as StoreSettings;
+        setSettings(applyLocalTerminalPrinterOverrides(loadedSettings, isClientTerminal));
+      }
       if (custRes.ok) setCustomers(await custRes.json());
       if (vendRes.ok) setVendors(await vendRes.json());
       if (purchRes.ok) setPurchases(await purchRes.json());
@@ -512,15 +618,134 @@ export function App() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isClientTerminal]);
 
   useEffect(() => {
-    if (currentUser) {
+    if (currentUser && !terminalBlockInfo) {
       fetchAll();
     } else {
       setLoading(false);
     }
-  }, [currentUser, fetchAll]);
+  }, [currentUser, terminalBlockInfo, fetchAll]);
+
+  // Real-time multi-terminal LAN sync via Server-Sent Events (/api/events)
+  useEffect(() => {
+    if (!currentUser || terminalBlockInfo) return;
+    if (typeof EventSource === 'undefined') return;
+
+    let closed = false;
+    const pendingResources = new Set<string>();
+    let debounceTimer: number | null = null;
+
+    const flushPending = async () => {
+      if (closed || pendingResources.size === 0) return;
+      const batch = new Set(pendingResources);
+      pendingResources.clear();
+
+      try {
+        if (batch.has('products') || batch.has('inventory-options')) {
+          const r = await fetch('/api/products');
+          if (r.ok) setProducts(await r.json());
+        }
+        if (batch.has('sales')) {
+          const [sRes, srRes, pRes] = await Promise.all([
+            fetch('/api/sales'),
+            fetch('/api/sales-returns'),
+            fetch('/api/products'),
+          ]);
+          if (sRes.ok) setSales(await sRes.json());
+          if (srRes.ok) setSalesReturnVouchers(await srRes.json());
+          if (pRes.ok) setProducts(await pRes.json());
+        }
+        if (batch.has('purchases')) {
+          const [puRes, prRes, pRes] = await Promise.all([
+            fetch('/api/purchases'),
+            fetch('/api/purchase-returns'),
+            fetch('/api/products'),
+          ]);
+          if (puRes.ok) setPurchases(await puRes.json());
+          if (prRes.ok) setPurchaseReturnVouchers(await prRes.json());
+          if (pRes.ok) setProducts(await pRes.json());
+        }
+        if (batch.has('customers')) {
+          const r = await fetch('/api/customers');
+          if (r.ok) setCustomers(await r.json());
+        }
+        if (batch.has('vendors')) {
+          const r = await fetch('/api/vendors');
+          if (r.ok) setVendors(await r.json());
+        }
+        if (batch.has('cashbook')) {
+          const r = await fetch('/api/cashbook');
+          if (r.ok) {
+            const cb = await readCashbookResponse(r, 'Syncing cashbook');
+            if (typeof cb === 'object' && cb !== null && 'entries' in cb && Array.isArray(cb.entries)) {
+              setCashbookEntries(cb.entries as CashbookEntry[]);
+              if ('openingBalance' in cb) {
+                setCashbookOpeningBalance(cb.openingBalance as CashbookOpeningBalance | null);
+              }
+            }
+          }
+        }
+        if (batch.has('settings')) {
+          const r = await fetch('/api/settings');
+          if (r.ok) {
+            const loaded = (await r.json()) as StoreSettings;
+            setSettings(applyLocalTerminalPrinterOverrides(loaded, isClientTerminal));
+          }
+        }
+        if (batch.has('terminals')) {
+          void checkTerminalAuthorization();
+        }
+      } catch {
+        // Ignore transient sync fetch errors
+      }
+    };
+
+    const eventSource = new EventSource(buildPwaEventSourceUrl('/api/events'));
+    const onChange = (event: MessageEvent) => {
+      try {
+        const parsed = JSON.parse(String(event.data || '{}')) as { resource?: string };
+        if (parsed.resource) {
+          pendingResources.add(parsed.resource);
+          if (debounceTimer !== null) window.clearTimeout(debounceTimer);
+          debounceTimer = window.setTimeout(() => {
+            debounceTimer = null;
+            void flushPending();
+          }, 300);
+        }
+      } catch {
+        // Ignore malformed SSE events
+      }
+    };
+    eventSource.addEventListener('change', onChange as EventListener);
+
+    return () => {
+      closed = true;
+      if (debounceTimer !== null) window.clearTimeout(debounceTimer);
+      eventSource.removeEventListener('change', onChange as EventListener);
+      eventSource.close();
+    };
+  }, [currentUser, terminalBlockInfo, isClientTerminal, checkTerminalAuthorization]);
+
+  // Client terminal 60-second heartbeat so Primary Server tracks live counter status
+  useEffect(() => {
+    if (!isClientTerminal || terminalBlockInfo) return;
+    const sendHeartbeat = () => {
+      void fetch('/api/terminals/heartbeat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ screenMode: runtimeScreenMode || launchScreenMode || 'pos' }),
+      })
+        .then((res) => {
+          if (res.status === 403) void checkTerminalAuthorization();
+        })
+        .catch(() => {});
+    };
+    sendHeartbeat();
+    const timer = window.setInterval(sendHeartbeat, 60_000);
+    return () => window.clearInterval(timer);
+  }, [isClientTerminal, terminalBlockInfo, runtimeScreenMode, launchScreenMode, checkTerminalAuthorization]);
 
   const handleLoginSuccess = (user: UserSession) => {
     setCurrentUser(user);
@@ -1054,10 +1279,23 @@ export function App() {
   };
 
   const handleSaveSettings = async (updated: StoreSettings) => {
+    // Always save printer preferences locally per terminal so counters never overwrite each other's printers.
+    saveLocalTerminalPrinterPrefsFromSettings(updated);
+    const payloadToServer: Partial<StoreSettings> = isClientTerminal
+      ? {
+          ...updated,
+          defaultPrinter: undefined,
+          kotPrinter: undefined,
+          paperWidth: undefined,
+          autoPrintReceiptOnSale: undefined,
+          defaultReceiptAction: undefined,
+          printerOnline: undefined,
+        }
+      : updated;
     const res = await fetch('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updated),
+      body: JSON.stringify(payloadToServer),
     });
     const data: unknown = await res.json().catch(() => null);
     if (!res.ok) {
@@ -1085,7 +1323,7 @@ export function App() {
         throw new Error('Version component policies were not saved correctly. Please retry.');
       }
     }
-    setSettings(data as StoreSettings);
+    setSettings(applyLocalTerminalPrinterOverrides(data as StoreSettings, isClientTerminal));
   };
 
   const handleSaveLauncherBackground = async (dataUrl: string) => {
@@ -1209,11 +1447,20 @@ export function App() {
   };
 
   const isAdmin = currentUser?.role === 'admin';
-  const canEditSales =
-    isAdmin || currentUser?.permissions?.includes('edit-sales') === true;
-  const canManageSalesReturns =
-    isAdmin || currentUser?.permissions?.includes('manage-sales-returns') === true;
-  const canDeleteSales = isAdmin || currentUser?.permissions?.includes('delete-sales') === true;
+  const canAddSales = hasModuleAction(currentUser, 'sales', 'add');
+  const canEditSales = hasModuleAction(currentUser, 'sales', 'edit');
+  const canDeleteSales = hasModuleAction(currentUser, 'sales', 'delete');
+  const canPrintSales = hasModuleAction(currentUser, 'sales', 'print');
+  const canAddSalesReturn = hasModuleAction(currentUser, 'sales-return', 'add');
+  const canEditSalesReturn = hasModuleAction(currentUser, 'sales-return', 'edit');
+  const canDeleteSalesReturn = hasModuleAction(currentUser, 'sales-return', 'delete');
+  const canManageSalesReturns = canEditSalesReturn || canDeleteSalesReturn;
+  const canEditPurchase = hasModuleAction(currentUser, 'purchases', 'edit');
+  const canDeletePurchase = hasModuleAction(currentUser, 'purchases', 'delete');
+  const canAddPurchaseReturn = hasModuleAction(currentUser, 'purchase-return', 'add');
+  const canDeletePurchaseReturn = hasModuleAction(currentUser, 'purchase-return', 'delete');
+  const canAddProduct = hasModuleAction(currentUser, 'inventory', 'add');
+  const canEditProduct = hasModuleAction(currentUser, 'inventory', 'edit');
   const isAppAdmin = currentUser?.username.toLowerCase() === 'aptadmin';
   const effectiveScreenMode: AppScreenMode =
     runtimeScreenMode ||
@@ -1238,37 +1485,54 @@ export function App() {
 
   const hasPermission = (tabId: NavTab) => {
     if (!currentUser) return false;
-    if (tabId === 'sales-entry') {
-      return isAdmin ||
-        currentUser.permissions?.includes('register') === true ||
-        (
-          flyErpInvoiceToEdit?.appScreenMode === 'flyerp' &&
-          currentUser.permissions?.includes('edit-sales') === true
-        );
-    }
     if (
       tabId !== 'unavailable' &&
       (!isAppAdmin || settings.registeredSystem === true) &&
       settings.disabledAppComponents?.some((component) => component === tabId)
     ) return false;
-    if (tabId === 'settings') {
-      return isAdmin || isAppAdmin || currentUser.permissions?.includes('settings') === true;
+    if (isAdmin || isAppAdmin) return true;
+    switch (tabId) {
+      case 'register':
+        return canAddSales;
+      case 'sales-entry':
+        return canAddSales || (flyErpInvoiceToEdit?.appScreenMode === 'flyerp' && canEditSales);
+      case 'sales':
+        return hasAnyModuleAccess(currentUser, 'sales');
+      case 'return-register':
+        return canAddSalesReturn;
+      case 'return-history':
+        return hasAnyModuleAccess(currentUser, 'sales-return');
+      case 'purchases':
+        return hasModuleAction(currentUser, 'purchases', 'add') || hasAnyModuleAccess(currentUser, 'purchases');
+      case 'purchase-history':
+        return hasAnyModuleAccess(currentUser, 'purchases');
+      case 'purchase-return-register':
+        return canAddPurchaseReturn;
+      case 'purchase-return-history':
+        return hasAnyModuleAccess(currentUser, 'purchase-return');
+      case 'inventory':
+        return hasAnyModuleAccess(currentUser, 'inventory');
+      case 'barcode-print':
+        return hasAnyModuleAccess(currentUser, 'barcode-print');
+      case 'customers':
+        return hasAnyModuleAccess(currentUser, 'customers');
+      case 'vendors':
+        return hasAnyModuleAccess(currentUser, 'vendors');
+      case 'accounts':
+        return hasAnyModuleAccess(currentUser, 'accounts');
+      case 'reports':
+        return hasAnyModuleAccess(currentUser, 'reports');
+      case 'shift':
+        return hasAnyModuleAccess(currentUser, 'shift');
+      case 'files':
+        return hasAnyModuleAccess(currentUser, 'files');
+      case 'zatca':
+        return hasAnyModuleAccess(currentUser, 'zatca');
+      case 'settings':
+        return hasAnyModuleAccess(currentUser, 'settings');
+      default:
+        return false;
     }
-    if (APP_COMPONENTS.some((component) => component.id === tabId)) return true;
-    if (isAdmin) return true;
-    const requiredPermission =
-      tabId === 'shift'
-        ? 'register'
-        : tabId === 'return-register' || tabId === 'return-history'
-        ? 'sales-return'
-        : tabId;
-    if (
-      (tabId === 'return-register' || tabId === 'return-history') &&
-      currentUser.permissions?.includes('manage-sales-returns')
-    ) {
-      return true;
-    }
-    return currentUser.permissions?.includes(requiredPermission) ?? false;
   };
   const canReturnSales =
     hasPermission('return-register') || hasPermission('return-history');
@@ -1298,8 +1562,9 @@ export function App() {
       activeSection={settingsSection}
       onActiveSectionChange={setSettingsSection}
       showSectionNavigation={!showSettingsComponent}
+      isAdmin={isAdmin}
       isAppAdmin={isAppAdmin}
-      canRegisterSystem={isAppAdmin || currentUser?.demoMode === true}
+      canRegisterSystem={isAdmin || isAppAdmin || currentUser?.demoMode === true}
       theme={theme}
       onThemeChange={setTheme}
       iconOnlyLauncher={iconOnlyLauncher}
@@ -1462,6 +1727,18 @@ export function App() {
   return (
     <LanguageProvider initialLanguage={settings.appLanguage}>
       <>
+        <PwaStatusBar />
+        {terminalBlockInfo && (
+          <AdditionalSystemRegistrationModal
+            info={terminalBlockInfo}
+            onActivated={() => {
+              setTerminalBlockInfo(null);
+              void checkTerminalAuthorization();
+              if (currentUser) void fetchAll();
+            }}
+            onRetryCheck={checkTerminalAuthorization}
+          />
+        )}
         {!currentUser ? (
           <>
             <LoginForm
@@ -1509,6 +1786,7 @@ export function App() {
             onLauncherOpened={handleLauncherOpened}
             sideNavOpen={flyErpSideNavOpen}
             onToggleSideNav={() => setFlyErpSideNavOpen((open) => !open)}
+            billingInvoiceType={billingInvoiceType}
             demoExpiresAt={currentUser.demoMode ? currentUser.demoExpiresAt : undefined}
             registeredSystem={settings.registeredSystem === true}
             amcStartDate={settings.registrationDetails?.amcStartDate}
@@ -1538,7 +1816,7 @@ export function App() {
               onSelectAccountsSubtab={setAccountsSubtab}
               onOpenCashbook={() => setCashbookModalOpen(true)}
               onCloseMobile={() => {
-                if (typeof window !== 'undefined' && window.innerWidth < 768) {
+                if (typeof window !== 'undefined' && window.innerWidth < 1280) {
                   setFlyErpSideNavOpen(false);
                 }
               }}
@@ -1553,6 +1831,7 @@ export function App() {
                 sales={sales}
                 settings={settings}
                 editingSale={flyErpInvoiceToEdit}
+                onInvoiceTypeChange={setBillingInvoiceType}
                 onSaleCompleted={handleSaleCompleted}
                 onLoadDraft={(draft) => {
                   setFlyErpInvoiceToEdit(draft);
@@ -1598,18 +1877,16 @@ export function App() {
                 customers={customers}
                 settings={settings}
                 onSaleCompleted={handleSaleCompleted}
+                onInvoiceTypeChange={setBillingInvoiceType}
               />
             )
           )}
           {effectiveTab === 'register' && (
             <div
               style={isRposMode
-                ? {
-                    width: `calc(100% - max(150px, min(${rposTicketWidth}px, calc(100vw - 120px))))`,
-                    marginRight: 'auto',
-                  }
+                ? { '--rpos-ticket-width': `${rposTicketWidth}px` } as React.CSSProperties
                 : undefined}
-              className={`${isRposMode ? 'w-full' : 'w-full min-[900px]:w-2/3'} flex min-w-0 flex-col min-h-0`}
+              className={`${isRposMode ? 'rpos-register-main w-full' : 'w-full min-[900px]:w-2/3'} flex min-w-0 flex-col min-h-0`}
             >
               <div className="flex-1 min-w-0 min-h-0 flex">
                 <RegisterView
@@ -1618,16 +1895,17 @@ export function App() {
                   sales={sales}
                   settings={{ ...settings, posScreenLayout: isRposMode ? 'rpos' : 'pos' }}
                   rposTicketWidth={rposTicketWidth}
+                  onInvoiceTypeChange={setBillingInvoiceType}
                   onRposTicketWidthChange={setRposTicketWidth}
                   onSaleCompleted={handleSaleCompleted}
                   restoredSale={restoredSale}
                   onClearRestoredSale={() => setRestoredSale(null)}
-                  receiptModalOpen={Boolean(activeReceipt)}
+                  receiptModalOpen={Boolean(activeReceipt || flyErpCompletion)}
                   onOpenSalesHistory={
                     hasPermission('sales') ? () => setActiveTab('sales') : undefined
                   }
                   onEditProduct={
-                    hasPermission('inventory')
+                    canEditProduct
                       ? (product) =>
                           setProductEditRequest((request) => ({
                             product,
@@ -1636,7 +1914,7 @@ export function App() {
                       : undefined
                   }
                   onAddProduct={
-                    hasPermission('inventory')
+                    canAddProduct
                       ? (barcode) => {
                           setProductCreateBarcode(barcode);
                           setProductCreateReturnTab('register');
@@ -1758,15 +2036,15 @@ export function App() {
                 onRefreshPurchases={refreshPurchases}
                 onRefreshProducts={refreshProducts}
                 onRefreshVendors={refreshVendors}
-                onDeletePurchase={handleDeletePurchase}
-                onEditPurchase={handleEditPurchase}
+                onDeletePurchase={canDeletePurchase ? handleDeletePurchase : undefined}
+                onEditPurchase={canEditPurchase ? handleEditPurchase : undefined}
                 onCreatePurchaseReturn={
-                  hasPermission('purchase-return-register')
+                  canAddPurchaseReturn
                     ? handleCreatePurchaseReturn
                     : undefined
                 }
                 onEditProduct={
-                  hasPermission('inventory')
+                  canEditProduct
                     ? (product) =>
                         setProductEditRequest((request) => ({
                           product,
@@ -1775,7 +2053,7 @@ export function App() {
                     : undefined
                 }
                 onAddProduct={
-                  hasPermission('inventory')
+                  canAddProduct
                     ? (barcode) => {
                         setProductCreateBarcode(barcode);
                         setProductCreateReturnTab('purchases');
@@ -1889,11 +2167,11 @@ export function App() {
               vouchers={purchaseReturnVouchers}
               settings={settings}
               onCreateReturn={
-                hasPermission('purchase-return-register')
+                canAddPurchaseReturn
                   ? () => setActiveTab('purchase-return-register')
                   : undefined
               }
-              onDeleteVoucher={handleDeletePurchaseReturn}
+              onDeleteVoucher={canDeletePurchaseReturn ? handleDeletePurchaseReturn : undefined}
             />
           )}
 
@@ -1902,9 +2180,9 @@ export function App() {
               sales={sales}
               returnVouchers={salesReturnVouchers}
               settings={settings}
-              onReprintSale={handleReprintSale}
+              onReprintSale={canPrintSales ? handleReprintSale : undefined}
               onOpenReturnRegister={
-                canReturnSales && hasPermission('return-register')
+                canAddSalesReturn
                   ? (sale) => {
                       setInitialReturnSales([sale]);
                       setActiveTab('return-register');
@@ -1920,9 +2198,11 @@ export function App() {
             <SalesReturnRegisterView
               initialSales={initialReturnSales}
               sales={sales}
+              customers={customers}
               settings={settings}
               cashierName={currentUser.displayName}
               editingVoucher={editingReturnVoucher || undefined}
+              onInvoiceTypeChange={setBillingInvoiceType}
               onOpenReturnHistory={() => {
                 setEditingReturnVoucher(null);
                 setInitialReturnSales([]);
@@ -1949,53 +2229,47 @@ export function App() {
             <SalesReturnHistoryView
               vouchers={salesReturnVouchers}
               settings={settings}
-              onEditVoucher={canManageSalesReturns ? handleEditReturnVoucher : undefined}
-              onDeleteVoucher={canManageSalesReturns ? handleDeleteReturnVoucher : undefined}
+              onEditVoucher={canEditSalesReturn ? handleEditReturnVoucher : undefined}
+              onDeleteVoucher={canDeleteSalesReturn ? handleDeleteReturnVoucher : undefined}
             />
           )}
 
           {effectiveTab === 'reports' && hasPermission('reports') && (
-            <div className="settings-view flex min-h-0 flex-1 flex-col overflow-hidden">
-              <nav
-                className="settings-section-navigation"
-                aria-label={settings.appLanguage === 'ar' ? 'أقسام التقارير' : 'Report sections'}
-                role="tablist"
-              >
-                <div className="settings-section-tabs">
-                  {[
-                    settings.appLanguage === 'ar' ? 'التقارير اليومية' : 'Daily Reports',
-                    settings.appLanguage === 'ar' ? 'تقارير المبيعات' : 'Sales Reports',
-                    settings.appLanguage === 'ar' ? 'تقارير المشتريات' : 'Purchase Reports',
-                    settings.appLanguage === 'ar' ? 'تقارير الضرائب' : 'Tax Reports',
-                    settings.appLanguage === 'ar' ? 'تقارير أخرى' : 'Other Reports',
-                  ].map((label, index) => (
-                    <button
-                      key={label}
-                      type="button"
-                      role="tab"
-                      aria-selected={index === 0}
-                      className={`settings-section-tab${index === 0 ? ' is-active' : ''}`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </nav>
-              <div className="settings-content-scroll min-h-0 flex-1 overflow-y-auto">
-                <ReportsView
-                  key="reports"
-                  mode="reports"
-                  sales={sales}
-                  returnVouchers={salesReturnVouchers}
-                  purchases={purchases}
-                  cashbookEntries={cashbookEntries}
-                  cashbookOpeningBalance={cashbookOpeningBalance}
-                  canManageCashbook={isAdmin}
-                  onCreateCashbookEntry={handleCreateCashbookEntry}
-                  settings={settings}
-                />
-              </div>
-            </div>
+            <ReportsView
+              key="reports"
+              mode="reports"
+              sales={sales}
+              returnVouchers={salesReturnVouchers}
+              purchases={purchases}
+              cashbookEntries={cashbookEntries}
+              cashbookOpeningBalance={cashbookOpeningBalance}
+              canManageCashbook={isAdmin}
+              onCreateCashbookEntry={handleCreateCashbookEntry}
+              settings={settings}
+            />
+          )}
+
+          {effectiveTab === 'barcode-print' && (
+            <BarcodePrintView
+              products={products}
+              settings={settings}
+            />
+          )}
+
+          {effectiveTab === 'zatca' && (
+            <ZatcaView
+              settings={settings}
+              canEdit={hasModuleAction(currentUser, 'zatca', 'edit')}
+              onSaveSettings={handleSaveSettings}
+              onOpenBusinessSettings={
+                hasPermission('settings')
+                  ? () => {
+                      setSettingsSection('business');
+                      setActiveTab('settings');
+                    }
+                  : undefined
+              }
+            />
           )}
 
           {effectiveTab === 'settings' && !showSettingsWorkspace && settingsWorkspace}
@@ -2016,7 +2290,20 @@ export function App() {
               )}
               settings={settings}
               queuedOffline={activeReceipt.queuedOffline}
-              onClose={() => setActiveReceipt(null)}
+              canPrint={canPrintSales}
+              onClose={() => {
+                setActiveReceipt(null);
+                window.requestAnimationFrame(() => {
+                  const target = (
+                    document.getElementById('pos-barcode-scanner-input') ||
+                    document.querySelector('[data-erp-first-barcode="true"]')
+                  ) as HTMLInputElement | null;
+                  if (target && !target.disabled) {
+                    target.focus();
+                    target.select();
+                  }
+                });
+              }}
             />
           )}
           {flyErpCompletion && (
@@ -2031,7 +2318,19 @@ export function App() {
               }
               queuedOffline={flyErpCompletion.queuedOffline}
               isReprint={flyErpCompletion.isReprint}
-              onClose={() => setFlyErpCompletion(null)}
+              onClose={() => {
+                setFlyErpCompletion(null);
+                window.requestAnimationFrame(() => {
+                  const target = (
+                    document.getElementById('pos-barcode-scanner-input') ||
+                    document.querySelector('[data-erp-first-barcode="true"]')
+                  ) as HTMLInputElement | null;
+                  if (target && !target.disabled) {
+                    target.focus();
+                    target.select();
+                  }
+                });
+              }}
             />
           )}
           {cashbookModalOpen && currentUser && (

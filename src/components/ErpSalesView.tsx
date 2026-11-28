@@ -10,6 +10,7 @@ interface ErpSalesViewProps {
   customers: Customer[];
   settings: StoreSettings;
   onSaleCompleted: (sale: Sale, queuedOffline: boolean) => void;
+  onInvoiceTypeChange?: (type: 'B2B' | 'B2C') => void;
 }
 
 interface ErpSaleRow {
@@ -75,6 +76,7 @@ export const ErpSalesView: React.FC<ErpSalesViewProps> = ({
   customers,
   settings,
   onSaleCompleted,
+  onInvoiceTypeChange,
 }) => {
   const { isRtl } = useLanguage();
   const currency = settings.currencySymbol || 'SAR';
@@ -131,6 +133,49 @@ export const ErpSalesView: React.FC<ErpSalesViewProps> = ({
   }, []);
 
   const customer = customers.find((entry) => entry.id === customerId);
+  useEffect(() => {
+    const isB2B = Boolean(customer?.vatNumber && /^\d{15}$/.test(customer.vatNumber.trim()));
+    onInvoiceTypeChange?.(isB2B ? 'B2B' : 'B2C');
+  }, [customer, onInvoiceTypeChange]);
+
+  useEffect(() => {
+    const handleGlobalType = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key.length !== 1 || event.key === ' ') return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      const targetRow = rows.find((r) => r.productId === null) || rows[rows.length - 1];
+      if (!targetRow) return;
+      event.preventDefault();
+      updateRow(targetRow.id, {
+        productId: null,
+        barcode: '',
+        productSearch: `${targetRow.productSearch}${event.key}`,
+        unitId: '',
+        unitPrice: '',
+      });
+      setProductSearchOpenRowId(targetRow.id);
+      setActiveSuggestionIndex(0);
+      window.requestAnimationFrame(() => {
+        const input = cellRefs.current.get(targetRow.id)?.productSearch;
+        if (input) {
+          input.focus();
+          const len = input.value.length;
+          input.setSelectionRange(len, len);
+        }
+      });
+    };
+    window.addEventListener('keydown', handleGlobalType);
+    return () => window.removeEventListener('keydown', handleGlobalType);
+  }, [rows]);
   const filteredCustomers = useMemo(() => {
     const query = customerSearch.trim().toLocaleLowerCase();
     if (!query) return customers.slice(0, 30);
@@ -560,7 +605,7 @@ export const ErpSalesView: React.FC<ErpSalesViewProps> = ({
                       entry.category.toLocaleLowerCase().includes(query) ||
                       (entry.brand?.toLocaleLowerCase().includes(query) ?? false)
                     ).slice(0, 15)
-                    : products.slice(0, 15);
+                    : [];
                   const barcodeMatch = getProductForBarcode(products, row.barcode);
                   const taxRate = product?.taxRate ?? settings.taxRate;
 
@@ -572,6 +617,7 @@ export const ErpSalesView: React.FC<ErpSalesViewProps> = ({
                       <td className="border-b border-e border-slate-200 p-0">
                         <input
                           ref={(el) => setCellRef(row.id, 'barcode', el)}
+                          data-erp-first-barcode={index === 0 ? 'true' : undefined}
                           type="text"
                           value={row.barcode}
                           onFocus={(event) => event.currentTarget.select()}
@@ -603,19 +649,22 @@ export const ErpSalesView: React.FC<ErpSalesViewProps> = ({
                             type="text"
                             value={row.productSearch}
                             onFocus={() => {
-                              setProductSearchOpenRowId(row.id);
-                              setActiveSuggestionIndex(0);
+                              if (row.productSearch.trim()) {
+                                setProductSearchOpenRowId(row.id);
+                                setActiveSuggestionIndex(0);
+                              }
                             }}
                             onBlur={() => window.setTimeout(() => setProductSearchOpenRowId((cur) => (cur === row.id ? null : cur)), 120)}
                             onChange={(event) => {
+                              const nextValue = event.target.value;
                               updateRow(row.id, {
                                 productId: null,
                                 barcode: '',
-                                productSearch: event.target.value,
+                                productSearch: nextValue,
                                 unitId: '',
                                 unitPrice: '',
                               });
-                              setProductSearchOpenRowId(row.id);
+                              setProductSearchOpenRowId(nextValue.trim() ? row.id : null);
                               setActiveSuggestionIndex(0);
                             }}
                             onKeyDown={(event) => {
@@ -641,6 +690,7 @@ export const ErpSalesView: React.FC<ErpSalesViewProps> = ({
                             <div className="absolute left-0 top-full z-20 max-h-72 w-[min(560px,90vw)] min-w-[440px] overflow-y-auto rounded-b-md border border-slate-200 bg-white shadow-xl">
                               {matchingProducts.map((entry, optionIdx) => {
                                 const entryTax = entry.taxRate ?? settings.taxRate;
+                                const isActive = optionIdx === activeSuggestionIndex;
                                 return (
                                   <button
                                     key={entry.id}
@@ -648,22 +698,22 @@ export const ErpSalesView: React.FC<ErpSalesViewProps> = ({
                                     onMouseDown={(event) => event.preventDefault()}
                                     onMouseEnter={() => setActiveSuggestionIndex(optionIdx)}
                                     onClick={() => selectProduct(row, entry)}
-                                    className={`flex w-full items-start justify-between gap-3 border-b border-slate-100 px-3 py-2 text-left text-xs last:border-0 ${
-                                      optionIdx === activeSuggestionIndex ? 'bg-blue-50' : 'hover:bg-slate-50'
+                                    className={`flex w-full items-start justify-between gap-3 border-b border-slate-100 px-3 py-2 text-left text-xs last:border-0 transition-colors ${
+                                      isActive ? 'bg-blue-700 text-white' : 'hover:bg-slate-100'
                                     }`}
                                   >
                                     <span className="min-w-0 flex-1">
                                       <span className="flex flex-wrap items-baseline gap-x-2">
-                                        <span className="font-semibold text-slate-900">
+                                        <span className={`font-semibold ${isActive ? 'text-white' : 'text-slate-900'}`}>
                                           {isRtl ? entry.nameAr || entry.name : entry.name}
                                         </span>
                                         {((isRtl && entry.name) || (!isRtl && entry.nameAr)) && (
-                                          <span className="text-[11px] text-slate-500" dir={isRtl ? 'ltr' : 'rtl'}>
+                                          <span className={`text-[11px] ${isActive ? 'text-blue-100' : 'text-slate-500'}`} dir={isRtl ? 'ltr' : 'rtl'}>
                                             {isRtl ? entry.name : entry.nameAr}
                                           </span>
                                         )}
                                       </span>
-                                      <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-slate-500">
+                                      <span className={`mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] ${isActive ? 'text-blue-100' : 'text-slate-500'}`}>
                                         {entry.sku && <span className="font-mono">SKU: {entry.sku}</span>}
                                         {entry.barcode && <span className="font-mono">· {entry.barcode}</span>}
                                         {entry.category && <span>· {entry.category}</span>}
@@ -672,11 +722,15 @@ export const ErpSalesView: React.FC<ErpSalesViewProps> = ({
                                       </span>
                                     </span>
                                     <span className="shrink-0 text-right">
-                                      <span className="block font-mono text-xs font-bold tabular-nums text-blue-800">
+                                      <span className={`block font-mono text-xs font-bold tabular-nums ${isActive ? 'text-white' : 'text-blue-800'}`}>
                                         {currency} {entry.retailPrice.toFixed(decimalPlaces)}
                                       </span>
-                                      <span className="mt-0.5 block font-mono text-[10px] tabular-nums text-slate-500">
-                                        <span className={entry.stock <= 0 ? 'font-semibold text-red-600' : 'text-emerald-700'}>
+                                      <span className={`mt-0.5 block font-mono text-[10px] tabular-nums ${isActive ? 'text-blue-100' : 'text-slate-500'}`}>
+                                        <span className={
+                                          isActive
+                                            ? (entry.stock <= 0 ? 'font-semibold text-red-200' : 'text-emerald-200')
+                                            : (entry.stock <= 0 ? 'font-semibold text-red-600' : 'text-emerald-700')
+                                        }>
                                           {isRtl ? 'مخزون' : 'Stock'}: {entry.stock}
                                         </span>
                                         {entry.costPrice > 0 && ` · ${isRtl ? 'تكلفة' : 'Cost'}: ${entry.costPrice.toFixed(decimalPlaces)}`}

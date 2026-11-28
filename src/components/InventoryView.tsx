@@ -430,7 +430,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   }, [isFlyErpMode]);
 
   useEffect(() => {
-    if (!modalOpen) return;
+    if (!modalOpen || editingProduct) return;
     const frame = window.requestAnimationFrame(() => productNameInputRef.current?.focus());
     return () => window.cancelAnimationFrame(frame);
   }, [modalOpen, editingProduct]);
@@ -580,6 +580,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     inventoryOptions.find((option) => option.type === 'unit' && option.isDefault)?.value ??
     units[0] ??
     EMPTY_FORM.unit;
+  const defaultCategory =
+    inventoryOptions.find((option) => option.type === 'category' && option.isDefault)?.value ??
+    categories[0] ??
+    EMPTY_FORM.category;
 
   const generateNextSku = (baseSku?: string) => {
     const numericSkus = [
@@ -863,7 +867,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           typeof payload === 'object' && payload !== null && 'error' in payload &&
           typeof payload.error === 'string'
             ? payload.error
-            : `Could not set the default ${option.type === 'taxRate' ? 'tax rate' : 'unit'}.`;
+            : `Could not set the default ${
+                option.type === 'taxRate'
+                  ? 'tax rate'
+                  : option.type === 'category'
+                    ? 'category'
+                    : 'unit'
+              }.`;
         throw new Error(message);
       }
       setInventoryOptions((current) =>
@@ -884,7 +894,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       ...EMPTY_FORM,
       sku: generateNextSku(),
       barcode: initialBarcode,
-      category: initialCategory || categories[0] || EMPTY_FORM.category,
+      category: initialCategory || defaultCategory,
       brand: '',
       taxRate: String(defaultTaxRate),
       unit: defaultUnit,
@@ -902,6 +912,19 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     setFormSuccess(null);
     setModalOpen(true);
   };
+
+  useEffect(() => {
+    if (!modalOpen || editingProduct || isServiceInventory || optionsLoading) return;
+    const explicitDefaultCategory = inventoryOptions.find(
+      (option) => option.type === 'category' && option.isDefault
+    )?.value;
+    if (!explicitDefaultCategory) return;
+    setForm((current) =>
+      !current.category || current.category === EMPTY_FORM.category
+        ? { ...current, category: explicitDefaultCategory }
+        : current
+    );
+  }, [modalOpen, editingProduct, isServiceInventory, optionsLoading, inventoryOptions]);
 
   useEffect(() => {
     if (createProductRequest > 0 && !optionsLoading) {
@@ -1016,7 +1039,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       ...EMPTY_FORM,
       sku: nextSku,
       barcode: code,
-      category: categories[0] || EMPTY_FORM.category,
+      category: defaultCategory,
       taxRate: String(defaultTaxRate),
       unit: defaultUnit,
     });
@@ -1233,7 +1256,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           ...EMPTY_FORM,
           sku: generateNextSku(form.sku),
           unit: defaultUnit,
-          ...(isServiceInventory ? { category: TRAVEL_SERVICES_CATEGORY } : {}),
+          category: isServiceInventory ? TRAVEL_SERVICES_CATEGORY : defaultCategory,
         });
         setMultiUnitDrafts([]);
         setAdditionalBarcodeDrafts([]);
@@ -1242,6 +1265,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         setFormSuccess(isServiceInventory
           ? 'Service created. You can add another service.'
           : 'Product created. You can add another product.');
+        setActiveProductTab('general');
+        window.requestAnimationFrame(() => {
+          productNameInputRef.current?.focus();
+        });
       }
     } catch (err) {
       setFormError((err as Error).message);
@@ -1713,29 +1740,33 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         </div>
       )}
 
-      <div className="flex items-end gap-1 border-b border-slate-300 bg-slate-100 px-2 pt-1.5 rounded-t-lg">
-        {([
-          ...(!isFlyErpMode ? [{ id: 'products' as const, label: isRtl ? 'المنتجات' : 'Products' }] : []),
-          { id: 'services' as const, label: isRtl ? 'الخدمات' : 'Services' },
-          { id: 'manage', label: isRtl ? 'إدارة الخيارات' : 'Manage' },
-        ] as const).map((section) => {
-          const active = inventorySection === section.id;
-          return (
-            <button
-              key={section.id}
-              type="button"
-              onClick={() => setInventorySection(section.id)}
-              className={`relative rounded-t-lg px-4 py-2 text-xs transition-colors ${
-                active
-                  ? 'z-10 -mb-px border border-b-white border-slate-300 bg-white font-semibold text-slate-900'
-                  : 'border border-transparent font-medium text-slate-600 hover:bg-slate-200/70 hover:text-slate-900'
-              }`}
-            >
-              {section.label}
-            </button>
-          );
-        })}
-      </div>
+      <nav
+        className="settings-section-navigation rounded-lg border border-slate-200"
+        aria-label={isRtl ? 'أقسام المخزون' : 'Inventory sections'}
+        role="tablist"
+      >
+        <div className="settings-section-tabs">
+          {([
+            ...(!isFlyErpMode ? [{ id: 'products' as const, label: isRtl ? 'المنتجات' : 'Products' }] : []),
+            { id: 'services' as const, label: isRtl ? 'الخدمات' : 'Services' },
+            { id: 'manage' as const, label: isRtl ? 'إدارة الخيارات' : 'Manage' },
+          ] as const).map((section) => {
+            const active = inventorySection === section.id;
+            return (
+              <button
+                key={section.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setInventorySection(section.id)}
+                className={`settings-section-tab${active ? ' is-active' : ''}`}
+              >
+                {section.label}
+              </button>
+            );
+          })}
+        </div>
+      </nav>
 
       {inventorySection === 'products' && !isFlyErpMode ? (
       <>
@@ -2174,43 +2205,68 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           {optionsLoading ? (
             <div className="p-10 text-center text-sm text-slate-500">{isRtl ? 'جارٍ تحميل الخيارات...' : 'Loading options...'}</div>
           ) : managementType === 'category' ? (
-            <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 sm:gap-4 sm:p-5">
+            <div className="grid grid-cols-2 gap-2.5 p-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 sm:p-4">
               {inventoryOptions.filter((option) => option.type === 'category').map((option) => {
                 const productCount = products.filter((product) => product.category === option.value).length;
                 return (
-                  <article key={option.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
-                    <div className="flex aspect-square items-center justify-center overflow-hidden bg-gradient-to-br from-slate-50 via-white to-blue-50">
+                  <article
+                    key={option.id}
+                    className={`overflow-hidden rounded-xl border bg-white shadow-xs transition-shadow hover:shadow-sm ${
+                      option.isDefault ? 'border-blue-400 ring-1 ring-blue-200' : 'border-slate-200'
+                    }`}
+                  >
+                    <div className="relative flex h-20 items-center justify-center overflow-hidden bg-gradient-to-br from-slate-50 via-white to-blue-50">
                       {option.imageData ? (
-                        <img src={option.imageData} alt={option.value} className="h-auto w-auto max-h-full max-w-full object-contain" />
+                        <img src={option.imageData} alt={option.value} className="h-full w-full object-contain p-1.5" />
                       ) : (
-                        <div className="flex h-full flex-col items-center justify-center gap-2 text-slate-300">
-                          <Upload className="h-9 w-9" />
-                          <span className="text-[10px] font-medium text-slate-400">{isRtl ? 'لا توجد صورة' : 'No image'}</span>
+                        <div className="flex flex-col items-center justify-center gap-0.5 text-slate-300">
+                          <Upload className="h-5 w-5" />
+                          <span className="text-[9px] font-medium text-slate-400">{isRtl ? 'لا توجد صورة' : 'No image'}</span>
                         </div>
                       )}
+                      {option.isDefault && (
+                        <span className="absolute start-1.5 top-1.5 rounded-full bg-blue-700 px-1.5 py-0.5 text-[9px] font-bold text-white shadow-xs">
+                          {isRtl ? 'افتراضي' : 'Default'}
+                        </span>
+                      )}
                     </div>
-                    <div className="flex items-center justify-between gap-2 px-3 pb-3 pt-1.5">
+                    <div className="space-y-1.5 px-2.5 py-2">
                       <div className="min-w-0">
-                        <h3 className="truncate text-sm font-semibold text-slate-900" title={option.value}>{option.value}</h3>
-                        <p className="mt-0.5 text-[11px] text-slate-500">{productCount} {isRtl ? 'منتج' : 'products'}</p>
+                        <h3 className="truncate text-xs font-bold text-slate-900" title={option.value}>{option.value}</h3>
+                        <p className="text-[10px] text-slate-500">{productCount} {isRtl ? 'منتج' : 'products'}</p>
                       </div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => openOptionDialog('category', option)}
-                          className="rounded-lg p-1.5 text-slate-500 hover:bg-blue-50 hover:text-blue-700"
-                          aria-label={`${isRtl ? 'تعديل' : 'Edit'} ${option.value}`}
-                        >
-                          <Edit2 className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void removeManagedOption(option)}
-                          className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-700"
-                          aria-label={`${isRtl ? 'حذف' : 'Delete'} ${option.value}`}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                      <div className="flex items-center justify-between gap-1 border-t border-slate-100 pt-1.5">
+                        {!option.isDefault ? (
+                          <button
+                            type="button"
+                            onClick={() => void setDefaultInventoryOption(option)}
+                            className="rounded px-1.5 py-0.5 text-[10px] font-semibold text-blue-700 hover:bg-blue-50"
+                          >
+                            {isRtl ? 'تعيين كافتراضي' : 'Set default'}
+                          </button>
+                        ) : (
+                          <span className="text-[10px] font-semibold text-emerald-700">
+                            {isRtl ? 'الافتراضي' : 'Default'}
+                          </span>
+                        )}
+                        <div className="flex shrink-0 items-center gap-0.5">
+                          <button
+                            type="button"
+                            onClick={() => openOptionDialog('category', option)}
+                            className="rounded p-1 text-slate-500 hover:bg-blue-50 hover:text-blue-700"
+                            aria-label={`${isRtl ? 'تعديل' : 'Edit'} ${option.value}`}
+                          >
+                            <Edit2 className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void removeManagedOption(option)}
+                            className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-700"
+                            aria-label={`${isRtl ? 'حذف' : 'Delete'} ${option.value}`}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </article>
@@ -3406,7 +3462,19 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-slate-900 bg-white focus:outline-none focus:border-blue-700"
                   >
                     <option value="">{isRtl ? 'بدون تصنيف' : 'No category'}</option>
-                    {categories.map((category) => <option key={category} value={category}>{category}</option>)}
+                    {categories.map((category) => {
+                      const isDef = inventoryOptions.some(
+                        (option) =>
+                          option.type === 'category' &&
+                          option.value === category &&
+                          option.isDefault
+                      );
+                      return (
+                        <option key={category} value={category}>
+                          {category}{isDef ? (isRtl ? ' (افتراضي)' : ' (Default)') : ''}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
                 <div>

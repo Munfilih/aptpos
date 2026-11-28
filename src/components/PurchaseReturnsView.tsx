@@ -34,7 +34,7 @@ interface PurchaseReturnHistoryViewProps {
   vouchers: PurchaseReturnVoucher[];
   settings: StoreSettings;
   onCreateReturn?: () => void;
-  onDeleteVoucher: (voucherId: number) => Promise<void>;
+  onDeleteVoucher?: (voucherId: number) => Promise<void>;
 }
 
 const getAvailablePurchaseQuantity = (
@@ -487,6 +487,7 @@ export const PurchaseReturnHistoryView: React.FC<PurchaseReturnHistoryViewProps>
         : `Delete return voucher ${voucher.voucherNumber}? The returned quantities will be restored to stock.`
     )) return;
     setDeletingId(voucher.id);
+    if (!onDeleteVoucher) return;
     setError(null);
     try {
       await onDeleteVoucher(voucher.id);

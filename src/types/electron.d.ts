@@ -1,5 +1,5 @@
 import type { UpdateStatus } from '../../electron/updateStatus';
-import type { AppScreenMode } from './pos';
+import type { AppScreenMode, LanDiscoveredServer, TerminalConfig } from './pos';
 
 declare global {
   interface Window {
@@ -48,6 +48,22 @@ declare global {
       getGoogleDriveStatus: () => Promise<{ clientId: string; connected: boolean }>;
       connectGoogleDrive: (clientId: string) => Promise<{ clientId: string; connected: boolean }>;
       disconnectGoogleDrive: () => Promise<{ clientId: string; connected: boolean }>;
+      getTerminalConfig: () => Promise<TerminalConfig>;
+      saveTerminalConfig: (config: TerminalConfig) => Promise<TerminalConfig>;
+      getLocalSystemCode: () => Promise<string>;
+      discoverLanServers: () => Promise<LanDiscoveredServer[]>;
+      testServerConnection: (host: string, port: number) => Promise<{
+        ok: boolean;
+        storeName?: string;
+        primarySystemCode?: string;
+        serverVersion?: string;
+        minClientShellVersion?: string;
+        dbEngine?: string;
+        error?: string;
+      }>;
+      configureWindowsFirewall: (port?: number) => Promise<{ ok: boolean; message: string }>;
+      getAppVersion: () => Promise<string>;
+      openExternal?: (url: string) => Promise<void>;
       resolveCloseRequest: (shouldClose: boolean) => Promise<boolean>;
       onCloseRequested: (listener: () => void) => () => void;
       onUpdateStatus: (listener: (status: UpdateStatus) => void) => () => void;
